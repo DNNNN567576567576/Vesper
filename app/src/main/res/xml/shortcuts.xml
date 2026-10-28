@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="new_note"
+        android:shortcutLongLabel="@string/shortcut_new_note_long"
+        android:shortcutShortLabel="@string/shortcut_new_note">
+        <intent
+            android:action="app.vesper.NEW_NOTE"
+            android:targetClass="app.vesper.MainActivity"
+            android:targetPackage="app.vesper" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="new_task"
+        android:shortcutLongLabel="@string/shortcut_new_task_long"
+        android:shortcutShortLabel="@string/shortcut_new_task">
+        <intent
+            android:action="app.vesper.NEW_TASK"
+            android:targetClass="app.vesper.MainActivity"
+            android:targetPackage="app.vesper" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+</shortcuts>
