@@ -68,6 +68,21 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.FloatState
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import kotlin.math.ceil
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import app.vesper.R
 import app.vesper.data.Note
 import app.vesper.data.Task
@@ -75,148 +90,19 @@ import kotlin.math.PI
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-/** Deep dungeon backdrop: violet gradient, tiled stone wall, torch haze, scanlines, stars, vignette. */
-@Composable
-fun PixelBackdrop(modifier: Modifier = Modifier) {
-    val stars = listOf(
-        0.08f to 0.12f, 0.31f to 0.06f, 0.62f to 0.09f, 0.90f to 0.15f,
-        0.18f to 0.34f, 0.76f to 0.40f, 0.05f to 0.58f, 0.52f to 0.52f,
-        0.93f to 0.66f, 0.27f to 0.76f, 0.70f to 0.82f, 0.12f to 0.93f, 0.45f to 0.95f,
-    )
-    val ambient = rememberInfiniteTransition(label = "ambient")
-    // Slow clock for twinkling stars and rising embers.
-    val drift by ambient.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(18000, easing = LinearEasing)),
-        label = "drift",
-    )
-    // Unsteady torch light.
-    val flicker by ambient.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(2300, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "flicker",
-    )
-    val wall = ImageBitmap.imageResource(R.drawable.wall_tile)
-    Canvas(modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-
-        drawRect(
-            Brush.verticalGradient(
-                0f to Color(0xFF1D0F2E),
-                0.42f to Px.Bg,
-                1f to Color(0xFF06020B),
-            )
-        )
-
-        // Stone wall, tiled by hand so the brick scale stays chunky and undistorted.
-        val tile = 176.dp.toPx().toInt().coerceAtLeast(1)
-        var ty = 0
-        while (ty < h) {
-            var tx = 0
-            while (tx < w) {
-                drawImage(
-                    image = wall,
-                    srcOffset = IntOffset.Zero,
-                    srcSize = IntSize(wall.width, wall.height),
-                    dstOffset = IntOffset(tx, ty),
-                    dstSize = IntSize(tile, tile),
-                    alpha = 0.22f,
-                    filterQuality = FilterQuality.None,
-                )
-                tx += tile
-            }
-            ty += tile
-        }
-
-        // Torch haze behind the content, breathing.
-        drawRect(
-            Brush.radialGradient(
-                colors = listOf(Px.Primary.copy(alpha = 0.20f + 0.12f * flicker), Color.Transparent),
-                center = Offset(w * 0.5f, h * 0.38f),
-                radius = h * (0.53f + 0.04f * flicker),
-            )
-        )
-
-        // Faint scanlines give the flat fill a bit of CRT tooth.
-        val step = 3.dp.toPx()
-        val lineH = 1.dp.toPx()
-        var y = 0f
-        while (y < h) {
-            drawRect(Color.Black.copy(alpha = 0.10f), Offset(0f, y), Size(w, lineH))
-            y += step
-        }
-
-        val s = 3.dp.toPx()
-        stars.forEachIndexed { i, (fx, fy) ->
-            val twinkle = 0.55f + 0.45f * sin((drift + i * 0.083f) * 2f * PI.toFloat())
-            val base = if (i % 4 == 0) 0.16f else 0.20f
-            val c = (if (i % 4 == 0) Px.Magenta else Px.Lavender).copy(alpha = base * twinkle)
-            val x = (fx * w / s).toInt() * s
-            val sy = (fy * h / s).toInt() * s
-            drawRect(c, Offset(x, sy), Size(s, s))
-            if (i % 3 == 0) {
-                drawRect(c, Offset(x - s, sy), Size(s, s)); drawRect(c, Offset(x + s, sy), Size(s, s))
-                drawRect(c, Offset(x, sy - s), Size(s, s)); drawRect(c, Offset(x, sy + s), Size(s, s))
-            }
-        }
-
-        // Embers drifting up out of the dark, fading as they rise.
-        val ember = 2.dp.toPx()
-        repeat(9) { i ->
-            val phase = (drift + i / 9f) % 1f
-            val ey = h * (1.02f - phase * 1.10f)
-            val sway = sin((phase * 3.1f + i) * PI.toFloat() * 2f) * 14.dp.toPx()
-            val ex = w * (0.10f + 0.80f * ((i * 0.371f) % 1f)) + sway
-            val fade = sin(phase * PI.toFloat()).coerceIn(0f, 1f) * 0.55f
-            val col = (if (i % 3 == 0) Px.Magenta else Px.Lavender).copy(alpha = fade)
-            drawRect(col, Offset(ex.roundToInt() / s * s, ey.roundToInt() / s * s), Size(ember, ember))
-        }
-
-        drawRect(
-            Brush.radialGradient(
-                colors = listOf(Color.Transparent, Color(0xFF05010C).copy(alpha = 0.90f)),
-                center = Offset(w * 0.5f, h * 0.42f),
-                radius = h * 0.78f,
-            )
-        )
-    }
-}
-
-/** Chunky dotted divider used under the masthead. */
-@Composable
-private fun DottedRule(modifier: Modifier = Modifier, color: Color = Px.Border) {
-    Canvas(modifier.fillMaxWidth().height(3.dp)) {
-        val s = 5.dp.toPx()
-        var x = 0f
-        while (x < size.width) {
-            drawRect(color, Offset(x, 0f), Size(s / 2f, size.height))
-            x += s
-        }
-    }
-}
 
 @Composable
 fun ScreenTitle(text: String) {
-    Column(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 22.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text,
-                style = TextStyle(
-                    fontFamily = PixelFont,
-                    fontSize = 24.sp,
-                    color = Px.Lavender,
-                    shadow = Shadow(Color(0xFF6E1F5A), Offset(3f, 3f), 0f),
-                ),
-            )
-            Spacer(Modifier.weight(1f))
-        }
-        Spacer(Modifier.height(16.dp))
-        DottedRule()
-        Spacer(Modifier.height(12.dp))
-    }
+    Text(
+        text,
+        modifier = Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 10.dp),
+        style = TextStyle(
+            fontFamily = TitleFont,
+            fontSize = 40.sp,
+            color = Px.Lavender,
+            shadow = Shadow(Color(0xFF6E1F5A), Offset(3f, 3f), 0f),
+        ),
+    )
 }
 
 /** Square plus button, bottom-right, with a hard pixel bevel and a breathing halo. */
@@ -329,9 +215,9 @@ fun EmptyState(
         Text(
             message,
             style = TextStyle(
-                fontFamily = PixelFont,
-                fontSize = 12.sp,
-                lineHeight = 22.sp,
+                fontFamily = PageFont,
+                fontSize = 28.sp,
+                lineHeight = 30.sp,
                 color = Px.Text,
                 shadow = Shadow(Color(0xFF53194A), Offset(2f, 2f), 0f),
             ),
@@ -340,14 +226,15 @@ fun EmptyState(
             Spacer(Modifier.height(14.dp))
             Text(
                 hint,
-                style = TextStyle(fontSize = 13.sp, letterSpacing = 0.4.sp, color = Px.TextDim.copy(alpha = 0.7f)),
+                style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = Px.TextDim.copy(alpha = 0.85f)),
             )
         }
     }
 }
 
+
 // ---------------------------------------------------------------------------------------------
-// Notes
+// Notes: pinned rotting pages
 // ---------------------------------------------------------------------------------------------
 
 @Composable
@@ -359,7 +246,11 @@ fun NotesScreen(
     onDelete: (Long) -> Unit,
 ) {
     var pendingDelete by remember { mutableStateOf<Long?>(null) }
-    Box(Modifier.fillMaxSize()) {
+    val time = rememberRotTime()
+    val pxSize = rememberRotPxSize()
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val scale = maxWidth.value / 360f
+        val pageWidth = maxWidth * (256f / 360f)
         Column(Modifier.fillMaxSize()) {
             ScreenTitle("Notes")
             when {
@@ -367,13 +258,18 @@ fun NotesScreen(
                 notes.isEmpty() -> EmptyState("Your pages await.", hint = "Tap the plus to begin.")
                 else -> LazyColumn(
                     state = listState,
-                    contentPadding = PaddingValues(start = 18.dp, end = 20.dp, top = 4.dp, bottom = 112.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(top = 2.dp, bottom = 112.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    items(notes, key = { it.id }) { note ->
-                        NoteCard(
+                    itemsIndexed(notes, key = { _, n -> n.id }) { index, note ->
+                        NotePage(
                             note = note,
+                            index = index,
+                            pageWidth = pageWidth,
+                            left = (if (index % 2 == 0) 26f else 74f).times(scale).dp,
+                            time = time,
+                            pxSize = pxSize,
                             modifier = Modifier.animateItem(fadeInSpec = tween(220), fadeOutSpec = tween(180)),
                             onLongClick = { pendingDelete = note.id },
                         ) { onOpen(note.id) }
@@ -409,39 +305,46 @@ fun NotesScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NoteCard(
+private fun NotePage(
     note: Note,
+    index: Int,
+    pageWidth: Dp,
+    left: Dp,
+    time: FloatState,
+    pxSize: Float,
     modifier: Modifier = Modifier,
     onLongClick: () -> Unit = {},
     onClick: () -> Unit,
 ) {
     val label = note.title.trim().ifEmpty { "Untitled page" }
-    val accentColor = when ((note.id % 3).toInt()) {
-        0 -> Px.Magenta
-        1 -> Px.Primary
-        else -> Px.Lavender
-    }
-    val accentIcon = when ((note.id % 3).toInt()) {
-        0 -> Icons.Gem
-        1 -> Icons.Rune
-        else -> Icons.Star
+    val snippet = remember(note.content) {
+        note.content.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
     }
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
+    val press by animateFloatAsState(
         targetValue = if (pressed) 0.975f else 1f,
         animationSpec = spring(dampingRatio = 0.6f, stiffness = 1100f),
-        label = "cardPress",
+        label = "pagePress",
     )
-    Row(
+    val px = pxSize.toInt()
+    val density = LocalDensity.current
+    val pinZone = with(density) { (9 * px).toDp() }
+    val shadowPad = with(density) { (PAPER_SHADOW_PX * px).toDp() }
+    val pin = remember { Pix(PIN_W, PIN_H) }
+    val pinOffset = if (index % 2 == 0) -14 else 10
+    val swayPx = with(density) { 3.dp.toPx() }
+    val id = note.id
+
+    Box(
         modifier
-            .fillMaxWidth()
+            .padding(start = left)
+            .width(pageWidth)
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                translationX = sin(time.floatValue * 0.8f + index * 1.3f) * swayPx
+                scaleX = press
+                scaleY = press
             }
-            .height(IntrinsicSize.Min)
-            .pixelCard(fill = Px.Elevated)
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
@@ -449,32 +352,56 @@ private fun NoteCard(
                 onLongClick = onLongClick,
             ),
     ) {
-        Box(Modifier.width(4.dp).fillMaxHeight().background(accentColor))
-        Row(
-            Modifier.weight(1f).padding(start = 14.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        // Paper is drawn under the text, once per size, seeded by the note id.
+        Column(
+            Modifier
+                .padding(top = pinZone)
+                .fillMaxWidth()
+                .drawWithCache {
+                    val paper = Pix(ceil(size.width / px).toInt(), ceil(size.height / px).toInt())
+                    renderPaper(paper, id)
+                    onDrawBehind { drawIntoCanvas { paper.blit(it.nativeCanvas, 0, 0, px) } }
+                }
+                .padding(start = 18.dp, end = 18.dp + shadowPad, top = 22.dp, bottom = 20.dp + shadowPad),
         ) {
-            Box(
-                Modifier
-                    .size(32.dp)
-                    .pixelCard(fill = Px.Surface, border = accentColor.copy(alpha = 0.5f), shadow = false, notch = 2.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                PixelIcon(accentIcon, accentColor, pixel = 2.dp)
-            }
-            Spacer(Modifier.width(14.dp))
             Text(
                 label,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, lineHeight = 20.sp, color = Px.Text),
+                style = TextStyle(fontFamily = PageFont, fontSize = 21.sp, lineHeight = 22.sp, color = Color(0xFF1E0F28)),
             )
+            if (snippet != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    snippet,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, lineHeight = 19.sp, color = Color(0xFF4A3458)),
+                )
+            }
         }
+        // The glowing pin sits above the text. Its head is 2 low-res px below the paper's top edge.
+        Spacer(
+            Modifier
+                .fillMaxWidth()
+                .height(pinZone)
+                .drawBehind {
+                    drawPin(pin, time.floatValue, index)
+                    drawIntoCanvas {
+                        pin.blit(
+                            it.nativeCanvas,
+                            (size.width / 2f).toInt() + (pinOffset - PIN_CX) * px,
+                            (2 + 9 - PIN_CY) * px,
+                            px,
+                        )
+                    }
+                },
+        )
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// Tasks
+// Tasks: purple candles
 // ---------------------------------------------------------------------------------------------
 
 @Composable
@@ -484,20 +411,71 @@ fun TasksScreen(
     onComplete: (Long) -> Unit,
     onAdd: () -> Unit,
 ) {
+    val time = rememberRotTime()
+    val pxSize = rememberRotPxSize()
+    val completing = remember { mutableStateMapOf<Long, Float>() }
+    val fired = remember { HashSet<Long>() }
+    val latestComplete by rememberUpdatedState(onComplete)
+    val scope = rememberCoroutineScope()
+    val candles = remember { CandleRenderer() }
+
+    // Leaving the tab mid-animation must not lose the completion.
+    DisposableEffect(Unit) {
+        onDispose { completing.keys.toList().forEach { if (fired.add(it)) latestComplete(it) } }
+    }
+
+    val begin: (Long) -> Unit = { id ->
+        if (!completing.containsKey(id)) {
+            completing[id] = time.floatValue
+            scope.launch {
+                delay(1200)
+                if (fired.add(id)) latestComplete(id)
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             ScreenTitle("Tasks")
             when {
                 tasks == null -> Unit
                 tasks.isEmpty() -> EmptyState("No quests remain.", hint = "Tap the plus to add one.")
-                else -> LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(start = 18.dp, end = 20.dp, top = 4.dp, bottom = 112.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    items(tasks, key = { it.id }) { task ->
-                        TaskRow(task, Modifier.animateItem(fadeInSpec = tween(200), fadeOutSpec = tween(160))) { onComplete(task.id) }
+                else -> Box(Modifier.fillMaxSize()) {
+                    // Pools of light, ledges and candles live in one layer behind the rows (text never overlaps them).
+                    Canvas(Modifier.fillMaxSize()) {
+                        val t = time.floatValue
+                        val w = ceil(size.width / pxSize).toInt()
+                        val h = ceil(size.height / pxSize).toInt()
+                        if (w <= 0 || h <= 0) return@Canvas
+                        candles.begin(w, h)
+                        val info0 = listState.layoutInfo
+                        val items = info0.visibleItemsInfo
+                        // Item offsets are measured from the content start; shift by the top padding to get canvas y.
+                        val pad = -info0.viewportStartOffset
+                        for (i in 0 until items.size) {
+                            val info = items[i]
+                            val id = info.key as? Long ?: continue
+                            val ly = ((info.offset + pad + info.size) / pxSize).roundToInt() - 4
+                            val start = completing[id]
+                            candles.row(id, ly, w, t, if (start == null) -1f else t - start)
+                        }
+                        drawIntoCanvas { candles.pix.blit(it.nativeCanvas, 0, 0, pxSize.toInt()) }
+                    }
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(top = 22.dp, bottom = 112.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        items(tasks, key = { it.id }) { task ->
+                            TaskRow(
+                                task = task,
+                                completing = completing,
+                                time = time,
+                                modifier = Modifier.animateItem(placementSpec = null, fadeInSpec = tween(200), fadeOutSpec = tween(160)),
+                                onTap = { begin(task.id) },
+                            )
+                        }
                     }
                 }
             }
@@ -507,37 +485,48 @@ fun TasksScreen(
 }
 
 @Composable
-private fun TaskRow(task: Task, modifier: Modifier = Modifier, onDone: () -> Unit) {
+private fun TaskRow(
+    task: Task,
+    completing: Map<Long, Float>,
+    time: FloatState,
+    modifier: Modifier = Modifier,
+    onTap: () -> Unit,
+) {
     val haptics = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val id = task.id
     Row(
         modifier
             .fillMaxWidth()
-            .pixelCard(fill = Px.Elevated, shadow = false)
-            .padding(end = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .graphicsLayer {
+                val start = completing[id]
+                alpha = if (start == null) 1f else rotRowFade(time.floatValue - start)
+            }
+            .heightIn(min = 54.dp)
+            .height(IntrinsicSize.Min),
     ) {
-        // 56dp touch target around the 24dp pixel checkbox.
+        // Tap target over the candle.
         Box(
             Modifier
-                .size(56.dp)
+                .width(70.dp)
+                .fillMaxHeight()
                 .clickable(
-                    interactionSource = MutableInteractionSource(),
+                    interactionSource = interaction,
                     indication = null,
                     role = Role.Checkbox,
                     onClickLabel = "Complete and remove task",
                     onClick = {
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onDone()
+                        if (!completing.containsKey(id)) {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onTap()
+                        }
                     },
                 ),
-            contentAlignment = Alignment.Center,
-        ) {
-            PixelArt(Icons.Ring, mapOf('X' to Px.Primary, 'o' to Px.Surface), pixel = 3.dp)
-        }
+        )
         Text(
             task.text,
-            modifier = Modifier.weight(1f).padding(vertical = 16.dp).padding(end = 4.dp),
-            style = TextStyle(fontSize = 16.sp, lineHeight = 23.sp, color = Px.Text),
+            modifier = Modifier.weight(1f).padding(top = 12.dp, bottom = 16.dp, end = 18.dp),
+            style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 24.sp, color = Px.Text),
         )
     }
 }
@@ -638,3 +627,4 @@ private fun NavTab(
         )
     }
 }
+

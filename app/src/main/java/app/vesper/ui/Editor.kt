@@ -121,7 +121,7 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit) {
             onValueChange = vm::onTitle,
             enabled = vm.loaded,
             singleLine = true,
-            textStyle = TextStyle(fontFamily = PixelFont, fontSize = 15.sp, lineHeight = 22.sp, color = Px.Text),
+            textStyle = TextStyle(fontFamily = PageFont, fontSize = 26.sp, lineHeight = 28.sp, color = Px.Text),
             cursorBrush = SolidColor(Px.Lavender),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Next),
             keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
@@ -129,7 +129,7 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit) {
             decorationBox = { inner ->
                 Box {
                     if (vm.title.isEmpty()) {
-                        Text("Title", style = TextStyle(fontFamily = PixelFont, fontSize = 15.sp, lineHeight = 22.sp, color = Px.TextDim.copy(alpha = 0.5f)))
+                        Text("Title", style = TextStyle(fontFamily = PageFont, fontSize = 26.sp, lineHeight = 28.sp, color = Px.TextDim.copy(alpha = 0.5f)))
                     }
                     inner()
                 }
@@ -147,14 +147,14 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit) {
                     value = vm.content,
                     onValueChange = vm::onContent,
                     enabled = vm.loaded,
-                    textStyle = TextStyle(fontSize = 17.sp, lineHeight = 26.sp, color = Px.Text),
+                    textStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.Text),
                     cursorBrush = SolidColor(Px.Lavender),
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     modifier = Modifier.fillMaxWidth().heightIn(min = minH).padding(horizontal = 20.dp, vertical = 14.dp),
                     decorationBox = { inner ->
                         Box {
                             if (vm.content.isEmpty()) {
-                                Text("Write somethingâ€¦", style = TextStyle(fontSize = 17.sp, lineHeight = 26.sp, color = Px.TextDim.copy(alpha = 0.5f)))
+                                Text("Write somethingâ€¦", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.TextDim.copy(alpha = 0.5f)))
                             }
                             inner()
                         }

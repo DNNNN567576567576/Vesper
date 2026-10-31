@@ -47,6 +47,12 @@ object Px {
 
 val PixelFont = FontFamily(Font(R.font.pressstart2p))
 
+/** Screen titles on Notes and Tasks. */
+val TitleFont = FontFamily(Font(R.font.jacquard24))
+
+/** Note pages and task text. */
+val PageFont = FontFamily(Font(R.font.vt323))
+
 @Composable
 fun PixelTheme(content: @Composable () -> Unit) {
     val scheme = darkColorScheme(

@@ -46,11 +46,12 @@ import app.vesper.ui.BrainCamera
 import app.vesper.ui.BrainScreen
 import app.vesper.ui.NoteEditorScreen
 import app.vesper.ui.NotesScreen
-import app.vesper.ui.PixelBackdrop
 import app.vesper.ui.PixelNavBar
 import app.vesper.ui.PixelTheme
 import app.vesper.ui.Px
 import app.vesper.ui.TasksScreen
+import app.vesper.ui.WallBackdrop
+import app.vesper.ui.WallKind
 import kotlinx.coroutines.launch
 
 /** Launcher shortcut actions (see res/xml/shortcuts.xml). */
@@ -125,7 +126,15 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
     }
 
     Box(Modifier.fillMaxSize().background(Px.Bg)) {
-        PixelBackdrop()
+        // Notes and the editor share the rotting wall, Tasks gets the candle crypt, Brain draws its own opaque map.
+        WallBackdrop(
+            when {
+                editorTarget != NO_EDITOR -> WallKind.Notes
+                tab == 0 -> WallKind.Notes
+                tab == 1 -> WallKind.Candle
+                else -> WallKind.None
+            }
+        )
 
         // The editor slides in over the list, like turning to a fresh page.
         AnimatedContent(
