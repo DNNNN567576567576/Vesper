@@ -117,9 +117,45 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
-@Database(entities = [Note::class, Task::class, Lobe::class, Idea::class], version = 2, exportSchema = true)
+/** One entry in the Shrine feed: optional text, optional photo. [imagePath] is a file name inside `filesDir/shrine`. */
+@Entity(tableName = "posts")
+data class Post(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val text: String? = null,
+    val imagePath: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val editedAt: Long? = null,
+)
+
+@Dao
+interface PostDao {
+    @Query("SELECT * FROM posts ORDER BY createdAt ASC, id ASC")
+    fun observeAll(): Flow<List<Post>>
+
+    @Query("SELECT * FROM posts WHERE id = :id")
+    suspend fun get(id: Long): Post?
+
+    @Insert
+    suspend fun insert(post: Post): Long
+
+    @Update
+    suspend fun update(post: Post)
+
+    @Query("DELETE FROM posts WHERE id = :id")
+    suspend fun delete(id: Long)
+}
+
+/** v2 -> v3: adds the Shrine table. Notes, tasks and Brain tables are not touched. */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `posts` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `text` TEXT, `imagePath` TEXT, `createdAt` INTEGER NOT NULL, `editedAt` INTEGER)")
+    }
+}
+
+@Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class], version = 3, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun taskDao(): TaskDao
     abstract fun brainDao(): BrainDao
+    abstract fun postDao(): PostDao
 }

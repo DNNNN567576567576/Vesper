@@ -5,10 +5,10 @@ Fully offline: no accounts, no network, no analytics, no ads.
 
 ## Rules this app must never break
 
-- Exactly three tabs: **Notes** (default), **Tasks** and **Brain** (a map of thoughts: a main brain, user-made lobes, ideas that can link to notes; lobes connect only through the main brain).
-- A task has no completed state. Tapping its ring **deletes it permanently** — no undo, no archive, no history.
+- Exactly four tabs: **Notes** (default), **Tasks**, **Brain** (a map of thoughts: a main brain, user-made lobes, ideas that can link to notes; lobes connect only through the main brain) and **Shrine** (a private Telegram-style feed of text and photos on burned paper; photos live in `filesDir/shrine`).
+- A task has no completed state. Tapping its candle **deletes it permanently** — no undo, no archive, no history.
 - Notes delete permanently after a confirmation. Long-press a note card in the list to delete it without opening it.
-- Never add timestamps, tags, categories, search, or rich text to the UI. (Brain lobes are the one exception to "no folders".)
+- Never add timestamps, tags, categories, search, or rich text to the UI. (Brain lobes are the one exception to "no folders"; Shrine posts are the one place that shows a date and time.)
 - Note bodies autosave on a 500 ms debounce; empty notes are never written to the database.
 
 ## Layout
@@ -16,13 +16,14 @@ Fully offline: no accounts, no network, no analytics, no ads.
 ```
 app/src/main/java/app/vesper/
 ├── MainActivity.kt        app shell, tab + editor navigation, launcher shortcuts
-├── ViewModels.kt          Notes / Tasks / NoteEditor (autosave, permanent delete)
+├── ViewModels.kt          Notes / Tasks / NoteEditor (autosave, permanent delete) / Brain / Shrine
 ├── NotebookApp.kt         application, database singleton, error log
-├── data/Database.kt       Room entities, DAOs, AppDatabase (v2 adds lobes + ideas, MIGRATION_1_2)
+├── data/Database.kt       Room entities, DAOs, AppDatabase (v2 adds lobes + ideas, v3 adds Shrine posts; MIGRATION_1_2, MIGRATION_2_3)
 └── ui/
     ├── Pixel.kt           palette, pixel shape/panel, hand-drawn pixel icon grids
     ├── Screens.kt         backdrop, masthead, list screens, nav bar, dialogs
     ├── Brain.kt           Brain tab: pixel-brain canvas, resume sheet, idea dialogs
+    ├── Shrine.kt          Shrine tab: feed, burned-paper posts, composer, photo viewer
     └── Editor.kt          distraction-free editor, add-task dialog
 ```
 

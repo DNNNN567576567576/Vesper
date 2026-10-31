@@ -562,6 +562,16 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
                 onClick = { onSelect(2) },
                 modifier = Modifier.weight(1f),
             )
+            NavTab(
+                icon = 0,
+                grid = ShrineNavGrid,
+                activePalette = ShrineNavActive,
+                inactivePalette = ShrineNavInactive,
+                label = "Shrine",
+                active = selected == 3,
+                onClick = { onSelect(3) },
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -574,6 +584,8 @@ private fun NavTab(
     onClick: () -> Unit,
     modifier: Modifier,
     grid: List<String>? = null,
+    activePalette: Map<Char, Color>? = null,
+    inactivePalette: Map<Char, Color>? = null,
 ) {
     val navScale by animateFloatAsState(
         targetValue = if (active) 1f else 0f,
@@ -590,12 +602,16 @@ private fun NavTab(
         if (grid != null) {
             Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
                 PixelArt(
-                    grid, mapOf('X' to Px.Magenta, 'o' to Px.Lavender), 3.dp,
+                    grid,
+                    if (activePalette != null && inactivePalette != null) {
+                        if (active) activePalette else inactivePalette
+                    } else mapOf('X' to Px.Magenta, 'o' to Px.Lavender),
+                    if (activePalette != null) 2.dp else 3.dp,
                     Modifier.graphicsLayer {
                         val k = 0.84f + 0.16f * navScale
                         scaleX = k
                         scaleY = k
-                        alpha = if (active) 1f else 0.38f
+                        alpha = if (active || activePalette != null) 1f else 0.38f
                     },
                 )
             }

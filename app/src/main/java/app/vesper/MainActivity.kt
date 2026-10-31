@@ -48,6 +48,7 @@ import app.vesper.ui.NoteEditorScreen
 import app.vesper.ui.NotesScreen
 import app.vesper.ui.PixelNavBar
 import app.vesper.ui.PixelTheme
+import app.vesper.ui.ShrineScreen
 import app.vesper.ui.Px
 import app.vesper.ui.TasksScreen
 import app.vesper.ui.WallBackdrop
@@ -89,7 +90,7 @@ private const val NEW_NOTE = -1L
 
 @Composable
 private fun App(request: String?, onRequestHandled: () -> Unit) {
-    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Notes (default), 1 = Tasks, 2 = Brain
+    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Notes (default), 1 = Tasks, 2 = Brain, 3 = Shrine
     var selectedLobe by rememberSaveable { mutableLongStateOf(-1L) }
     val brainCamera = remember { BrainCamera() }
     var editorTarget by rememberSaveable { mutableLongStateOf(NO_EDITOR) }
@@ -99,6 +100,8 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
     val notesVm: NotesViewModel = viewModel()
     val tasksVm: TasksViewModel = viewModel()
     val brainVm: BrainViewModel = viewModel()
+    val shrineVm: ShrineViewModel = viewModel()
+    val posts by shrineVm.posts.collectAsStateWithLifecycle()
     val lobes by brainVm.lobes.collectAsStateWithLifecycle()
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
     val notes by notesVm.notes.collectAsStateWithLifecycle()
@@ -107,6 +110,7 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
     // Hoisted so each tab keeps its scroll position while the other tab (or the editor) is shown.
     val notesListState = rememberLazyListState()
     val tasksListState = rememberLazyListState()
+    val shrineListState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(request) {
@@ -125,8 +129,8 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Px.Bg)) {
-        // Notes and the editor share the rotting wall, Tasks gets the candle crypt, Brain draws its own opaque map.
+    Box(Modifier.fillMaxSize().background(if (tab == 3 && editorTarget == NO_EDITOR) Color(0xFF08040C) else Px.Bg)) {
+        // Notes and the editor share the rotting wall, Tasks gets the candle crypt, Brain and Shrine draw their own opaque backdrops.
         WallBackdrop(
             when {
                 editorTarget != NO_EDITOR -> WallKind.Notes
@@ -175,6 +179,7 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
                                     when (index) {
                                         0 -> notesListState.animateScrollToItem(0)
                                         1 -> tasksListState.animateScrollToItem(0)
+                                        3 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
                                         else -> { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
                                     }
                                 }
@@ -200,6 +205,19 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
                                     listState = tasksListState,
                                     onComplete = tasksVm::complete,
                                     onAdd = { addingTask = true },
+                                )
+                            } else if (current == 3) {
+                                ShrineScreen(
+                                    posts = posts,
+                                    listState = shrineListState,
+                                    draft = shrineVm.draft,
+                                    draftPhoto = shrineVm.draftPhoto,
+                                    sending = shrineVm.sending,
+                                    onDraft = { shrineVm.draft = it },
+                                    onDraftPhoto = { shrineVm.draftPhoto = it },
+                                    onSend = shrineVm::send,
+                                    onEdit = shrineVm::edit,
+                                    onDelete = shrineVm::delete,
                                 )
                             } else {
                                 BrainScreen(
