@@ -23,8 +23,7 @@ app/src/main/java/app/vesper/
     ├── Pixel.kt           palette, pixel shape/panel, hand-drawn pixel icon grids
     ├── Screens.kt         backdrop, masthead, list screens, nav bar, dialogs
     ├── Brain.kt           Brain tab: pixel-brain canvas, resume sheet, idea dialogs
-    ├── Editor.kt          distraction-free editor, add-task dialog
-    └── MascotSprite.kt    generated mascot grid (see tools/gen-mascot.ps1)
+    └── Editor.kt          distraction-free editor, add-task dialog
 ```
 
 ## Build
