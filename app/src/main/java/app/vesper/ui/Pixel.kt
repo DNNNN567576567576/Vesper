@@ -140,6 +140,19 @@ fun PixelIcon(grid: List<String>, tint: Color, pixel: Dp = 3.dp, modifier: Modif
     PixelArt(grid, mapOf('X' to tint), pixel, modifier)
 
 object Icons {
+    /** Tab icon: X = flesh, o = highlight. */
+    val Brain = listOf(
+        "...oooooo...",
+        "..oXXoXXXo..",
+        ".oXXoXXoXXo.",
+        ".XXoXXXXoXX.",
+        ".XoXXoXXXoX.",
+        ".XXoXXoXXXX.",
+        "..XXoXXXoX..",
+        "...XXXXXX...",
+        ".....XX.....",
+        ".....XX.....",
+    )
     val Grimoire = listOf(
         "..BBBBBBBBBB..",
         ".BHHHHHHHHHHB.",

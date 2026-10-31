@@ -5,10 +5,10 @@ Fully offline: no accounts, no network, no analytics, no ads.
 
 ## Rules this app must never break
 
-- Exactly two tabs: **Notes** (default) and **Tasks**.
+- Exactly three tabs: **Notes** (default), **Tasks** and **Brain** (a map of thoughts: a main brain, user-made lobes, ideas that can link to notes; lobes connect only through the main brain).
 - A task has no completed state. Tapping its ring **deletes it permanently** — no undo, no archive, no history.
 - Notes delete permanently after a confirmation. Long-press a note card in the list to delete it without opening it.
-- Never add timestamps, tags, folders, categories, search, or rich text to the UI.
+- Never add timestamps, tags, categories, search, or rich text to the UI. (Brain lobes are the one exception to "no folders".)
 - Note bodies autosave on a 500 ms debounce; empty notes are never written to the database.
 
 ## Layout
@@ -18,10 +18,11 @@ app/src/main/java/app/vesper/
 ├── MainActivity.kt        app shell, tab + editor navigation, launcher shortcuts
 ├── ViewModels.kt          Notes / Tasks / NoteEditor (autosave, permanent delete)
 ├── NotebookApp.kt         application, database singleton, error log
-├── data/Database.kt       Room entities, DAOs, AppDatabase
+├── data/Database.kt       Room entities, DAOs, AppDatabase (v2 adds lobes + ideas, MIGRATION_1_2)
 └── ui/
     ├── Pixel.kt           palette, pixel shape/panel, hand-drawn pixel icon grids
     ├── Screens.kt         backdrop, masthead, list screens, nav bar, dialogs
+    ├── Brain.kt           Brain tab: pixel-brain canvas, resume sheet, idea dialogs
     ├── Editor.kt          distraction-free editor, add-task dialog
     └── MascotSprite.kt    generated mascot grid (see tools/gen-mascot.ps1)
 ```

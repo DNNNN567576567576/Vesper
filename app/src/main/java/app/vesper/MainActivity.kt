@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -41,6 +42,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.vesper.ui.AddTaskDialog
+import app.vesper.ui.BrainCamera
+import app.vesper.ui.BrainScreen
 import app.vesper.ui.NoteEditorScreen
 import app.vesper.ui.NotesScreen
 import app.vesper.ui.PixelBackdrop
@@ -85,13 +88,18 @@ private const val NEW_NOTE = -1L
 
 @Composable
 private fun App(request: String?, onRequestHandled: () -> Unit) {
-    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Notes (default), 1 = Tasks
+    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Notes (default), 1 = Tasks, 2 = Brain
+    var selectedLobe by rememberSaveable { mutableLongStateOf(-1L) }
+    val brainCamera = remember { BrainCamera() }
     var editorTarget by rememberSaveable { mutableLongStateOf(NO_EDITOR) }
     var editorSession by rememberSaveable { mutableIntStateOf(0) }
     var addingTask by rememberSaveable { mutableStateOf(false) }
 
     val notesVm: NotesViewModel = viewModel()
     val tasksVm: TasksViewModel = viewModel()
+    val brainVm: BrainViewModel = viewModel()
+    val lobes by brainVm.lobes.collectAsStateWithLifecycle()
+    val ideas by brainVm.ideas.collectAsStateWithLifecycle()
     val notes by notesVm.notes.collectAsStateWithLifecycle()
     val tasks by tasksVm.tasks.collectAsStateWithLifecycle()
 
@@ -155,8 +163,11 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
                             if (index == tab) {
                                 // Re-tapping the active tab jumps back to the top.
                                 scope.launch {
-                                    if (index == 0) notesListState.animateScrollToItem(0)
-                                    else tasksListState.animateScrollToItem(0)
+                                    when (index) {
+                                        0 -> notesListState.animateScrollToItem(0)
+                                        1 -> tasksListState.animateScrollToItem(0)
+                                        else -> { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
+                                    }
                                 }
                             } else {
                                 tab = index
@@ -174,12 +185,26 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
                                     onNew = { editorSession++; editorTarget = NEW_NOTE },
                                     onDelete = notesVm::delete,
                                 )
-                            } else {
+                            } else if (current == 1) {
                                 TasksScreen(
                                     tasks = tasks,
                                     listState = tasksListState,
                                     onComplete = tasksVm::complete,
                                     onAdd = { addingTask = true },
+                                )
+                            } else {
+                                BrainScreen(
+                                    lobes = lobes,
+                                    ideas = ideas,
+                                    notes = notes,
+                                    camera = brainCamera,
+                                    selectedLobe = selectedLobe,
+                                    onSelectLobe = { selectedLobe = it },
+                                    onAddLobe = { name -> brainVm.addLobe(name) { selectedLobe = it } },
+                                    onDeleteLobe = brainVm::deleteLobe,
+                                    onSaveIdea = brainVm::saveIdea,
+                                    onDeleteIdea = brainVm::deleteIdea,
+                                    onOpenNote = { id -> editorSession++; editorTarget = id },
                                 )
                             }
                         }

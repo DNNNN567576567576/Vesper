@@ -150,3 +150,50 @@ class NoteEditorViewModel(app: Application, noteId: Long?) : AndroidViewModel(ap
         if (!deleted) notebook.appScope.launch { persist() }
     }
 }
+
+/** Lobes and ideas for the Brain tab. `null` = first database emission has not arrived yet. */
+class BrainViewModel(app: Application) : AndroidViewModel(app) {
+    private val dao get() = notebook.db.brainDao()
+
+    val lobes: StateFlow<List<app.vesper.data.Lobe>?> = dao.observeLobes()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val ideas: StateFlow<List<app.vesper.data.Idea>?> = dao.observeIdeas()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun addLobe(name: String, onAdded: (Long) -> Unit) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        notebook.appScope.launch {
+            try {
+                val existing = lobes.value.orEmpty()
+                val slot = generateSequence(0) { it + 1 }.first { s -> existing.none { it.slot == s } }
+                val id = dao.insertLobe(app.vesper.data.Lobe(name = clean, colorIndex = slot, slot = slot))
+                launch(kotlinx.coroutines.Dispatchers.Main) { onAdded(id) }
+            } catch (e: Exception) { notebook.reportError("add lobe", e) }
+        }
+    }
+
+    /** Permanent, and takes the lobe's ideas with it. The caller confirms first. */
+    fun deleteLobe(id: Long) {
+        notebook.appScope.launch {
+            try { dao.deleteLobe(id) } catch (e: Exception) { notebook.reportError("delete lobe", e) }
+        }
+    }
+
+    /** [idea].id == 0 inserts a new idea, otherwise updates it. */
+    fun saveIdea(idea: app.vesper.data.Idea) {
+        val clean = idea.copy(title = idea.title.trim(), body = idea.body.trim(), updatedAt = System.currentTimeMillis())
+        if (clean.title.isEmpty() && clean.body.isEmpty()) return
+        notebook.appScope.launch {
+            try {
+                if (clean.id == 0L) dao.insertIdea(clean) else dao.updateIdea(clean)
+            } catch (e: Exception) { notebook.reportError("save idea", e) }
+        }
+    }
+
+    fun deleteIdea(id: Long) {
+        notebook.appScope.launch {
+            try { dao.deleteIdea(id) } catch (e: Exception) { notebook.reportError("delete idea", e) }
+        }
+    }
+}

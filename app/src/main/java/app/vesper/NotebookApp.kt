@@ -5,6 +5,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.room.Room
 import app.vesper.data.AppDatabase
+import app.vesper.data.MIGRATION_1_2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -12,7 +13,9 @@ import kotlinx.coroutines.launch
 
 class NotebookApp : Application() {
     val db: AppDatabase by lazy {
-        Room.databaseBuilder(this, AppDatabase::class.java, "pixel-notebook.db").build()
+        Room.databaseBuilder(this, AppDatabase::class.java, "pixel-notebook.db")
+            .addMigrations(MIGRATION_1_2)
+            .build()
     }
 
     /**

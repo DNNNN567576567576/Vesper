@@ -565,6 +565,14 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
                 onClick = { onSelect(1) },
                 modifier = Modifier.weight(1f),
             )
+            NavTab(
+                icon = 0,
+                grid = Icons.Brain,
+                label = "Brain",
+                active = selected == 2,
+                onClick = { onSelect(2) },
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -576,6 +584,7 @@ private fun NavTab(
     active: Boolean,
     onClick: () -> Unit,
     modifier: Modifier,
+    grid: List<String>? = null,
 ) {
     val navScale by animateFloatAsState(
         targetValue = if (active) 1f else 0f,
@@ -589,6 +598,19 @@ private fun NavTab(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        if (grid != null) {
+            Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+                PixelArt(
+                    grid, mapOf('X' to Px.Magenta, 'o' to Px.Lavender), 3.dp,
+                    Modifier.graphicsLayer {
+                        val k = 0.84f + 0.16f * navScale
+                        scaleX = k
+                        scaleY = k
+                        alpha = if (active) 1f else 0.38f
+                    },
+                )
+            }
+        } else {
         Image(
             bitmap = ImageBitmap.imageResource(icon),
             contentDescription = null,
@@ -602,6 +624,7 @@ private fun NavTab(
                 },
             filterQuality = FilterQuality.None,
         )
+        }
         Text(
             label,
             modifier = Modifier.padding(top = 5.dp),
