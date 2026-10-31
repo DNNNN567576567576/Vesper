@@ -180,16 +180,6 @@ object Icons {
         "....XX.",
         ".....XX",
     )
-    val Trash = listOf(
-        "..XXXX..",
-        "XXXXXXXX",
-        ".X.XX.X.",
-        ".X.XX.X.",
-        ".X.XX.X.",
-        ".X.XX.X.",
-        ".XXXXXX.",
-        "........",
-    )
     val Star = listOf(
         "...X...",
         "...X...",

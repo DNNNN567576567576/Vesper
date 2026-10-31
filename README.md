@@ -7,7 +7,7 @@ Fully offline: no accounts, no network, no analytics, no ads.
 
 - Exactly five tabs: **Notes** (default), **Tasks**, **Brain** (a map of thoughts: a main brain, user-made lobes, ideas that can link to notes; lobes connect only through the main brain), **Shrine** (a private Telegram-style feed of text and photos on burned paper; photos live in `filesDir/shrine`) and **Moons** (a month calendar where each day shows its real moon phase, the Brain lobes in focus that day, and a list of plans; plans can be checked off, edited or deleted).
 - A task has no completed state. Tapping its candle **deletes it permanently** — no undo, no archive, no history.
-- Notes delete permanently after a confirmation. Long-press a note card in the list to delete it without opening it.
+- Notes delete permanently after a confirmation. Swipe a page left (or long-press it) in the list to delete it without opening it; the confirmation appears before it burns away.
 - Never add timestamps, tags, categories, search, or rich text to the UI. (Brain lobes are the one exception to "no folders"; Shrine posts show a date and time, and Moons is a calendar of dates, so dates there are allowed too.)
 - Note bodies autosave on a 500 ms debounce; empty notes are never written to the database.
 

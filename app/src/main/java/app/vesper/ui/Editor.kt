@@ -62,7 +62,6 @@ import app.vesper.NoteEditorViewModel
 fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit) {
     val focusManager = LocalFocusManager.current
     val titleFocus = remember { FocusRequester() }
-    var confirmDelete by remember { mutableStateOf(false) }
     val closeNow by rememberUpdatedState(onClose)
 
     fun leave() {
@@ -104,16 +103,6 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit) {
                     .semantics { contentDescription = "Back" },
                 contentAlignment = Alignment.Center,
             ) { PixelIcon(Icons.Back, Px.Lavender, pixel = 3.dp) }
-            Spacer(Modifier.weight(1f))
-            if (vm.exists) {
-                Box(
-                    Modifier
-                        .size(48.dp)
-                        .clickable(role = Role.Button, onClickLabel = "Delete note") { confirmDelete = true }
-                        .semantics { contentDescription = "Delete note" },
-                    contentAlignment = Alignment.Center,
-                ) { PixelIcon(Icons.Trash, Px.TextDim, pixel = 3.dp) }
-            }
         }
 
         BasicTextField(
@@ -160,24 +149,6 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit) {
                         }
                     },
                 )
-            }
-        }
-    }
-
-    if (confirmDelete) {
-        PixelDialog(onDismiss = { confirmDelete = false }) {
-            Text("Delete this page?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, lineHeight = 18.sp, color = Px.Text))
-            Spacer(Modifier.height(8.dp))
-            Text("It will be gone for good.", style = TextStyle(fontSize = 14.sp, color = Px.TextDim))
-            Spacer(Modifier.height(20.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("KEEP", { confirmDelete = false })
-                PixelButton("DELETE", {
-                    confirmDelete = false
-                    vm.delete()
-                    focusManager.clearFocus()
-                    closeNow()
-                }, primary = true)
             }
         }
     }
