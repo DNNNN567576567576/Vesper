@@ -44,6 +44,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import app.vesper.ui.AddTaskDialog
 import app.vesper.ui.BrainCamera
 import app.vesper.ui.BrainScreen
+import app.vesper.ui.MoonsScreen
 import app.vesper.ui.NoteEditorScreen
 import app.vesper.ui.NotesScreen
 import app.vesper.ui.PixelNavBar
@@ -90,7 +91,7 @@ private const val NEW_NOTE = -1L
 
 @Composable
 private fun App(request: String?, onRequestHandled: () -> Unit) {
-    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Notes (default), 1 = Tasks, 2 = Brain, 3 = Shrine
+    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Notes (default), 1 = Tasks, 2 = Brain, 3 = Shrine, 4 = Moons
     var selectedLobe by rememberSaveable { mutableLongStateOf(-1L) }
     val brainCamera = remember { BrainCamera() }
     var editorTarget by rememberSaveable { mutableLongStateOf(NO_EDITOR) }
@@ -101,6 +102,10 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
     val tasksVm: TasksViewModel = viewModel()
     val brainVm: BrainViewModel = viewModel()
     val shrineVm: ShrineViewModel = viewModel()
+    val moonsVm: MoonsViewModel = viewModel()
+    val plans by moonsVm.plans.collectAsStateWithLifecycle()
+    val focus by moonsVm.focus.collectAsStateWithLifecycle()
+    val moonsReset = remember { mutableIntStateOf(0) }
     val posts by shrineVm.posts.collectAsStateWithLifecycle()
     val lobes by brainVm.lobes.collectAsStateWithLifecycle()
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
@@ -129,14 +134,14 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(if (tab == 3 && editorTarget == NO_EDITOR) Color(0xFF08040C) else Px.Bg)) {
-        // Notes and the editor share the rotting wall, Tasks gets the candle crypt, Brain and Shrine draw their own opaque backdrops.
+    Box(Modifier.fillMaxSize().background(if (editorTarget != NO_EDITOR) Px.Bg else if (tab == 3) Color(0xFF08040C) else if (tab == 4) Color(0xFF06030C) else Px.Bg)) {
+        // Notes and the editor share the rotting wall, Tasks gets the candle crypt, Brain, Shrine and Moons draw their own opaque backdrops.
         WallBackdrop(
             when {
                 editorTarget != NO_EDITOR -> WallKind.Notes
                 tab == 0 -> WallKind.Notes
                 tab == 1 -> WallKind.Candle
-                else -> WallKind.None
+                else -> WallKind.None // Brain, Shrine and Moons draw their own backdrops
             }
         )
 
@@ -180,6 +185,7 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
                                         0 -> notesListState.animateScrollToItem(0)
                                         1 -> tasksListState.animateScrollToItem(0)
                                         3 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
+                                        4 -> moonsReset.intValue++ // jump back to today
                                         else -> { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
                                     }
                                 }
@@ -218,6 +224,20 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
                                     onSend = shrineVm::send,
                                     onEdit = shrineVm::edit,
                                     onDelete = shrineVm::delete,
+                                )
+                            } else if (current == 4) {
+                                MoonsScreen(
+                                    plans = plans,
+                                    focus = focus,
+                                    lobes = lobes,
+                                    resetSignal = moonsReset.intValue,
+                                    draft = moonsVm.draft,
+                                    onDraft = { moonsVm.draft = it },
+                                    onAddPlan = moonsVm::addPlan,
+                                    onSetDone = moonsVm::setDone,
+                                    onEditPlan = moonsVm::editPlan,
+                                    onDeletePlan = moonsVm::deletePlan,
+                                    onToggleFocus = moonsVm::toggleFocus,
                                 )
                             } else {
                                 BrainScreen(

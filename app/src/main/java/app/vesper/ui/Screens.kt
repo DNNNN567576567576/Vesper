@@ -572,6 +572,16 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
                 onClick = { onSelect(3) },
                 modifier = Modifier.weight(1f),
             )
+            NavTab(
+                icon = 0,
+                grid = MoonsNavGrid,
+                activePalette = MoonsNavActive,
+                inactivePalette = MoonsNavInactive,
+                label = "Moons",
+                active = selected == 4,
+                onClick = { onSelect(4) },
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -635,7 +645,7 @@ private fun NavTab(
             modifier = Modifier.padding(top = 5.dp),
             style = TextStyle(
                 fontFamily = PixelFont,
-                fontSize = 9.sp,
+                fontSize = 8.sp,
                 letterSpacing = 0.5.sp,
                 color = if (active) Px.Lavender else Px.TextDim.copy(alpha = 0.8f),
                 fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,

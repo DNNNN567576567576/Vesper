@@ -7,6 +7,7 @@ import androidx.room.Room
 import app.vesper.data.AppDatabase
 import app.vesper.data.MIGRATION_1_2
 import app.vesper.data.MIGRATION_2_3
+import app.vesper.data.MIGRATION_3_4
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,7 +19,7 @@ import java.io.File
 class NotebookApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        // One-time safety net before the v2 -> v3 migration: runs before the lazy [db] is ever opened.
+        // One-time safety net before the v3 -> v4 migration: runs before the lazy [db] is ever opened.
         backupRawDatabaseOnce()
         // Once the DB is open (and migrated), also dump the user's data as readable JSON.
         appScope.launch { exportJsonOnce() }
@@ -26,7 +27,7 @@ class NotebookApp : Application() {
 
     val db: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, DB_NAME)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
     }
 
@@ -43,11 +44,11 @@ class NotebookApp : Application() {
         }
     }
 
-    // ---- One-time safety net (added with DB v3). Failures are logged and never block the app. ----
+    // ---- One-time safety net (added with DB v3, re-armed for v4: folder backup-pre-v4). Failures are logged and never block the app. ----
 
-    private fun backupDir(): File? = getExternalFilesDir(null)?.let { File(it, "backup-pre-v3") }
+    private fun backupDir(): File? = getExternalFilesDir(null)?.let { File(it, "backup-pre-v4") }
 
-    /** Copies pixel-notebook.db (+ -wal / -shm) to external files `backup-pre-v3/`; writes DONE last. */
+    /** Copies pixel-notebook.db (+ -wal / -shm) to external files `backup-pre-v4/`; writes DONE last. */
     private fun backupRawDatabaseOnce() {
         try {
             val dir = backupDir() ?: return
@@ -62,11 +63,11 @@ class NotebookApp : Application() {
             }
             done.writeText("ok")
         } catch (e: Throwable) {
-            Log.e("Vesper", "pre-v3 backup failed", e)
+            Log.e("Vesper", "pre-v4 backup failed", e)
         }
     }
 
-    /** Writes `backup-pre-v3/export.json` (notes, tasks, lobes, ideas, all columns) if it is not there yet. */
+    /** Writes `backup-pre-v4/export.json` (notes, tasks, lobes, ideas, posts; all columns) if it is not there yet. */
     private fun exportJsonOnce() {
         try {
             val dir = backupDir() ?: return
@@ -75,7 +76,7 @@ class NotebookApp : Application() {
             dir.mkdirs()
             val sdb = db.openHelper.readableDatabase
             val root = JSONObject()
-            for (table in listOf("notes", "tasks", "lobes", "ideas")) {
+            for (table in listOf("notes", "tasks", "lobes", "ideas", "posts")) {
                 val rows = JSONArray()
                 sdb.query("SELECT * FROM $table").use { c ->
                     while (c.moveToNext()) {

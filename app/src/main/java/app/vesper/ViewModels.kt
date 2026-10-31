@@ -273,6 +273,59 @@ class ShrineViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
+/** Plans and per-day Brain focus for the Moons tab. Days are `LocalDate.toEpochDay()`. `null` = first emission pending. */
+class MoonsViewModel(app: Application) : AndroidViewModel(app) {
+    private val dao get() = notebook.db.moonsDao()
+
+    val plans: StateFlow<List<app.vesper.data.Plan>?> = dao.observeAllPlans()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val focus: StateFlow<List<app.vesper.data.DayFocus>?> = dao.observeFocus()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    // The composer draft lives here so it survives rotation.
+    var draft by mutableStateOf("")
+
+    fun addPlan(day: Long) {
+        val clean = draft.trim()
+        if (clean.isEmpty()) return
+        draft = ""
+        notebook.appScope.launch {
+            try { dao.insertPlan(app.vesper.data.Plan(day = day, text = clean)) } catch (e: Exception) {
+                notebook.reportError("add plan", e)
+            }
+        }
+    }
+
+    fun setDone(plan: app.vesper.data.Plan, done: Boolean) {
+        notebook.appScope.launch {
+            try { dao.updatePlan(plan.copy(done = done)) } catch (e: Exception) { notebook.reportError("update plan", e) }
+        }
+    }
+
+    fun editPlan(plan: app.vesper.data.Plan, text: String) {
+        val clean = text.trim()
+        if (clean.isEmpty() || clean == plan.text) return
+        notebook.appScope.launch {
+            try { dao.updatePlan(plan.copy(text = clean)) } catch (e: Exception) { notebook.reportError("edit plan", e) }
+        }
+    }
+
+    /** Permanent. The caller confirms first. */
+    fun deletePlan(id: Long) {
+        notebook.appScope.launch {
+            try { dao.deletePlan(id) } catch (e: Exception) { notebook.reportError("delete plan", e) }
+        }
+    }
+
+    fun toggleFocus(day: Long, lobeId: Long, on: Boolean) {
+        notebook.appScope.launch {
+            try {
+                if (on) dao.insertFocus(app.vesper.data.DayFocus(day, lobeId)) else dao.deleteFocus(day, lobeId)
+            } catch (e: Exception) { notebook.reportError("update focus", e) }
+        }
+    }
+}
+
 /** Shrine photo storage: `filesDir/shrine/<uuid>.jpg`. */
 object ShrineFiles {
     private const val MAX_EDGE = 2048

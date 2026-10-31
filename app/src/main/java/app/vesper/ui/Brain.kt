@@ -93,7 +93,7 @@ private val LobeColors = listOf(
     Color(0xFFC27AE0),
 )
 
-private fun lobeColor(l: Lobe) = LobeColors[l.colorIndex.mod(LobeColors.size)]
+internal fun lobeColor(l: Lobe) = LobeColors[l.colorIndex.mod(LobeColors.size)]
 
 /** How rotten the map is (0..1). Locked by the approved mockup. */
 private const val ROT = 0.64f

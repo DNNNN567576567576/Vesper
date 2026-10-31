@@ -152,10 +152,70 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
-@Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class], version = 3, exportSchema = true)
+/** A plan for one local day. [day] is `LocalDate.toEpochDay()`. */
+@Entity(tableName = "plans", indices = [Index("day")])
+data class Plan(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val day: Long,
+    val text: String,
+    val done: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/** A Brain lobe marked as the focus of one day. Removed automatically when the lobe is deleted. */
+@Entity(
+    tableName = "day_focus",
+    primaryKeys = ["day", "lobeId"],
+    foreignKeys = [ForeignKey(Lobe::class, ["id"], ["lobeId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("lobeId")],
+)
+data class DayFocus(
+    val day: Long,
+    val lobeId: Long,
+)
+
+@Dao
+interface MoonsDao {
+    @Query("SELECT * FROM plans WHERE day BETWEEN :from AND :to ORDER BY createdAt ASC, id ASC")
+    fun observePlans(from: Long, to: Long): Flow<List<Plan>>
+
+    @Query("SELECT * FROM plans ORDER BY createdAt ASC, id ASC")
+    fun observeAllPlans(): Flow<List<Plan>>
+
+    @Insert
+    suspend fun insertPlan(plan: Plan): Long
+
+    @Update
+    suspend fun updatePlan(plan: Plan)
+
+    @Query("DELETE FROM plans WHERE id = :id")
+    suspend fun deletePlan(id: Long)
+
+    @Query("SELECT * FROM day_focus")
+    fun observeFocus(): Flow<List<DayFocus>>
+
+    @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
+    suspend fun insertFocus(focus: DayFocus)
+
+    @Query("DELETE FROM day_focus WHERE day = :day AND lobeId = :lobeId")
+    suspend fun deleteFocus(day: Long, lobeId: Long)
+}
+
+/** v3 -> v4: adds the Moons tables. Every existing table is left untouched. */
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `plans` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `day` INTEGER NOT NULL, `text` TEXT NOT NULL, `done` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_plans_day` ON `plans` (`day`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `day_focus` (`day` INTEGER NOT NULL, `lobeId` INTEGER NOT NULL, PRIMARY KEY(`day`, `lobeId`), FOREIGN KEY(`lobeId`) REFERENCES `lobes`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_day_focus_lobeId` ON `day_focus` (`lobeId`)")
+    }
+}
+
+@Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class, Plan::class, DayFocus::class], version = 4, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun taskDao(): TaskDao
     abstract fun brainDao(): BrainDao
     abstract fun postDao(): PostDao
+    abstract fun moonsDao(): MoonsDao
 }
