@@ -32,6 +32,7 @@ class BackupTest {
     private val app = ApplicationProvider.getApplicationContext<NotebookApp>()
     private val shrine = File(app.filesDir, "shrine")
     private val photo = Random(7).nextBytes(300_000)
+    private val video = Random(8).nextBytes(200_000)
 
     @get:Rule
     val helper = MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), AppDatabase::class.java)
@@ -55,9 +56,10 @@ class BackupTest {
         val lobe = db.brainDao().insertLobe(Lobe(name = "Work", colorIndex = 2, slot = 0))
         db.brainDao().insertIdea(Idea(lobeId = lobe, title = "Idea", body = "body text", noteId = 1, updatedAt = 1700000001000))
         db.postDao().insert(Post(text = "hello", imagePath = "p.jpg", createdAt = 1700000002000))
+        db.postDao().insert(Post(videoPath = "v.mp4", createdAt = 1700000002500))
         db.moonsDao().insertPlan(Plan(day = 20000, text = "plan", createdAt = 1700000004000))
         db.moonsDao().insertFocus(DayFocus(20000, lobe))
-        shrine.mkdirs(); File(shrine, "p.jpg").writeBytes(photo)
+        shrine.mkdirs(); File(shrine, "p.jpg").writeBytes(photo); File(shrine, "v.mp4").writeBytes(video)
     }
 
     private fun reopen() = Room.databaseBuilder(app, AppDatabase::class.java, NotebookApp.DB_NAME).addMigrations(*ALL_MIGRATIONS).build()
@@ -78,7 +80,7 @@ class BackupTest {
         val file = File(app.cacheDir, "vesper.zip")
         writeBackup(app, Uri.fromFile(file))
         assertNotNull(app.lastBackupAt.value)
-        assertEquals(setOf("manifest.json", "database.db", "shrine/p.jpg"), ZipFile(file).use { z -> z.entries().toList().map { it.name }.toSet() })
+        assertEquals(setOf("manifest.json", "database.db", "shrine/p.jpg", "shrine/v.mp4"), ZipFile(file).use { z -> z.entries().toList().map { it.name }.toSet() })
 
         // change everything after the backup
         app.db.noteDao().delete(1)
@@ -91,8 +93,9 @@ class BackupTest {
 
         val db = reopen()
         try { assertEquals(before, db.snapshot()) } finally { db.close() }
-        assertEquals(listOf("p.jpg"), shrine.list()!!.toList())
+        assertEquals(listOf("p.jpg", "v.mp4"), shrine.list()!!.sorted())
         assertArrayEquals(photo, File(shrine, "p.jpg").readBytes())
+        assertArrayEquals(video, File(shrine, "v.mp4").readBytes())
         assertFalse(File(app.noBackupFilesDir, "restore-staging").exists())
 
         // the safety copy holds the data as it was right before the restore

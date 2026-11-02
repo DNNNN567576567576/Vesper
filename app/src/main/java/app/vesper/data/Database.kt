@@ -23,6 +23,8 @@ data class Note(
     val updatedAt: Long = System.currentTimeMillis(),
     /** Order in the hand-sorted (manual) list, lowest first. New notes take the lowest value so they land on top. */
     val position: Int = 0,
+    /** Set = this is a page inside the main scroll with that id (one level only); null = a top-level scroll. */
+    val parentId: Long? = null,
 )
 
 @Entity(tableName = "tasks")
@@ -54,7 +56,11 @@ interface NoteDao {
     @Query("UPDATE notes SET position = :position WHERE id = :id")
     suspend fun setPosition(id: Long, position: Int)
 
-    @Query("DELETE FROM notes WHERE id = :id")
+    @Query("SELECT * FROM notes WHERE parentId = :parentId ORDER BY id ASC")
+    fun observePages(parentId: Long): Flow<List<Note>>
+
+    /** One statement, so a main scroll and all its pages go together. */
+    @Query("DELETE FROM notes WHERE id = :id OR parentId = :id")
     suspend fun delete(id: Long)
 }
 
@@ -134,12 +140,13 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
-/** One entry in the Shrine feed: optional text, optional photo. [imagePath] is a file name inside `filesDir/shrine`. */
+/** One entry in the Shrine feed: optional text, optional photo or video. [imagePath]/[videoPath] are file names inside `filesDir/shrine`. */
 @Entity(tableName = "posts")
 data class Post(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val text: String? = null,
     val imagePath: String? = null,
+    val videoPath: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val editedAt: Long? = null,
 )
@@ -243,11 +250,25 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
     }
 }
 
+/** v6 -> v7: Grimoire posts can hold a video. Existing posts have none (NULL). */
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `posts` ADD COLUMN `videoPath` TEXT")
+    }
+}
+
+/** v7 -> v8: notes can be pages of a main scroll. Existing notes stay top-level (NULL). */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `notes` ADD COLUMN `parentId` INTEGER")
+    }
+}
+
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 6
+const val DB_VERSION = 8
 
 /** The single migration list used by the app and the tests. */
-val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
 
 @Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class, Plan::class, DayFocus::class], version = DB_VERSION, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {

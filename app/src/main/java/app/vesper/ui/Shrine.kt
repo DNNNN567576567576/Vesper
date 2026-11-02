@@ -314,7 +314,7 @@ fun ShrineScreen(
         }
     }
 
-    viewing?.let { post -> PhotoViewer(post) { viewing = null } }
+    viewing?.let { post -> if (post.videoPath != null) VideoViewer(post) { viewing = null } else PhotoViewer(post) { viewing = null } }
 }
 
 @Composable
@@ -380,7 +380,7 @@ private fun PostCard(
     val emberPaint = remember { Paint().apply { isAntiAlias = false } }
     val maskPaint = remember { Paint().apply { isFilterBitmap = false; xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) } }
     val seed = post.id.toInt()
-    val img = post.imagePath
+    val img = post.imagePath ?: post.videoPath
     val hasText = !post.text.isNullOrEmpty()
     val timeText = timeOf(post.createdAt) + if (post.editedAt != null) " · edited" else ""
 
@@ -442,7 +442,7 @@ private fun PostCard(
         ) {
             if (img != null) {
                 Box(Modifier.fillMaxWidth()) {
-                    PostPhoto(img, imageWidthPx, onPhoto, onMenu)
+                    PostPhoto(img, post.videoPath != null, imageWidthPx, onPhoto, onMenu)
                     if (!hasText) {
                         Text(
                             timeText,
@@ -482,10 +482,10 @@ private const val EMBER_HI = 0xFF7A2A5E.toInt()
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PostPhoto(name: String, widthPx: Int, onTap: () -> Unit, onLong: () -> Unit) {
+private fun PostPhoto(name: String, video: Boolean, widthPx: Int, onTap: () -> Unit, onLong: () -> Unit) {
     val dir = LocalContext.current.filesDir
     val bmp by produceState(ShrineBitmaps.cached(name, widthPx), name, widthPx) {
-        if (value == null) value = ShrineBitmaps.load(File(File(dir, "shrine"), name), widthPx, cache = true)
+        if (value == null) value = ShrineBitmaps.load(File(File(dir, "shrine"), name), widthPx, cache = true, video = video)
     }
     val b = bmp
     // Full card width at the photo's natural aspect; very tall photos stop at 1.4 x width and are fitted (never cropped).
@@ -496,9 +496,26 @@ private fun PostPhoto(name: String, widthPx: Int, onTap: () -> Unit, onLong: () 
         .background(Color(0xFF1B1221))
         .combinedClickable(onClick = onTap, onDoubleClick = onLong)
     if (b != null) {
-        Image(b.asImageBitmap(), "photo", mod, contentScale = ContentScale.Fit)
+        Box(mod, contentAlignment = Alignment.Center) {
+            Image(b.asImageBitmap(), if (video) "video" else "photo", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            if (video) PlayMarker()
+        }
     } else {
         Box(mod)
+    }
+}
+
+@Composable
+private fun PlayMarker() {
+    Canvas(Modifier.size(56.dp)) {
+        drawCircle(Color(0xA607030B))
+        val s = size.minDimension
+        drawPath(
+            androidx.compose.ui.graphics.Path().apply {
+                moveTo(s * 0.40f, s * 0.30f); lineTo(s * 0.72f, s * 0.50f); lineTo(s * 0.40f, s * 0.70f); close()
+            },
+            ShrineText,
+        )
     }
 }
 
@@ -588,10 +605,15 @@ private object ShrineBitmaps {
     fun cached(name: String, w: Int): Bitmap? = cache.get("$name@$w")
 
     /** Decodes [file] downsampled to roughly [widthPx] wide. Returns null if it can't be read. */
-    suspend fun load(file: File, widthPx: Int, cache: Boolean): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun load(file: File, widthPx: Int, cache: Boolean, video: Boolean = false): Bitmap? = withContext(Dispatchers.IO) {
         val key = "${file.name}@$widthPx"
         if (cache) this@ShrineBitmaps.cache.get(key)?.let { return@withContext it }
         try {
+            if (video) {
+                val f = frame { it.setDataSource(file.path) }
+                if (f != null && cache) this@ShrineBitmaps.cache.put(key, f)
+                return@withContext f
+            }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.path, bounds)
             if (bounds.outWidth <= 0) return@withContext null
@@ -605,10 +627,17 @@ private object ShrineBitmaps {
         }
     }
 
-    /** Small thumbnail of a picked (content://) photo for the attachment chip. */
+    /** First frame of a video, or null if it can't be read. */
+    private fun frame(source: (android.media.MediaMetadataRetriever) -> Unit): Bitmap? {
+        val mmr = android.media.MediaMetadataRetriever()
+        return try { source(mmr); mmr.getFrameAtTime(0) } catch (e: Throwable) { null } finally { try { mmr.release() } catch (e: Throwable) {} }
+    }
+
+    /** Small thumbnail of a picked (content://) photo or video for the attachment chip. */
     suspend fun thumb(context: android.content.Context, uri: Uri, edge: Int): Bitmap? = withContext(Dispatchers.IO) {
         try {
             val r = context.contentResolver
+            if (r.getType(uri)?.startsWith("video/") == true) return@withContext frame { it.setDataSource(context, uri) }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             r.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
             if (bounds.outWidth <= 0) return@withContext null
@@ -619,6 +648,29 @@ private object ShrineBitmaps {
             }
         } catch (e: Throwable) {
             null
+        }
+    }
+}
+
+@Composable
+private fun VideoViewer(post: Post, onClose: () -> Unit) {
+    val file = File(File(LocalContext.current.filesDir, "shrine"), post.videoPath ?: run { onClose(); return })
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Box(Modifier.fillMaxSize().background(Color(0xFF040206)), contentAlignment = Alignment.Center) {
+            androidx.compose.ui.viewinterop.AndroidView(
+                factory = { c ->
+                    android.widget.VideoView(c).apply {
+                        setMediaController(android.widget.MediaController(c).also { it.setAnchorView(this) })
+                        setOnErrorListener { _, _, _ -> onClose(); true }
+                        setVideoPath(file.path)
+                        start()
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
         }
     }
 }
@@ -707,7 +759,7 @@ private fun Composer(
                     .clip(RoundedCornerShape(10.dp))
                     .background(Color(0xFF1C1128))
                     .border(2.dp, Px.Magenta, RoundedCornerShape(10.dp))
-                    .clickable(role = Role.Button, onClickLabel = "Remove photo") { onPhoto(null) }
+                    .clickable(role = Role.Button, onClickLabel = "Remove attachment") { onPhoto(null) }
                     .padding(horizontal = 10.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -719,7 +771,7 @@ private fun Composer(
                     )
                     Spacer(Modifier.width(8.dp))
                 }
-                Text("photo attached", style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = ShrineText))
+                Text(if (ctx.contentResolver.getType(photo)?.startsWith("video/") == true) "video attached" else "photo attached", style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = ShrineText))
                 Spacer(Modifier.width(8.dp))
                 PixelIcon(CROSS, Px.Magenta, pixel = 2.dp)
             }
@@ -727,9 +779,9 @@ private fun Composer(
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BarButton(
                 ATT, if (photo != null) Px.Magenta else ShrineIconDim,
-                fill = ShrineBtnBg, line = ShrineBtnLine, description = "Attach photo",
+                fill = ShrineBtnBg, line = ShrineBtnLine, description = "Attach photo or video",
             ) {
-                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
             }
             val shape = RoundedCornerShape(10.dp)
             BasicTextField(

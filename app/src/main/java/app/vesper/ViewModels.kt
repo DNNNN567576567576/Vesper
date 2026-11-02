@@ -10,7 +10,12 @@ import android.app.Application
 import android.content.Context
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
+import androidx.compose.runtime.snapshotFlow
 import app.vesper.data.Note
 import app.vesper.data.Post
 import app.vesper.data.Task
@@ -46,13 +51,21 @@ class NotesViewModel(app: Application) : AndroidViewModel(app) {
     val sort = MutableStateFlow(NoteSort.entries.firstOrNull { it.name == prefs.getString(KEY_NOTE_SORT, null) } ?: NoteSort.EDITED)
 
     // The DAO delivers "recently edited" order; the other modes re-sort it here.
-    val notes: StateFlow<List<Note>?> = combine(notebook.db.noteDao().observeAll(), sort) { list, mode ->
+    private val all = notebook.db.noteDao().observeAll()
+
+    // Only top-level scrolls are listed; pages live inside their main scroll.
+    val notes: StateFlow<List<Note>?> = combine(all, sort) { all, mode ->
+        val list = all.filter { it.parentId == null }
         when (mode) {
             NoteSort.EDITED -> list
             NoteSort.ADDED -> list.sortedByDescending { it.id }
             NoteSort.MANUAL -> list.sortedWith(compareBy<Note> { it.position }.thenByDescending { it.id })
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Main scroll id -> number of pages. */
+    val pageCounts: StateFlow<Map<Long, Int>> = all.map { l -> l.mapNotNull { it.parentId }.groupingBy { it }.eachCount() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     fun cycleSort() {
         val next = NoteSort.entries[(sort.value.ordinal + 1) % NoteSort.entries.size]
@@ -117,9 +130,9 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
 
 /**
  * Editing session for one note. [noteId] == null means a brand-new note, which is only
- * inserted once it actually has content.
+ * inserted once it actually has content. [newParentId] makes a new note a page of that main scroll.
  */
-class NoteEditorViewModel(app: Application, noteId: Long?) : AndroidViewModel(app) {
+class NoteEditorViewModel(app: Application, noteId: Long?, newParentId: Long? = null) : AndroidViewModel(app) {
     private val dao get() = notebook.db.noteDao()
     private val mutex = Mutex()
 
@@ -130,15 +143,29 @@ class NoteEditorViewModel(app: Application, noteId: Long?) : AndroidViewModel(ap
     var loaded by mutableStateOf(noteId == null)
         private set
 
-    private var id: Long? = noteId
+    private var id: Long? by mutableStateOf(noteId)
     private var deleted = false
     private var savedTitle = ""
     private var savedContent = ""
     private var saveJob: Job? = null
 
+    /** Non-null = this note is a page of that main scroll. */
+    var parentId: Long? by mutableStateOf(newParentId)
+        private set
+    var parentTitle by mutableStateOf("")
+        private set
+
     val exists: Boolean get() = id != null
+    val noteId: Long? get() = id
+
+    /** Pages of this scroll (creation order); empty until the scroll has been saved once. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val pages: StateFlow<List<Note>> = snapshotFlow { id }
+        .flatMapLatest { if (it == null) emptyFlow() else dao.observePages(it) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
+        if (newParentId != null) loadParentTitle(newParentId)
         if (noteId != null) {
             viewModelScope.launch {
                 try {
@@ -146,6 +173,8 @@ class NoteEditorViewModel(app: Application, noteId: Long?) : AndroidViewModel(ap
                     if (n != null) {
                         title = n.title; content = n.content
                         savedTitle = n.title; savedContent = n.content
+                        parentId = n.parentId
+                        n.parentId?.let { loadParentTitle(it) }
                     } else {
                         id = null // note vanished; treat as new
                     }
@@ -169,22 +198,41 @@ class NoteEditorViewModel(app: Application, noteId: Long?) : AndroidViewModel(ap
     }
 
     /** Persist the latest text now. Safe to call repeatedly; runs outside the UI lifecycle. */
-    fun flush() {
+    fun flush(): Job {
         saveJob?.cancel()
-        notebook.appScope.launch { persist() }
+        return notebook.appScope.launch { persist() }
     }
 
-    private suspend fun persist() {
+    /** Like [flush], but also stores a still-blank new scroll so a page has a parent to hang from. */
+    fun flushForPage(): Job {
+        saveJob?.cancel()
+        return notebook.appScope.launch { persist(force = true) }
+    }
+
+    private fun loadParentTitle(pid: Long) {
+        viewModelScope.launch {
+            try { parentTitle = dao.get(pid)?.title.orEmpty() } catch (e: Exception) { notebook.reportError("open note", e) }
+        }
+    }
+
+    /** Burns one page of this scroll (and nothing else). */
+    fun deletePage(pageId: Long) {
+        notebook.appScope.launch {
+            try { dao.delete(pageId) } catch (e: Exception) { notebook.reportError("delete note", e) }
+        }
+    }
+
+    private suspend fun persist(force: Boolean = false) {
         mutex.withLock {
             if (!loaded || deleted) return
             val t = title
             val c = content
-            if (t == savedTitle && c == savedContent) return
+            if (t == savedTitle && c == savedContent && !(force && id == null)) return
             try {
                 val current = id
                 if (current == null) {
-                    if (t.isBlank() && c.isBlank()) return // never store a note that was never written
-                    id = dao.insert(Note(title = t, content = c, position = (dao.minPosition() ?: 1) - 1))
+                    if (t.isBlank() && c.isBlank() && !force) return // never store a note that was never written
+                    id = dao.insert(Note(title = t, content = c, position = (dao.minPosition() ?: 1) - 1, parentId = parentId))
                 } else {
                     dao.updateText(current, t, c, System.currentTimeMillis())
                 }
@@ -284,8 +332,9 @@ class ShrineViewModel(app: Application) : AndroidViewModel(app) {
         notebook.appScope.launch {
             var name: String? = null
             try {
-                if (photo != null) name = ShrineFiles.importPhoto(notebook, photo)
-                dao.insert(Post(text = clean, imagePath = name))
+                val video = photo != null && notebook.contentResolver.getType(photo)?.startsWith("video/") == true
+                if (photo != null) name = if (video) ShrineFiles.importVideo(notebook, photo) else ShrineFiles.importPhoto(notebook, photo)
+                dao.insert(Post(text = clean, imagePath = name.takeUnless { video }, videoPath = name.takeIf { video }))
                 withContext(Dispatchers.Main) {
                     if (draft.trim().ifEmpty { null } == clean) draft = ""
                     if (draftPhoto == photo) draftPhoto = null
@@ -304,7 +353,7 @@ class ShrineViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val p = dao.get(id) ?: return@launch
                 val clean = text.trim().ifEmpty { null }
-                if (clean == null && p.imagePath == null) return@launch
+                if (clean == null && p.imagePath == null && p.videoPath == null) return@launch
                 if (clean == p.text) return@launch
                 dao.update(p.copy(text = clean, editedAt = System.currentTimeMillis()))
             } catch (e: Exception) { notebook.reportError("edit post", e) }
@@ -317,7 +366,7 @@ class ShrineViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val p = dao.get(id)
                 dao.delete(id)
-                p?.imagePath?.let { ShrineFiles.file(notebook, it).delete() }
+                (p?.imagePath ?: p?.videoPath)?.let { ShrineFiles.file(notebook, it).delete() }
             } catch (e: Exception) { notebook.reportError("delete post", e) }
         }
     }
@@ -381,6 +430,20 @@ object ShrineFiles {
     private const val MAX_EDGE = 2048
 
     fun file(app: Application, name: String) = File(File(app.filesDir, "shrine"), name)
+
+    /** Blocking: call off the main thread. Copies the video as is (no re-encoding); returns the stored file name. */
+    fun importVideo(app: Application, uri: Uri): String {
+        val dir = File(app.filesDir, "shrine").apply { mkdirs() }
+        val name = UUID.randomUUID().toString() + ".mp4"
+        val out = File(dir, name)
+        try {
+            val stream = app.contentResolver.openInputStream(uri) ?: throw java.io.IOException("cannot open video")
+            stream.use { i -> out.outputStream().use { i.copyTo(it) } }
+        } catch (e: Exception) {
+            out.delete(); throw e
+        }
+        return name
+    }
 
     /** Blocking: call off the main thread. Returns the stored file name. */
     fun importPhoto(app: Application, uri: Uri): String {

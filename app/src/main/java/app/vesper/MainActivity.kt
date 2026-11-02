@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import app.vesper.data.Note
 import app.vesper.ui.AddTaskDialog
 import app.vesper.ui.BrainCamera
 import app.vesper.ui.BrainScreen
@@ -64,6 +65,9 @@ class MainActivity : ComponentActivity() {
     /** Pending launcher-shortcut action, consumed by the composition. */
     private var request by mutableStateOf<String?>(null)
 
+    /** Id of a note just created from a share; the composition opens it in the editor. */
+    private var sharedNote by mutableStateOf<Long?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
@@ -71,10 +75,10 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
         )
         // Only a fresh launch acts on the intent; a rotation must not reopen the editor.
-        if (savedInstanceState == null) request = intent?.action
+        if (savedInstanceState == null) intent?.let(::handle)
         setContent {
             PixelTheme {
-                App(request = request, onRequestHandled = { request = null })
+                App(request = request, onRequestHandled = { request = null }, sharedNote = sharedNote, onSharedHandled = { sharedNote = null })
             }
         }
     }
@@ -82,7 +86,22 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        request = intent.action
+        handle(intent)
+    }
+
+    private fun handle(intent: Intent) {
+        if (intent.action != Intent.ACTION_SEND) { request = intent.action; return }
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+        if (text.isNullOrBlank()) return
+        val title = intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty()
+        val app = application as NotebookApp
+        app.appScope.launch {
+            try {
+                val dao = app.db.noteDao()
+                val id = dao.insert(Note(title = title, content = text, position = (dao.minPosition() ?: 1) - 1))
+                sharedNote = id
+            } catch (e: Exception) { app.reportError("save shared text", e) }
+        }
     }
 }
 
@@ -90,12 +109,14 @@ private const val NO_EDITOR = -2L
 private const val NEW_NOTE = -1L
 
 @Composable
-private fun App(request: String?, onRequestHandled: () -> Unit) {
+private fun App(request: String?, onRequestHandled: () -> Unit, sharedNote: Long?, onSharedHandled: () -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Notes (default), 1 = Tasks, 2 = Brain, 3 = Shrine, 4 = Moons
     var selectedLobe by rememberSaveable { mutableLongStateOf(-1L) }
     val brainCamera = remember { BrainCamera() }
     var editorTarget by rememberSaveable { mutableLongStateOf(NO_EDITOR) }
     var editorSession by rememberSaveable { mutableIntStateOf(0) }
+    // Main scroll to return to when closing a page (back-stack of one); NO_EDITOR = none.
+    var editorParent by rememberSaveable { mutableLongStateOf(NO_EDITOR) }
     var addingTask by rememberSaveable { mutableStateOf(false) }
 
     val notesVm: NotesViewModel = viewModel()
@@ -119,11 +140,22 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
     val shrineListState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    LaunchedEffect(sharedNote) {
+        if (sharedNote != null) {
+            tab = 0
+            editorSession++
+            editorParent = NO_EDITOR
+            editorTarget = sharedNote
+            onSharedHandled()
+        }
+    }
+
     LaunchedEffect(request) {
         when (request) {
             ACTION_NEW_NOTE -> {
                 tab = 0
                 editorSession++
+                editorParent = NO_EDITOR
                 editorTarget = NEW_NOTE
                 onRequestHandled()
             }
@@ -162,17 +194,28 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
         ) { target ->
             if (target != NO_EDITOR) {
                 val editorVm: NoteEditorViewModel = viewModel(
-                    key = "editor-$editorSession",
+                    key = "editor-$editorSession-$target", // target too: the outgoing editor must not grab the incoming one's VM
                     factory = viewModelFactory {
                         initializer {
                             NoteEditorViewModel(
                                 this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as Application,
                                 if (target == NEW_NOTE) null else target,
+                                if (target == NEW_NOTE && editorParent != NO_EDITOR) editorParent else null,
                             )
                         }
                     },
                 )
-                NoteEditorScreen(editorVm, onClose = { editorTarget = NO_EDITOR })
+                NoteEditorScreen(
+                    editorVm,
+                    onClose = {
+                        // Closing a page returns to its main scroll's editor, not the list.
+                        val parent = editorParent
+                        editorParent = NO_EDITOR
+                        if (parent != NO_EDITOR) editorSession++
+                        editorTarget = parent
+                    },
+                    onOpenPage = { parent, page -> editorParent = parent; editorSession++; editorTarget = page ?: NEW_NOTE },
+                )
             } else {
                 Scaffold(
                     containerColor = Color.Transparent,

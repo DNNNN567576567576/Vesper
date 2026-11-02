@@ -137,6 +137,32 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate6To7() {
+        helper.createDatabase(name, 6).apply {
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0)")
+            execSQL("INSERT INTO tasks (id, text) VALUES (1, 'buy candles')")
+            insertPost(); close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 7, true, MIGRATION_6_7)
+        db.assertNoteAndTask(); db.assertPost()
+        db.query("SELECT COUNT(*), COUNT(videoPath) FROM posts").use { it.moveToFirst(); assertEquals(1, it.getInt(0)); assertEquals(0, it.getInt(1)) }
+        db.execSQL("UPDATE posts SET videoPath = 'v.mp4'") // column is usable
+    }
+
+    @Test
+    fun migrate7To8() {
+        helper.createDatabase(name, 7).apply {
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0)")
+            execSQL("INSERT INTO tasks (id, text) VALUES (1, 'buy candles')")
+            close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 8, true, MIGRATION_7_8)
+        db.assertNoteAndTask()
+        db.query("SELECT COUNT(*), COUNT(parentId) FROM notes").use { it.moveToFirst(); assertEquals(1, it.getInt(0)); assertEquals(0, it.getInt(1)) } // stays top-level
+        db.execSQL("INSERT INTO notes (title, content, updatedAt, position, parentId) VALUES ('page', 'x', 1, 0, 1)") // column is usable
+    }
+
+    @Test
     fun migrateAllFrom1() {
         helper.createDatabase(name, 1).apply { insertNote(); close() }
         helper.runMigrationsAndValidate(name, DB_VERSION, true, *ALL_MIGRATIONS).assertNoteAndTask()
