@@ -31,7 +31,7 @@ app/src/main/java/app/vesper/
 ## Build
 
 ```powershell
-cd C:\Users\davit\Desktop\Vesper
+cd C:\Users\davit\Desktop\Apps\Vesper
 .\gradlew.bat assembleDebug      # app\build\outputs\apk\debug\app-debug.apk
 .\gradlew.bat assembleRelease    # app\build\outputs\apk\release\app-release.apk (signed, minified)
 ```
