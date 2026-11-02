@@ -9,6 +9,7 @@ import app.vesper.data.ALL_MIGRATIONS
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -27,6 +28,11 @@ class NotebookApp : Application() {
         Room.databaseBuilder(this, AppDatabase::class.java, DB_NAME)
             .addMigrations(*ALL_MIGRATIONS)
             .build()
+    }
+
+    /** Epoch millis of the last successful [app.vesper.data.writeBackup]; null = never. */
+    val lastBackupAt: MutableStateFlow<Long?> by lazy {
+        MutableStateFlow(getSharedPreferences(PREFS, MODE_PRIVATE).getLong(KEY_LAST_BACKUP, 0L).takeIf { it > 0 })
     }
 
     /**
@@ -103,5 +109,7 @@ class NotebookApp : Application() {
 
     companion object {
         const val DB_NAME = "pixel-notebook.db"
+        const val PREFS = "vesper"
+        const val KEY_LAST_BACKUP = "lastBackupAt"
     }
 }

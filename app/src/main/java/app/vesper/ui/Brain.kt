@@ -12,7 +12,11 @@ import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -35,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -65,9 +70,18 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import app.vesper.NotebookApp
+import app.vesper.data.BackupException
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import app.vesper.data.Note
+import app.vesper.data.restartApp
+import app.vesper.data.restoreBackup
+import app.vesper.data.writeBackup
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.ceil
@@ -144,6 +158,15 @@ private fun placeIdeas(lobes: List<Lobe>, ideas: List<Idea>): List<Placed> {
         }
     }
 }
+
+/** The vault sun: one fixed node (not a lobe). 43+ world px from every lobe slot 0-17 and 20 px outside the r35 core ring. */
+private const val SUN_X = -32f
+private const val SUN_Y = 45f
+private const val SUN_BEND = 8f
+
+/** 0 = fresh, 1 = fully eclipsed: grace of 7 days, then 14 days to go dark. Never backed up = 1. */
+private fun staleness(last: Long?): Float =
+    if (last == null) 1f else (((System.currentTimeMillis() - last) / 86_400_000f - 7f) / 14f).coerceIn(0f, 1f)
 
 private fun ideaLabel(i: Idea) = i.title.ifBlank { i.body.lineSequence().firstOrNull().orEmpty() }
 
@@ -515,7 +538,7 @@ private class BrainRenderer(context: Context) {
         } else cv.drawBitmap(bm, null, rectI, spritePaint)
     }
 
-    private fun vein(x2: Float, y2: Float, bend: Float, strands: Int, seed: Float, alpha: Float) {
+    private fun vein(x2: Float, y2: Float, bend: Float, strands: Int, seed: Float, alpha: Float, hiRgb: Int = hi) {
         for (st in 0 until strands) {
             ctrl(0f, 0f, x2, y2, bend + (st - (strands - 1) / 2f) * (1f + 2.5f * ROT))
             val cx = ccx; val cy = ccy; val nx = cnx; val ny = cny
@@ -525,7 +548,7 @@ private class BrainRenderer(context: Context) {
                 bz(0f, 0f, cx, cy, x2, y2, s)
                 val wob = sin(s * 11f + st * 2.1f + seed + t * 0.6f) * 1.6f * ROT * (1f - abs(s - 0.5f))
                 val dead = sin(s * 37f + seed * 3f + st) > 0.93f
-                val rgb = if (dead) 0x14061A else mixRgb(lo, hi, beat(s))
+                val rgb = if (dead) 0x14061A else mixRgb(lo, hiRgb, beat(s))
                 dot(rnd(sx(bzx + nx * wob)), rnd(sy(bzy + ny * wob)), 1, 1, rgb, alpha)
             }
             if (st == 0) {
@@ -551,12 +574,41 @@ private class BrainRenderer(context: Context) {
         }
     }
 
+    private fun sun(sv: Float, selected: Boolean, d: Float) {
+        val l = 1f - 0.8f * sv
+        val ga = (0.35f + 0.3f * beat(1f)) * l * d
+        glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
+        if (selected) glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
+        glowAt(SUN_X, SUN_Y, 20f, 0xF0C8FF, 0.45f * l * d)
+        val cx = sx(SUN_X); val cy = sy(SUN_Y)
+        for (k in 0 until 12) {
+            val a = t * 0.25f + k * TAU / 12f
+            val len = (if (k % 2 == 0) 10f else 6f) + sin(t * 2f + k) * 1.2f
+            val n = ceil(len * z).toInt().coerceAtLeast(1)
+            for (i in 0..n) {
+                val r = (10f + len * i / n) * z
+                dot(rnd(cx + cos(a) * r), rnd(cy + sin(a) * r), 1, 1, mixRgb(0xF596E1, 0x7540B8, i / n.toFloat()), l * d)
+            }
+        }
+        val dk = sv * 0.6f
+        disc(cx, cy, 9f * z, mixRgb(0xE070C0, 0x3A1430, dk), d)
+        disc(cx, cy, 8f * z, mixRgb(0xF59AD8, 0x4A1650, dk), d)
+        disc(cx - z, cy - z, 6f * z, mixRgb(0xFFC8F0, 0x5A1E48, dk), d)
+        disc(cx - 3f * z, cy - 3f * z, 2f * z, mixRgb(0xFFF0FF, 0x5A1E48, dk), d)
+        if (sv > 0.02f) {
+            val mx = SUN_X + round(16f * (1f - sv)); val my = SUN_Y - round(2f * (1f - sv))
+            ring(mx, my, 10f, 28, 0f, 0x301426, d)
+            disc(sx(mx), sy(my), 9f * z, 0x06020A, d)
+        }
+    }
+
     /** One frame, in the mockup's draw order. [sel] is the selected lobe index or -1. */
-    fun draw(time: Float, camX: Float, camY: Float, zoom: Float, L: Layout, sel: Int) {
+    fun draw(time: Float, camX: Float, camY: Float, zoom: Float, L: Layout, sel: Int, sv: Float, sunSel: Boolean) {
         t = time; this.camX = camX; this.camY = camY; z = zoom
         beatPh = (t * 0.45f) % 1.7f
         if (ipx.size < L.nI) { ipx = FloatArray(L.nI); ipy = FloatArray(L.nI) }
-        fun dimOf(i: Int) = if (sel < 0 || sel == i) 1f else 0.45f
+        fun dimOf(i: Int) = if ((sel < 0 && !sunSel) || sel == i) 1f else 0.45f
+        val sunDim = if (sel < 0) 1f else 0.45f
 
         bmp.eraseColor(0xFF07030B.toInt())
 
@@ -625,9 +677,14 @@ private class BrainRenderer(context: Context) {
                 thread(L.lx[i], L.ly[i], nx, ny, L.ibend[k], L.iph[k], L.lcol[i], d)
             }
         }
+        vein(SUN_X, SUN_Y, SUN_BEND, 2, 9f, sunDim, 0xF5B0E8)
         // heartbeat pulse travelling out each vein
         val ps = (t * 0.45f) % 1.7f
         if (ps <= 1f) {
+            ctrl(0f, 0f, SUN_X, SUN_Y, SUN_BEND)
+            bz(0f, 0f, ccx, ccy, SUN_X, SUN_Y, ps)
+            glowAt(bzx, bzy, 6f, 0xF0C8F0, 0.9f * sunDim)
+            dot(rnd(sx(bzx)), rnd(sy(bzy)), if (z > 2f) 2 else 1, if (z > 2f) 2 else 1, 0xFFFFFF, sunDim)
             for (i in 0 until L.nL) {
                 val d = dimOf(i)
                 ctrl(0f, 0f, L.lx[i], L.ly[i], L.lbend[i])
@@ -687,6 +744,8 @@ private class BrainRenderer(context: Context) {
             sprite(lobeSprite, L.lx[i], L.ly[i], 0.5f, d, L.lslot[i] % 2 == 1)
         }
 
+        sun(sv, sunSel, sunDim)
+
         // core
         glowAt(0f, 0f, 48f, 0xB03AA0, 0.25f + 0.6f * beat(0.05f))
         glowAt(0f, 0f, 36f, 0xB69AFF, 0.3f)
@@ -739,19 +798,62 @@ fun BrainScreen(
     // null = no dialog; an Idea with id 0 is a brand-new idea in its lobe.
     var editing by remember { mutableStateOf<Idea?>(null) }
 
+    // Vault sun: backup / restore. Work runs on appScope so leaving the tab can't cancel a write.
+    val context = LocalContext.current
+    val app = context.applicationContext as NotebookApp
+    val last by app.lastBackupAt.collectAsState()
+    val sv = staleness(last)
+    var sunSel by remember { mutableStateOf(false) }
+    var working by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var restoreUri by remember { mutableStateOf<Uri?>(null) }
+    var waking by remember { mutableStateOf(false) }
+    val keepPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri == null || working != null) return@rememberLauncherForActivityResult
+        working = "keeping..."; message = null
+        app.appScope.launch {
+            try { writeBackup(context, uri); message = "kept." } catch (e: BackupException) { message = e.message }
+            working = null
+            if (message == "kept.") { delay(2500); if (message == "kept.") message = null }
+        }
+    }
+    val restorePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) restoreUri = uri }
+    fun restore(uri: Uri) {
+        if (working != null) return
+        working = "reading..."; message = null
+        app.appScope.launch {
+            try { restoreBackup(context, uri); waking = true } catch (e: BackupException) { if (e.restartNeeded) waking = true else message = e.message }
+            working = null
+            if (waking) { delay(600); restartApp(context) }
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             BrainCanvas(
-                lobeList, placed, selected?.id ?: -1L, camera,
-                onTapLobe = { id -> onSelectLobe(id); sheetOpen = false },
+                lobeList, placed, selected?.id ?: -1L, camera, sv, sunSel,
+                onTapSun = { onSelectLobe(-1L); sunSel = true },
+                onTapLobe = { id -> sunSel = false; onSelectLobe(id); sheetOpen = false },
                 onTapIdea = { editing = it },
-                onTapEmpty = { onSelectLobe(-1L) },
+                onTapEmpty = { sunSel = false; onSelectLobe(-1L) },
             )
             ScreenTitle("Brain")
             SigilFab(
                 "Grow a new lobe",
                 onClick = { addingLobe = true },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp),
+            )
+        }
+        if (sunSel && selected == null) {
+            VaultSheet(
+                status = working ?: message ?: when {
+                    last == null -> "nothing kept yet. keep a copy."
+                    sv == 0f -> "your memories are kept safe."
+                    else -> "it has been a while. keep a new copy."
+                },
+                busy = working != null,
+                onKeep = { keepPicker.launch("vesper-backup-${java.time.LocalDate.now()}.zip") },
+                onRestore = { restorePicker.launch(arrayOf("application/zip", "application/octet-stream")) },
             )
         }
         if (selected != null) {
@@ -790,6 +892,29 @@ fun BrainScreen(
             }
         }
     }
+    restoreUri?.let { uri ->
+        PixelDialog({ restoreUri = null }) {
+            Text("RESTORE THIS COPY?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "everything in vesper now is replaced by this copy. a safety copy of today is kept.",
+                style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim),
+            )
+            Spacer(Modifier.height(18.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+                PixelButton("KEEP", { restoreUri = null })
+                PixelButton("RESTORE", { restoreUri = null; restore(uri) }, primary = true)
+            }
+        }
+    }
+    if (waking) {
+        // A dialog window covers the whole screen (tab bar included) and swallows touches and back.
+        Dialog({}, DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false, usePlatformDefaultWidth = false)) {
+            Box(Modifier.fillMaxSize().background(Color(0xFF07030B)), contentAlignment = Alignment.Center) {
+                Text("waking up...", style = TextStyle(fontFamily = PixelFont, fontSize = 16.sp, color = Px.Lavender))
+            }
+        }
+    }
     editing?.let { idea ->
         IdeaDialog(
             idea = idea,
@@ -809,6 +934,9 @@ private fun BrainCanvas(
     placed: List<Placed>,
     selectedId: Long,
     cam: BrainCamera,
+    sunSv: Float,
+    sunSel: Boolean,
+    onTapSun: () -> Unit,
     onTapLobe: (Long) -> Unit,
     onTapIdea: (Idea) -> Unit,
     onTapEmpty: () -> Unit,
@@ -855,7 +983,7 @@ private fun BrainCanvas(
                     cam.y = wy - (ry + pan.y) / (pxSize * next)
                 }
             }
-            .pointerInput(lobes, placed) {
+            .pointerInput(lobes, placed, onTapSun) {
                 detectTapGestures { tap ->
                     val u = pxSize * cam.scale
                     val ox = ceil(size.width / pxSize) * pxSize / 2f
@@ -864,6 +992,10 @@ private fun BrainCanvas(
                     val idea = placed.minByOrNull { (screen(it.pos) - tap).getDistance() }
                     if (idea != null && (screen(idea.pos) - tap).getDistance() <= maxOf(26.dp.toPx(), 6f * u)) {
                         onTapIdea(idea.idea)
+                        return@detectTapGestures
+                    }
+                    if ((screen(Offset(SUN_X, SUN_Y)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u)) {
+                        onTapSun()
                         return@detectTapGestures
                     }
                     val lobe = lobes.minByOrNull { (screen(lobeWorldPos(it.slot)) - tap).getDistance() }
@@ -880,7 +1012,7 @@ private fun BrainCanvas(
         if (vw <= 0 || vh <= 0) return@Canvas
         val px = pxSize.toInt()
         renderer.resize(ceil(vw / pxSize).toInt(), ceil(vh / pxSize).toInt())
-        renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx)
+        renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel)
         drawIntoCanvas { renderer.blit(it.nativeCanvas, px) }
 
         // Labels at full resolution, same world -> device transform as the bitmap.
@@ -892,7 +1024,7 @@ private fun BrainCanvas(
         fun dy(wy: Float) = (wy - cam.y) * u + oy
 
         for (i in 0 until layout.nL) {
-            val dim = if (selIdx < 0 || selIdx == i) 1f else 0.45f
+            val dim = if ((selIdx < 0 && !sunSel) || selIdx == i) 1f else 0.45f
             val name = lobes[i].name.uppercase()
             if (name.isBlank()) continue
             val tl = measurer.measure(
@@ -911,10 +1043,24 @@ private fun BrainCanvas(
             drawText(tl, topLeft = Offset(left + pad, top + pad), alpha = dim)
         }
 
+        run {
+            val dim = if (selIdx < 0) 1f else 0.45f
+            val tl = measurer.measure("VAULT", lobeStyle, maxLines = 1)
+            val pad = 3f * density
+            val left = dx(SUN_X) - tl.size.width / 2f - pad
+            val top = dy(SUN_Y + 22f)
+            val pw = tl.size.width + pad * 2f
+            val ph = tl.size.height + pad * 2f
+            drawRect(Color(16, 8, 23).copy(alpha = 0.85f * dim), Offset(left, top), Size(pw, ph))
+            val bar = max(1f, density)
+            drawRect(Color(0xFFF596E1).copy(alpha = dim), Offset(left, top + ph - bar), Size(pw, bar))
+            drawText(tl, topLeft = Offset(left + pad, top + pad), color = if (sunSv > 0.5f) Color(0xFF6F6080) else Color.Unspecified, alpha = dim)
+        }
+
         val titleAlpha = ((z - 1.6f) / 0.5f).coerceIn(0f, 1f)
         if (titleAlpha > 0f && renderer.ipx.size >= layout.nI) {
             for (i in 0 until layout.nL) {
-                val dim = if (selIdx < 0 || selIdx == i) 1f else 0.45f
+                val dim = if ((selIdx < 0 && !sunSel) || selIdx == i) 1f else 0.45f
                 for (k in layout.istart[i] until layout.istart[i + 1]) {
                     val p = placed.getOrNull(k) ?: continue
                     val label = ideaLabel(p.idea)
@@ -935,7 +1081,7 @@ private fun BrainCanvas(
         }
 
         if (layout.nL == 0) {
-            val hint = measurer.measure("TAP + TO GROW A LOBE", hintStyle)
+            val hint = measurer.measure("TAP THE SIGIL TO GROW A LOBE", hintStyle)
             drawText(hint, topLeft = Offset(dx(0f) - hint.size.width / 2f, dy(44f)))
         }
     }
@@ -944,6 +1090,24 @@ private fun BrainCanvas(
 // ---------------------------------------------------------------------------------------------
 // Resume sheet
 // ---------------------------------------------------------------------------------------------
+
+@Composable
+private fun VaultSheet(status: String, busy: Boolean, onKeep: () -> Unit, onRestore: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .pixelCard(fill = Px.Surface, border = Color(0xFFF596E1), shadow = false, notch = 4.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text("VAULT", Modifier.padding(vertical = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
+        Text(status, Modifier.padding(top = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim))
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PixelButton("KEEP A COPY", { if (!busy) onKeep() }, primary = true, modifier = Modifier.weight(1f))
+            PixelButton("RESTORE", { if (!busy) onRestore() }, modifier = Modifier.weight(1f))
+        }
+    }
+}
 
 @Composable
 private fun LobeSheet(
