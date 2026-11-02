@@ -159,9 +159,9 @@ private fun placeIdeas(lobes: List<Lobe>, ideas: List<Idea>): List<Placed> {
     }
 }
 
-/** The vault sun: one fixed node (not a lobe). 43+ world px from every lobe slot 0-17 and 20 px outside the r35 core ring. */
-private const val SUN_X = -32f
-private const val SUN_Y = 45f
+/** The vault sun: one fixed node (not a lobe), centered below the brain (x = 0), past the first lobe ring. */
+private const val SUN_X = 0f
+private const val SUN_Y = 125f
 private const val SUN_BEND = 8f
 
 /** 0 = fresh, 1 = fully eclipsed: grace of 7 days, then 14 days to go dark. Never backed up = 1. */
@@ -794,7 +794,9 @@ fun BrainScreen(
 
     var addingLobe by remember { mutableStateOf(false) }
     var sheetOpen by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<Lobe?>(null) }
+    var deletingIdea by remember { mutableStateOf<Idea?>(null) }
+    var managing by remember { mutableStateOf(false) }
     // null = no dialog; an Idea with id 0 is a brand-new idea in its lobe.
     var editing by remember { mutableStateOf<Idea?>(null) }
 
@@ -834,15 +836,12 @@ fun BrainScreen(
                 lobeList, placed, selected?.id ?: -1L, camera, sv, sunSel,
                 onTapSun = { onSelectLobe(-1L); sunSel = true },
                 onTapLobe = { id -> sunSel = false; onSelectLobe(id); sheetOpen = false },
+                onDoubleTapLobe = { id -> editing = Idea(lobeId = id, title = "", body = "") },
+                onTapBrain = { managing = true },
                 onTapIdea = { editing = it },
                 onTapEmpty = { sunSel = false; onSelectLobe(-1L) },
             )
             ScreenTitle("Brain")
-            SigilFab(
-                "Grow a new lobe",
-                onClick = { addingLobe = true },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp),
-            )
         }
         if (sunSel && selected == null) {
             VaultSheet(
@@ -860,12 +859,10 @@ fun BrainScreen(
             LobeSheet(
                 lobe = selected,
                 ideas = ideaList.filter { it.lobeId == selected.id },
-                notes = notes.orEmpty(),
                 open = sheetOpen,
                 onToggle = { sheetOpen = !sheetOpen },
-                onAddIdea = { editing = Idea(lobeId = selected.id, title = "", body = "") },
                 onOpenIdea = { editing = it },
-                onDelete = { confirmDelete = true },
+                onDeleteIdea = { deletingIdea = it },
             )
         }
     }
@@ -873,9 +870,9 @@ fun BrainScreen(
     if (addingLobe) {
         NameDialog("NEW LOBE", "Name it: Coding, Business...", onDismiss = { addingLobe = false }, onSubmit = onAddLobe)
     }
-    if (confirmDelete && selected != null) {
-        PixelDialog({ confirmDelete = false }) {
-            Text("DELETE ${selected.name.uppercase()}?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
+    deleting?.let { target ->
+        PixelDialog({ deleting = null }) {
+            Text("DELETE ${target.name.uppercase()}?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
             Spacer(Modifier.height(10.dp))
             Text(
                 "Its ideas go with it, forever. No undo.",
@@ -883,12 +880,57 @@ fun BrainScreen(
             )
             Spacer(Modifier.height(18.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("KEEP", { confirmDelete = false })
+                PixelButton("KEEP", { deleting = null })
                 PixelButton("DELETE", {
-                    confirmDelete = false
+                    deleting = null
                     onSelectLobe(-1L)
-                    onDeleteLobe(selected.id)
+                    onDeleteLobe(target.id)
                 }, primary = true)
+            }
+        }
+    }
+    if (managing) {
+        PixelDialog({ managing = false }) {
+            Text("SUB-BRAINS", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
+            Spacer(Modifier.height(12.dp))
+            if (lobeList.isEmpty()) {
+                Text("No sub-brains yet.", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim))
+            } else {
+                LazyColumn(Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(lobeList, key = { it.id }) { l ->
+                        Row(
+                            Modifier.fillMaxWidth().pixelCard(fill = Px.Bg, shadow = false, notch = 2.dp).padding(start = 12.dp, top = 6.dp, end = 6.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                l.name.uppercase(), Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = Px.Text),
+                            )
+                            PixelButton("DELETE", { deleting = l })
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+                PixelButton("CLOSE", { managing = false })
+                PixelButton("+ ADD", { addingLobe = true }, primary = true)
+            }
+        }
+    }
+    deletingIdea?.let { di ->
+        PixelDialog({ deletingIdea = null }) {
+            Text("DELETE THIS THOUGHT?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
+            Spacer(Modifier.height(10.dp))
+            Text(
+                ideaLabel(di),
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim),
+            )
+            Spacer(Modifier.height(18.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+                PixelButton("KEEP", { deletingIdea = null })
+                PixelButton("DELETE", { deletingIdea = null; onDeleteIdea(di.id) }, primary = true)
             }
         }
     }
@@ -918,11 +960,9 @@ fun BrainScreen(
     editing?.let { idea ->
         IdeaDialog(
             idea = idea,
-            notes = notes.orEmpty(),
             onDismiss = { editing = null },
             onSave = { onSaveIdea(it); editing = null },
             onDelete = { onDeleteIdea(idea.id); editing = null },
-            onOpenNote = { editing = null; onOpenNote(it) },
         )
     }
 }
@@ -938,6 +978,8 @@ private fun BrainCanvas(
     sunSel: Boolean,
     onTapSun: () -> Unit,
     onTapLobe: (Long) -> Unit,
+    onDoubleTapLobe: (Long) -> Unit,
+    onTapBrain: () -> Unit,
     onTapIdea: (Idea) -> Unit,
     onTapEmpty: () -> Unit,
 ) {
@@ -984,7 +1026,7 @@ private fun BrainCanvas(
                 }
             }
             .pointerInput(lobes, placed, onTapSun) {
-                detectTapGestures { tap ->
+                fun handle(tap: Offset, double: Boolean) {
                     val u = pxSize * cam.scale
                     val ox = ceil(size.width / pxSize) * pxSize / 2f
                     val oy = ceil(size.height / pxSize) * pxSize / 2f
@@ -992,19 +1034,25 @@ private fun BrainCanvas(
                     val idea = placed.minByOrNull { (screen(it.pos) - tap).getDistance() }
                     if (idea != null && (screen(idea.pos) - tap).getDistance() <= maxOf(26.dp.toPx(), 6f * u)) {
                         onTapIdea(idea.idea)
-                        return@detectTapGestures
+                        return
                     }
                     if ((screen(Offset(SUN_X, SUN_Y)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u)) {
                         onTapSun()
-                        return@detectTapGestures
+                        return
                     }
                     val lobe = lobes.minByOrNull { (screen(lobeWorldPos(it.slot)) - tap).getDistance() }
                     if (lobe != null && (screen(lobeWorldPos(lobe.slot)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u)) {
-                        onTapLobe(lobe.id)
-                        return@detectTapGestures
+                        if (double) onDoubleTapLobe(lobe.id) else onTapLobe(lobe.id)
+                        return
+                    }
+                    // The main brain is the core at the world origin (inside the r35 ring).
+                    if (tap.minus(screen(Offset.Zero)).getDistance() <= maxOf(36.dp.toPx(), 30f * u)) {
+                        onTapBrain()
+                        return
                     }
                     onTapEmpty()
                 }
+                detectTapGestures(onTap = { handle(it, false) }, onDoubleTap = { handle(it, true) })
             },
     ) {
         val vw = size.width.toInt()
@@ -1081,7 +1129,7 @@ private fun BrainCanvas(
         }
 
         if (layout.nL == 0) {
-            val hint = measurer.measure("TAP THE SIGIL TO GROW A LOBE", hintStyle)
+            val hint = measurer.measure("TAP THE BRAIN TO GROW A LOBE", hintStyle)
             drawText(hint, topLeft = Offset(dx(0f) - hint.size.width / 2f, dy(44f)))
         }
     }
@@ -1113,12 +1161,10 @@ private fun VaultSheet(status: String, busy: Boolean, onKeep: () -> Unit, onRest
 private fun LobeSheet(
     lobe: Lobe,
     ideas: List<Idea>,
-    notes: List<Note>,
     open: Boolean,
     onToggle: () -> Unit,
-    onAddIdea: () -> Unit,
     onOpenIdea: (Idea) -> Unit,
-    onDelete: () -> Unit,
+    onDeleteIdea: (Idea) -> Unit,
 ) {
     Column(
         Modifier
@@ -1139,55 +1185,18 @@ private fun LobeSheet(
             )
             Text(if (open) "v" else "^", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.TextDim))
         }
-        if (!open) {
-            Text(
-                if (ideas.isEmpty()) "Nothing here yet. Tap to open." else "LAST: " + ideaLabel(ideas.first()),
-                Modifier.padding(top = 4.dp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim),
-            )
-        } else {
+        if (open) {
             Spacer(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PixelButton("+ IDEA", onAddIdea, primary = true, modifier = Modifier.weight(1f))
-                PixelButton("DELETE LOBE", onDelete, modifier = Modifier.weight(1f))
-            }
-            Spacer(Modifier.height(12.dp))
-            Text("LAST THOUGHTS", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim))
-            Spacer(Modifier.height(8.dp))
-            if (ideas.isEmpty()) {
-                Text(
-                    "Tap + IDEA to plant the first one.",
-                    style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim.copy(alpha = 0.7f)),
-                )
-            } else {
-                LazyColumn(Modifier.heightIn(max = 230.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(ideas, key = { it.id }) { idea ->
-                        val note = idea.noteId?.let { id -> notes.firstOrNull { it.id == id } }
-                        Column(
-                            Modifier.fillMaxWidth().pixelCard(fill = Px.Bg, shadow = false, notch = 2.dp)
-                                .clickable { onOpenIdea(idea) }.padding(horizontal = 12.dp, vertical = 10.dp),
-                        ) {
-                            Text(
-                                ideaLabel(idea), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = Px.Text),
-                            )
-                            if (idea.title.isNotBlank() && idea.body.isNotBlank()) {
-                                Text(
-                                    idea.body.replace('\n', ' '), Modifier.padding(top = 4.dp), maxLines = 2, overflow = TextOverflow.Ellipsis,
-                                    style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, lineHeight = 14.sp, color = Px.TextDim),
-                                )
-                            }
-                            if (idea.noteId != null) {
-                                Text(
-                                    "> " + (note?.let { noteName(it) } ?: "(note deleted)"), Modifier.padding(top = 4.dp),
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                    style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.Magenta),
-                                )
-                            }
-                        }
-                    }
+            LazyColumn(Modifier.heightIn(max = 230.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(ideas, key = { it.id }) { idea ->
+                    Text(
+                        ideaLabel(idea),
+                        Modifier.fillMaxWidth().pixelCard(fill = Px.Bg, shadow = false, notch = 2.dp)
+                            .pointerInput(idea) { detectTapGestures(onTap = { onOpenIdea(idea) }, onDoubleTap = { onDeleteIdea(idea) }) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = Px.Text),
+                    )
                 }
             }
         }
@@ -1256,66 +1265,22 @@ private fun NameDialog(title: String, hint: String, onDismiss: () -> Unit, onSub
 @Composable
 private fun IdeaDialog(
     idea: Idea,
-    notes: List<Note>,
     onDismiss: () -> Unit,
     onSave: (Idea) -> Unit,
     onDelete: () -> Unit,
-    onOpenNote: (Long) -> Unit,
 ) {
     var title by remember { mutableStateOf(idea.title) }
-    var body by remember { mutableStateOf(idea.body) }
-    var noteId by remember { mutableStateOf(idea.noteId) }
-    var picking by remember { mutableStateOf(false) }
-    val linked = noteId?.let { id -> notes.firstOrNull { it.id == id } }
 
     PixelDialog(onDismiss) {
         Text(if (idea.id == 0L) "NEW IDEA" else "IDEA", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
         Spacer(Modifier.height(14.dp))
         PixelField(title, { title = it }, "Title")
-        Spacer(Modifier.height(10.dp))
-        PixelField(body, { body = it }, "What are you thinking? What did you do? What next?", singleLine = false, minHeight = 110.dp)
-        Spacer(Modifier.height(12.dp))
-        if (noteId != null) {
-            Text(
-                "> " + (linked?.let { noteName(it) } ?: "(note deleted)"),
-                Modifier.fillMaxWidth().let { m -> if (linked != null) m.clickable { onOpenNote(linked.id) } else m },
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.Magenta, fontWeight = FontWeight.Bold),
-            )
-            Spacer(Modifier.height(8.dp))
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PixelButton(if (noteId == null) "LINK NOTE" else "CHANGE NOTE", { picking = true }, modifier = Modifier.weight(1f))
-            if (noteId != null) PixelButton("UNLINK", { noteId = null }, modifier = Modifier.weight(1f))
-        }
         Spacer(Modifier.height(16.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
             if (idea.id != 0L) PixelButton("DELETE", onDelete)
             PixelButton("CANCEL", onDismiss)
-            PixelButton("SAVE", { onSave(idea.copy(title = title, body = body, noteId = noteId)) }, primary = true)
-        }
-    }
-    if (picking) {
-        PixelDialog({ picking = false }) {
-            Text("LINK A NOTE", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
-            Spacer(Modifier.height(12.dp))
-            if (notes.isEmpty()) {
-                Text("No notes yet.", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim))
-            } else {
-                LazyColumn(Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(notes, key = { it.id }) { n ->
-                        Text(
-                            noteName(n),
-                            Modifier.fillMaxWidth().pixelCard(fill = Px.Bg, shadow = false, notch = 2.dp)
-                                .clickable { noteId = n.id; picking = false }.padding(horizontal = 12.dp, vertical = 12.dp),
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = Px.Text),
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { PixelButton("CLOSE", { picking = false }) }
+            // copy keeps body and noteId as they were
+            PixelButton("SAVE", { onSave(idea.copy(title = title)) }, primary = true)
         }
     }
 }

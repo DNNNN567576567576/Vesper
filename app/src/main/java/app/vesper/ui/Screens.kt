@@ -107,6 +107,13 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import app.vesper.NoteSort
+import app.vesper.NotesViewModel
+import app.vesper.TasksViewModel
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.zIndex
+import androidx.lifecycle.viewmodel.compose.viewModel
 import app.vesper.R
 import app.vesper.data.Note
 import app.vesper.data.Task
@@ -312,6 +319,15 @@ fun NotesScreen(
 ) {
     var pendingDelete by remember { mutableStateOf<Long?>(null) }
     var burnId by remember { mutableStateOf<Long?>(null) }
+    val vm: NotesViewModel = viewModel()
+    val sort by vm.sort.collectAsState()
+    val manual = sort == NoteSort.MANUAL
+    val sortLabel = when (sort) { NoteSort.EDITED -> "recent"; NoteSort.ADDED -> "newest"; NoteSort.MANUAL -> "manual" }
+    // Local copy of the order while a page is being dragged; reset whenever the database list changes.
+    var order by remember(notes) { mutableStateOf(notes.orEmpty()) }
+    var dragId by remember { mutableStateOf<Long?>(null) }
+    var dragDy by remember { mutableFloatStateOf(0f) }
+    val shown = if (manual) order else notes.orEmpty()
     // A confirmed burn must always delete, even if the user leaves Notes mid-animation.
     val latestDelete by rememberUpdatedState(onDelete)
     val latestBurnId by rememberUpdatedState(burnId)
@@ -338,17 +354,17 @@ fun NotesScreen(
         val scale = maxWidth.value / 360f
         val pageWidth = maxWidth * (256f / 360f)
         Column(Modifier.fillMaxSize()) {
-            ScreenTitle("Notes")
-            when {
-                notes == null -> Unit
-                notes.isEmpty() -> EmptyState("Your pages await.", hint = "Tap the plus to begin.")
-                else -> LazyColumn(
+            if (notes == null || notes.isEmpty()) TitleWithSort("Scrolls", sortLabel, vm::cycleSort)
+            else {
+                LazyColumn(
                     state = listState,
                     contentPadding = PaddingValues(top = 2.dp, bottom = 112.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    itemsIndexed(notes, key = { _, n -> n.id }) { index, note ->
+                    item(key = "title") { TitleWithSort("Scrolls", sortLabel, vm::cycleSort) }
+                    itemsIndexed(shown, key = { _, n -> n.id }) { index, note ->
+                        val isDragged = dragId == note.id
                         NotePage(
                             note = note,
                             index = index,
@@ -358,16 +374,39 @@ fun NotesScreen(
                             pxSize = pxSize,
                             held = pendingDelete == note.id,
                             burning = burnId == note.id,
-                            modifier = Modifier.animateItem(fadeInSpec = tween(220), fadeOutSpec = tween(180)),
+                            modifier = if (isDragged) Modifier.zIndex(1f).graphicsLayer { translationY = dragDy }
+                            else Modifier.animateItem(fadeInSpec = tween(220), fadeOutSpec = tween(180)),
                             onLongClick = { pendingDelete = note.id },
                             onSwipeDelete = { pendingDelete = note.id },
                             onBurned = { burnId = null; onDelete(note.id) },
+                            dragHandle = if (!manual) null else Modifier.pointerInput(note.id) {
+                                detectDragGestures(
+                                    onDragStart = { dragId = note.id; dragDy = 0f },
+                                    onDragEnd = { dragId = null; dragDy = 0f; vm.move(order.map { it.id }) },
+                                    onDragCancel = { dragId = null; dragDy = 0f },
+                                ) { change, amount ->
+                                    change.consume()
+                                    dragDy += amount.y
+                                    val items = listState.layoutInfo.visibleItemsInfo
+                                    val cur = items.firstOrNull { it.key == note.id } ?: return@detectDragGestures
+                                    val centre = cur.offset + dragDy + cur.size / 2f
+                                    val hit = items.firstOrNull { it.key != note.id && it.key is Long && centre >= it.offset && centre < it.offset + it.size }
+                                        ?: return@detectDragGestures
+                                    val from = order.indexOfFirst { it.id == note.id }
+                                    val to = order.indexOfFirst { it.id == hit.key }
+                                    if (from < 0 || to < 0) return@detectDragGestures
+                                    // The dragged page takes the other's slot; keep it under the finger.
+                                    val newOffset = if (to > from) hit.offset + hit.size - cur.size else hit.offset
+                                    dragDy += cur.offset - newOffset
+                                    order = order.toMutableList().apply { add(to, removeAt(from)) }
+                                }
+                            },
                         ) { onOpen(note.id) }
                     }
                 }
             }
         }
-        SigilFab("New note", onNew, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
+        SigilFab("New scroll", onNew, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
     }
 
     pendingDelete?.let { id ->
@@ -467,6 +506,22 @@ private fun DrawScope.drawBurn(progress: Float, t: Float, px: Float, seed: Int) 
     }
 }
 
+/** Screen title with a tiny sort toggle on the right. */
+@Composable
+private fun TitleWithSort(title: String, label: String, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth()) {
+        ScreenTitle(title)
+        Text(
+            "sort: $label",
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .clickable(role = Role.Button, onClickLabel = "change sort order", onClick = onClick)
+                .padding(start = 12.dp, end = 22.dp, top = 8.dp, bottom = 14.dp),
+            style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim.copy(alpha = 0.7f)),
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NotePage(
@@ -482,6 +537,7 @@ private fun NotePage(
     onLongClick: () -> Unit = {},
     onSwipeDelete: () -> Unit,
     onBurned: () -> Unit,
+    dragHandle: Modifier? = null,
     onClick: () -> Unit,
 ) {
     val label = note.title.trim().ifEmpty { "Untitled page" }
@@ -623,6 +679,20 @@ private fun NotePage(
                     style = TextStyle(fontFamily = PageFont, fontSize = 21.sp, lineHeight = 22.sp, color = Color(0xFF140A1C)),
                 )
             }
+            if (dragHandle != null) {
+                // Long-press already means "burn", so manual reordering uses this grip instead.
+                Column(
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = shadowPad)
+                        .size(44.dp)
+                        .then(dragHandle),
+                    verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    repeat(3) { Box(Modifier.width(16.dp).height(3.dp).background(Color(0xFF140A1C).copy(alpha = 0.55f))) }
+                }
+            }
             // The glowing pin sits above the text. Its head is 2 low-res px below the paper's top edge.
             Spacer(
                 Modifier
@@ -668,6 +738,8 @@ fun TasksScreen(
     val relit = remember { HashSet<Long>() }
     val latestRelight by rememberUpdatedState(onRelight)
     var open by rememberSaveable { mutableStateOf(false) }
+    val vm: TasksViewModel = viewModel()
+    val newestFirst by vm.newestFirst.collectAsState()
 
     // Leaving the tab mid-animation must not lose the completion.
     DisposableEffect(Unit) {
@@ -709,9 +781,9 @@ fun TasksScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             when {
-                tasks == null -> ScreenTitle("Tasks")
+                tasks == null -> ScreenTitle("Flames")
                 tasks.isEmpty() && snuffed.isEmpty() -> {
-                    ScreenTitle("Tasks")
+                    ScreenTitle("Flames")
                     EmptyState("No quests remain.", hint = "Tap the plus to add one.")
                 }
                 else -> Box(Modifier.fillMaxSize()) {
@@ -748,7 +820,11 @@ fun TasksScreen(
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         // String key: the candle canvas only reads Long keys, so it skips the title.
-                        item(key = "title") { Box(Modifier.padding(bottom = 6.dp)) { ScreenTitle("Tasks") } }
+                        item(key = "title") {
+                            Box(Modifier.padding(bottom = 6.dp)) {
+                                TitleWithSort("Flames", if (newestFirst) "newest first" else "oldest first", vm::toggleOrder)
+                            }
+                        }
                         if (tasks.isEmpty()) item(key = Long.MIN_VALUE) {
                             Box(Modifier.fillMaxWidth().height(380.dp)) { EmptyState("No quests remain.", hint = "Tap the plus to add one.") }
                         }
@@ -776,7 +852,7 @@ fun TasksScreen(
                 }
             }
         }
-        SigilFab("Add task", onAdd, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
+        SigilFab("Add flame", onAdd, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
     }
 }
 
@@ -810,7 +886,7 @@ private fun TaskRow(
                     interactionSource = interaction,
                     indication = null,
                     role = Role.Checkbox,
-                    onClickLabel = "Complete and remove task",
+                    onClickLabel = "Complete and remove flame",
                     onClick = {
                         if (!completing.containsKey(id)) {
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -834,7 +910,7 @@ private fun SnuffedToggle(open: Boolean, time: FloatState, pxSize: Float, onClic
         Modifier
             .fillMaxWidth()
             .heightIn(min = 44.dp)
-            .clickable(role = Role.Button, onClickLabel = if (open) "hide snuffed tasks" else "show snuffed tasks", onClick = onClick),
+            .clickable(role = Role.Button, onClickLabel = if (open) "hide snuffed flames" else "show snuffed flames", onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Canvas(Modifier.width(70.dp).height(44.dp)) {
@@ -876,7 +952,7 @@ private fun SnuffedRow(
                     interactionSource = interaction,
                     indication = null,
                     role = Role.Button,
-                    onClickLabel = "Relight task",
+                    onClickLabel = "Relight flame",
                     onClick = {
                         if (!relighting.containsKey(id)) {
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -886,7 +962,7 @@ private fun SnuffedRow(
                 ),
         )
         Column(Modifier.weight(1f).padding(top = 12.dp, bottom = 16.dp, end = 18.dp)) {
-            Text(task.text, style = TextStyle(fontFamily = PageFont, fontSize = 19.sp, lineHeight = 21.sp, color = Color(0xFF6A4A9A)))
+            Text(task.text, style = TextStyle(fontFamily = PageFont, fontSize = 19.sp, lineHeight = 21.sp, color = Color(0xFF6A4A9A).copy(alpha = 0.45f)))
         }
     }
 }
@@ -902,14 +978,14 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
         Row(Modifier.fillMaxWidth().navigationBarsPadding().height(72.dp)) {
             NavTab(
                 icon = R.drawable.grimoire_tab,
-                label = "Notes",
+                label = "Scrolls",
                 active = selected == 0,
                 onClick = { onSelect(0) },
                 modifier = Modifier.weight(1f),
             )
             NavTab(
                 icon = R.drawable.scroll_tab,
-                label = "Tasks",
+                label = "Flames",
                 active = selected == 1,
                 onClick = { onSelect(1) },
                 modifier = Modifier.weight(1f),

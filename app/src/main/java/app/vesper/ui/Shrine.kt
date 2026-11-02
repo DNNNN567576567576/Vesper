@@ -164,8 +164,6 @@ private fun dayOf(ms: Long): LocalDate = Instant.ofEpochMilli(ms).atZone(zone).t
 private fun dayLabel(d: LocalDate): String {
     val today = LocalDate.now(zone)
     return when {
-        d == today -> "today"
-        d == today.minusDays(1) -> "yesterday"
         d.year == today.year -> d.format(dayFmt)
         else -> d.format(dayYearFmt)
     }
@@ -235,7 +233,7 @@ fun ShrineScreen(
         BoxWithConstraints(Modifier.fillMaxSize().padding(bottom = lift)) {
             val innerWidthPx = with(density) { (maxWidth - 32.dp).roundToPx() }
             Column(Modifier.fillMaxSize()) {
-                ShrineHeader(posts?.size ?: 0)
+                ShrineHeader()
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     LazyColumn(
                         state = listState,
@@ -320,7 +318,7 @@ fun ShrineScreen(
 }
 
 @Composable
-private fun ShrineHeader(count: Int) {
+private fun ShrineHeader() {
     Row(
         Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 20.dp, bottom = 12.dp),
         verticalAlignment = Alignment.Bottom,
@@ -334,12 +332,6 @@ private fun ShrineHeader(count: Int) {
                 color = Px.Lavender,
                 shadow = Shadow(Color(0xFF6E1F5A), Offset(3f, 3f), 0f),
             ),
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            "$count kept",
-            modifier = Modifier.alignByBaseline(),
-            style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, color = ShrineDim),
         )
     }
 }
@@ -396,7 +388,7 @@ private fun PostCard(
         Modifier
             .fillMaxWidth()
             .padding(bottom = 14.dp)
-            .combinedClickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}, onLongClick = onMenu),
+            .combinedClickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}, onDoubleClick = onMenu),
     ) {
         // Paper + shadow + embers, behind the content. Time is only read in the draw phase.
         Spacer(
@@ -502,7 +494,7 @@ private fun PostPhoto(name: String, widthPx: Int, onTap: () -> Unit, onLong: () 
         .fillMaxWidth()
         .aspectRatio(max(aspect, 1f / 1.4f))
         .background(Color(0xFF1B1221))
-        .combinedClickable(onClick = onTap, onLongClick = onLong)
+        .combinedClickable(onClick = onTap, onDoubleClick = onLong)
     if (b != null) {
         Image(b.asImageBitmap(), "photo", mod, contentScale = ContentScale.Fit)
     } else {
@@ -557,7 +549,7 @@ private object BurnedPaper {
                 if (dd < n) continue // burnt away
                 mask[y * w + x] = -1
                 if (dd < n + 1f) {
-                    pixels[y * w + x] = 0xFF000000.toInt() or ((48 shl 16) or (20 shl 8) or 38)
+                    pixels[y * w + x] = 0xFF000000.toInt() or ((46 shl 16) or (22 shl 8) or 64)
                     scorch[y * w + x] = pixels[y * w + x]
                     val hh = hash(x, y, seed)
                     if (hh >= thr) { ex.add(x); ey.add(y); eh.add(hash(y, x, seed)) }
@@ -565,10 +557,10 @@ private object BurnedPaper {
                 }
                 val k = min(1f, (dd - n - 1f) / (2f + 5f * BURN))
                 val kk = k * k * (3f - 2f * k)
-                scorch[y * w + x] = (((1f - kk) * 255f).toInt().coerceIn(0, 255) shl 24) or (10 shl 16) or (5 shl 8) or 8
-                var r = (10 + (27 - 10) * kk).toInt()
-                var g = (5 + (18 - 5) * kk).toInt()
-                var b = (8 + (33 - 8) * kk).toInt()
+                scorch[y * w + x] = (((1f - kk) * 255f).toInt().coerceIn(0, 255) shl 24) or (26 shl 16) or (13 shl 8) or 36
+                var r = (26 + (46 - 26) * kk).toInt()
+                var g = (13 + (22 - 13) * kk).toInt()
+                var b = (36 + (64 - 36) * kk).toInt()
                 val d = if (hash(x shr 1, y, seed + 7) < 0.06f) -4 else if (hash(x, y shr 1, seed + 3) < 0.04f) 5 else 0
                 r = (r + d).coerceIn(0, 255); g = (g + d).coerceIn(0, 255); b = (b + d).coerceIn(0, 255)
                 pixels[y * w + x] = 0xFF000000.toInt() or (r shl 16) or (g shl 8) or b

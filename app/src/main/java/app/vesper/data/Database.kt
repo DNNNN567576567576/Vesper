@@ -21,6 +21,8 @@ data class Note(
     val content: String,
     /** Internal only (used to list recently edited notes first). Never shown in the UI. */
     val updatedAt: Long = System.currentTimeMillis(),
+    /** Order in the hand-sorted (manual) list, lowest first. New notes take the lowest value so they land on top. */
+    val position: Int = 0,
 )
 
 @Entity(tableName = "tasks")
@@ -42,8 +44,15 @@ interface NoteDao {
     @Insert
     suspend fun insert(note: Note): Long
 
-    @Update
-    suspend fun update(note: Note)
+    /** Edits text only, so the manual [Note.position] survives. */
+    @Query("UPDATE notes SET title = :title, content = :content, updatedAt = :at WHERE id = :id")
+    suspend fun updateText(id: Long, title: String, content: String, at: Long)
+
+    @Query("SELECT MIN(position) FROM notes")
+    suspend fun minPosition(): Int?
+
+    @Query("UPDATE notes SET position = :position WHERE id = :id")
+    suspend fun setPosition(id: Long, position: Int)
 
     @Query("DELETE FROM notes WHERE id = :id")
     suspend fun delete(id: Long)
@@ -226,11 +235,19 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+/** v5 -> v6: notes get a manual-sort position, starting out in the current "recently edited" order. */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `notes` ADD COLUMN `position` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("UPDATE `notes` SET `position` = (SELECT COUNT(*) FROM `notes` n2 WHERE n2.`updatedAt` > `notes`.`updatedAt` OR (n2.`updatedAt` = `notes`.`updatedAt` AND n2.`id` > `notes`.`id`))")
+    }
+}
+
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 5
+const val DB_VERSION = 6
 
 /** The single migration list used by the app and the tests. */
-val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
 
 @Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class, Plan::class, DayFocus::class], version = DB_VERSION, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {

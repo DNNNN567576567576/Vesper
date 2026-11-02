@@ -213,6 +213,7 @@ fun MoonsScreen(
     val lobeList = lobes.orEmpty()
 
     var menuFor by remember { mutableStateOf<Plan?>(null) }
+    var adding by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Plan?>(null) }
     var deleting by remember { mutableStateOf<Plan?>(null) }
 
@@ -278,6 +279,7 @@ fun MoonsScreen(
                                         moon = moons[i],
                                         dots = dots,
                                         modifier = Modifier.weight(1f),
+                                        onDoubleClick = { selected = ed; adding = true },
                                     ) {
                                         selected = ed
                                         monthIdx = date.year * 12 + date.monthValue - 1
@@ -382,7 +384,6 @@ fun MoonsScreen(
                     }
                     Spacer(Modifier.height(16.dp))
                 }
-                MoonsComposer(draft, onDraft) { onAddPlan(selected) }
             }
         }
     }
@@ -399,6 +400,33 @@ fun MoonsScreen(
             ) {
                 MenuRow("edit", MoonsInk) { menuFor = null; editing = p }
                 MenuRow("delete", MoonsDelete) { menuFor = null; deleting = p }
+            }
+        }
+    }
+
+    if (adding) {
+        PixelDialog({ adding = false }) {
+            Text("ADD PLAN", style = TextStyle(fontFamily = PageFont, fontSize = 24.sp, color = Px.Lavender))
+            Spacer(Modifier.height(10.dp))
+            val shape = RoundedCornerShape(10.dp)
+            BasicTextField(
+                value = draft,
+                onValueChange = onDraft,
+                textStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = MoonsInk),
+                cursorBrush = SolidColor(Px.Lavender),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 60.dp, max = 220.dp)
+                    .clip(shape)
+                    .background(Color(0xFF08040C))
+                    .border(2.dp, Color(0xFF5A3E7A), shape)
+                    .padding(12.dp),
+            )
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+                PixelButton("CANCEL", { adding = false })
+                PixelButton("ADD", { if (draft.isNotBlank()) onAddPlan(selected); adding = false }, primary = true)
             }
         }
     }
@@ -502,6 +530,7 @@ private fun ArrowButton(grid: List<String>, description: String, onClick: () -> 
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DayCell(
     date: LocalDate,
@@ -511,6 +540,7 @@ private fun DayCell(
     moon: ImageBitmap,
     dots: List<Color>,
     modifier: Modifier,
+    onDoubleClick: () -> Unit,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(8.dp)
@@ -520,7 +550,7 @@ private fun DayCell(
             .clip(shape)
             .background(if (isSelected) MoonsSelBg else Color.Transparent)
             .then(if (isSelected) Modifier.border(2.dp, MoonsSelLine, shape) else Modifier)
-            .clickable(role = Role.Button, onClick = onClick),
+            .combinedClickable(role = Role.Button, onClick = onClick, onDoubleClick = onDoubleClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -543,64 +573,6 @@ private fun DayCell(
             val total = n * step - 2.dp.toPx()
             val x0 = (size.width - total) / 2f
             for (k in 0 until n) drawRect(dots[k], Offset(x0 + k * step, 0f), Size(d, d))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Composer
-// ---------------------------------------------------------------------------------------------
-
-@Composable
-private fun MoonsComposer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    val canSend = draft.isNotBlank()
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(MoonsBarBg)
-            .drawBehind { drawRect(MoonsBarLine, size = Size(size.width, 2.dp.toPx())) }
-            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 10.dp),
-    ) {
-        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val shape = RoundedCornerShape(10.dp)
-            BasicTextField(
-                value = draft,
-                onValueChange = onDraft,
-                interactionSource = interaction,
-                textStyle = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = MoonsInk),
-                cursorBrush = SolidColor(Px.Lavender),
-                maxLines = 4,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 40.dp)
-                    .clip(shape)
-                    .background(Color(0xFF08040C))
-                    .border(2.dp, if (focused) Color(0xFF5A3E7A) else Color(0xFF2A1A38), shape)
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                decorationBox = { inner ->
-                    Box(Modifier.heightIn(min = 24.dp), contentAlignment = Alignment.CenterStart) {
-                        if (draft.isEmpty()) {
-                            Text("plan something for this day...", maxLines = 1, style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = MoonsDim))
-                        }
-                        inner()
-                    }
-                },
-            )
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(shape)
-                    .background(Color(0xFF120A19))
-                    .border(2.dp, Px.Primary, shape)
-                    .clickable(role = Role.Button) { if (canSend) onSend() }
-                    .semantics { contentDescription = "Add plan" },
-                contentAlignment = Alignment.Center,
-            ) {
-                PixelIcon(PLUS, Px.Lavender.copy(alpha = if (canSend) 1f else 0.45f), pixel = 2.dp)
-            }
         }
     }
 }

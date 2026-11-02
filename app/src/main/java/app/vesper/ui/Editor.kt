@@ -143,7 +143,7 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit) {
                     decorationBox = { inner ->
                         Box {
                             if (vm.content.isEmpty()) {
-                                Text("Write somethingâ€¦", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.TextDim.copy(alpha = 0.5f)))
+                                Text("Write something…", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.TextDim.copy(alpha = 0.5f)))
                             }
                             inner()
                         }

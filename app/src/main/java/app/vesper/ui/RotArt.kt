@@ -296,7 +296,7 @@ private class NotesWallRenderer : WallPainter {
             var x = r.next() * w
             var y = r.next() * h
             var a = r.next() * 2f * PI.toFloat()
-            vCol[v] = if (v % 2 == 0) 0x22091F else 0x2E0C2A
+            vCol[v] = if (v % 2 == 0) 0x160A2A else 0x1F0E38
             vSp[v] = 0.15f + r.next() * 0.2f
             vPh[v] = r.next() * 3f
             for (s in 0 until veinSteps) {
@@ -346,7 +346,7 @@ private class NotesWallRenderer : WallPainter {
                 val d = (j - head) / 1.6f
                 val hot = exp(-d * d)
                 val col = if (hot > 0.15f) {
-                    ((60 + (120 * hot).toInt()) shl 16) or ((16 + (30 * hot).toInt()) shl 8) or (60 + (90 * hot).toInt())
+                    ((50 + (80 * hot).toInt()) shl 16) or ((18 + (30 * hot).toInt()) shl 8) or (90 + (150 * hot).toInt())
                 } else vCol[v]
                 val base = (v * veinSteps + j) * 5
                 for (k in 0 until 5) {
@@ -355,7 +355,7 @@ private class NotesWallRenderer : WallPainter {
                 }
                 if (hot > 0.6f) {
                     val yy = Math.floorMod(vnY[base + 2] - vOff, h)
-                    pix.glow(vnX[base + 2].toFloat(), yy.toFloat(), 4f, 0x9A2A7A, 0.25f * hot)
+                    pix.glow(vnX[base + 2].toFloat(), yy.toFloat(), 4f, 0x7A3AC8, 0.25f * hot)
                 }
             }
         }

@@ -49,7 +49,7 @@ class BackupTest {
 
     private suspend fun seed() {
         val db = app.db
-        db.noteDao().insert(Note(title = "Dream log", content = "flew over the sea", updatedAt = 1700000000000))
+        db.noteDao().insert(Note(title = "Dream log", content = "flew over the sea", updatedAt = 1700000000000, position = 7))
         db.taskDao().insert(Task(text = "buy candles"))
         db.taskDao().snuff(db.taskDao().insert(Task(text = "light the lamp")), 1700000003000)
         val lobe = db.brainDao().insertLobe(Lobe(name = "Work", colorIndex = 2, slot = 0))

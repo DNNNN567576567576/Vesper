@@ -120,6 +120,23 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate5To6() {
+        helper.createDatabase(name, 5).apply {
+            insertNote() // id 1, updatedAt 1700000000000
+            execSQL("INSERT INTO notes (id, title, content, updatedAt) VALUES (2, 'newer', 'x', 1700000009000)")
+            execSQL("INSERT INTO notes (id, title, content, updatedAt) VALUES (3, 'oldest', 'x', 1600000000000)")
+            close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 6, true, MIGRATION_5_6)
+        db.assertNoteAndTask()
+        // positions start out in the old "recently edited" order: newer, Dream log, oldest
+        db.query("SELECT id FROM notes ORDER BY position").use {
+            val ids = generateSequence { if (it.moveToNext()) it.getLong(0) else null }.toList()
+            assertEquals(listOf(2L, 1L, 3L), ids)
+        }
+    }
+
+    @Test
     fun migrateAllFrom1() {
         helper.createDatabase(name, 1).apply { insertNote(); close() }
         helper.runMigrationsAndValidate(name, DB_VERSION, true, *ALL_MIGRATIONS).assertNoteAndTask()

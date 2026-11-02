@@ -7,6 +7,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.app.Application
+import android.content.Context
+import androidx.room.withTransaction
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import app.vesper.data.Note
 import app.vesper.data.Post
 import app.vesper.data.Task
@@ -30,12 +34,42 @@ import kotlinx.coroutines.sync.withLock
 
 private val AndroidViewModel.notebook get() = getApplication<NotebookApp>()
 
+enum class NoteSort { EDITED, ADDED, MANUAL }
+
+private const val KEY_NOTE_SORT = "noteSort"
+private const val KEY_TASK_NEWEST = "taskNewestFirst"
+
+private val AndroidViewModel.prefs get() = notebook.getSharedPreferences(NotebookApp.PREFS, Context.MODE_PRIVATE)
+
 /** `null` = the first database emission has not arrived yet. */
 class NotesViewModel(app: Application) : AndroidViewModel(app) {
-    val notes: StateFlow<List<Note>?> = notebook.db.noteDao().observeAll()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val sort = MutableStateFlow(NoteSort.entries.firstOrNull { it.name == prefs.getString(KEY_NOTE_SORT, null) } ?: NoteSort.EDITED)
 
-    /** Permanent, with no trash and no history â€” the caller confirms first. */
+    // The DAO delivers "recently edited" order; the other modes re-sort it here.
+    val notes: StateFlow<List<Note>?> = combine(notebook.db.noteDao().observeAll(), sort) { list, mode ->
+        when (mode) {
+            NoteSort.EDITED -> list
+            NoteSort.ADDED -> list.sortedByDescending { it.id }
+            NoteSort.MANUAL -> list.sortedWith(compareBy<Note> { it.position }.thenByDescending { it.id })
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun cycleSort() {
+        val next = NoteSort.entries[(sort.value.ordinal + 1) % NoteSort.entries.size]
+        sort.value = next
+        prefs.edit().putString(KEY_NOTE_SORT, next.name).apply()
+    }
+
+    /** Saves a hand-made order (top to bottom). */
+    fun move(ids: List<Long>) {
+        notebook.appScope.launch {
+            try {
+                notebook.db.withTransaction { ids.forEachIndexed { i, id -> notebook.db.noteDao().setPosition(id, i) } }
+            } catch (e: Exception) { notebook.reportError("reorder notes", e) }
+        }
+    }
+
+    /** Permanent, with no trash and no history — the caller confirms first. */
     fun delete(id: Long) {
         notebook.appScope.launch {
             try { notebook.db.noteDao().delete(id) } catch (e: Exception) { notebook.reportError("delete note", e) }
@@ -46,8 +80,15 @@ class NotesViewModel(app: Application) : AndroidViewModel(app) {
 class TasksViewModel(app: Application) : AndroidViewModel(app) {
     private val dao get() = notebook.db.taskDao()
 
-    val tasks: StateFlow<List<Task>?> = dao.observeLit()
+    val newestFirst = MutableStateFlow(prefs.getBoolean(KEY_TASK_NEWEST, false))
+
+    val tasks: StateFlow<List<Task>?> = combine(dao.observeLit(), newestFirst) { list, newest -> if (newest) list.asReversed() else list }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun toggleOrder() {
+        newestFirst.value = !newestFirst.value
+        prefs.edit().putBoolean(KEY_TASK_NEWEST, newestFirst.value).apply()
+    }
 
     val snuffed: StateFlow<List<Task>> = dao.observeSnuffed()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -143,9 +184,9 @@ class NoteEditorViewModel(app: Application, noteId: Long?) : AndroidViewModel(ap
                 val current = id
                 if (current == null) {
                     if (t.isBlank() && c.isBlank()) return // never store a note that was never written
-                    id = dao.insert(Note(title = t, content = c))
+                    id = dao.insert(Note(title = t, content = c, position = (dao.minPosition() ?: 1) - 1))
                 } else {
-                    dao.update(Note(id = current, title = t, content = c))
+                    dao.updateText(current, t, c, System.currentTimeMillis())
                 }
                 savedTitle = t; savedContent = c
             } catch (e: Exception) {
