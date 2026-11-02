@@ -46,8 +46,11 @@ class NotesViewModel(app: Application) : AndroidViewModel(app) {
 class TasksViewModel(app: Application) : AndroidViewModel(app) {
     private val dao get() = notebook.db.taskDao()
 
-    val tasks: StateFlow<List<Task>?> = dao.observeAll()
+    val tasks: StateFlow<List<Task>?> = dao.observeLit()
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val snuffed: StateFlow<List<Task>> = dao.observeSnuffed()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun add(text: String) {
         val clean = text.trim()
@@ -57,10 +60,16 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Checking a task deletes it permanently. There is no undo and no history. */
+    /** Checking a task snuffs it: it moves to the ash ledge and is kept forever. */
     fun complete(id: Long) {
         notebook.appScope.launch {
-            try { dao.delete(id) } catch (e: Exception) { notebook.reportError("remove task", e) }
+            try { dao.snuff(id, System.currentTimeMillis()) } catch (e: Exception) { notebook.reportError("snuff task", e) }
+        }
+    }
+
+    fun relight(id: Long) {
+        notebook.appScope.launch {
+            try { dao.relight(id) } catch (e: Exception) { notebook.reportError("relight task", e) }
         }
     }
 }

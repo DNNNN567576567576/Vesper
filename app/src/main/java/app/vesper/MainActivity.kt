@@ -111,6 +111,7 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
     val notes by notesVm.notes.collectAsStateWithLifecycle()
     val tasks by tasksVm.tasks.collectAsStateWithLifecycle()
+    val snuffedTasks by tasksVm.snuffed.collectAsStateWithLifecycle()
 
     // Hoisted so each tab keeps its scroll position while the other tab (or the editor) is shown.
     val notesListState = rememberLazyListState()
@@ -208,8 +209,10 @@ private fun App(request: String?, onRequestHandled: () -> Unit) {
                             } else if (current == 1) {
                                 TasksScreen(
                                     tasks = tasks,
+                                    snuffed = snuffedTasks,
                                     listState = tasksListState,
                                     onComplete = tasksVm::complete,
+                                    onRelight = tasksVm::relight,
                                     onAdd = { addingTask = true },
                                 )
                             } else if (current == 3) {

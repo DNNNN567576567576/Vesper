@@ -108,6 +108,18 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate4To5() {
+        helper.createDatabase(name, 4).apply { insertNote(); insertBrain(); insertPost(); execSQL("INSERT INTO tasks (id, text) VALUES (2, 'light the lamp')"); close() }
+        val db = helper.runMigrationsAndValidate(name, 5, true, MIGRATION_4_5)
+        db.assertNoteAndTask(); db.assertBrain(); db.assertPost()
+        db.query("SELECT COUNT(*), COUNT(snuffedAt) FROM tasks").use {
+            it.moveToFirst(); assertEquals(2, it.getInt(0)); assertEquals(0, it.getInt(1)) // all still lit
+        }
+        db.execSQL("UPDATE tasks SET snuffedAt = 1700000003000 WHERE id = 2") // column is usable
+        db.query("SELECT snuffedAt FROM tasks WHERE id = 2").use { it.moveToFirst(); assertEquals(1700000003000, it.getLong(0)) }
+    }
+
+    @Test
     fun migrateAllFrom1() {
         helper.createDatabase(name, 1).apply { insertNote(); close() }
         helper.runMigrationsAndValidate(name, DB_VERSION, true, *ALL_MIGRATIONS).assertNoteAndTask()
@@ -122,7 +134,7 @@ class MigrationTest {
             val note = db.noteDao().get(1)!!
             assertEquals("Dream log", note.title)
             assertEquals("flew over the sea", note.content)
-            assertEquals("buy candles", db.taskDao().observeAll().first().single().text)
+            assertEquals("buy candles", db.taskDao().observeLit().first().single().text)
             // every new DAO works on the upgraded file
             db.brainDao().observeLobes().first(); db.postDao().observeAll().first(); db.moonsDao().observeAllPlans().first()
         } finally {

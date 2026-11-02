@@ -617,4 +617,45 @@ internal class CandleRenderer {
         }
         pix.ma = 1f
     }
+
+    /**
+     * A snuffed task: melted stub, wax puddle and one thin wisp of smoke on a dimmer ledge.
+     * [p] is seconds since relighting was tapped (negative = still ash); the flame grows back over 0.6 s.
+     */
+    fun stub(id: Long, ly: Int, w: Int, t: Float, p: Float) {
+        val fi = (id % 1000L).toFloat()
+        val cx = 17
+        val top = ly - 5
+        pix.ma = 1f
+
+        pix.dot(7, ly, w - 14, 1, 0x2A1824)
+        pix.dot(7, ly + 1, w - 14, 3, 0x170B13)
+
+        pix.dot(cx - 6, ly - 1, 13, 1, 0x5A4870)
+        pix.dot(cx - 4, ly - 2, 9, 1, 0x6A5480)
+        pix.dot(cx - 2, top, 5, 3, 0x7A6496)
+        pix.dot(cx - 2, top, 5, 1, 0x301426)
+        // Bent wick: up, then flopped over.
+        pix.dot(cx - 1, top - 1, 1, 2, 0x0A0508)
+        pix.dot(cx, top - 2, 1, 1, 0x0A0508)
+
+        // One wisp, each puff a pixel; the cycle is staggered per row.
+        val u = t * 0.25f + fi * 0.37f
+        for (q in 0 until 6) {
+            val f = (u + q / 6f) % 1f
+            val xx = cx - 1 + sin(f * 6f + fi) * 1.6f
+            pix.dot(rotRnd(xx), top - 2 - (f * 16f).toInt(), 1, 1, if (q % 2 == 0) 0x8A7A9A else 0x6A5A7A, (1f - f) * 0.6f)
+        }
+
+        if (p >= 0f) {
+            val g = (p / 0.6f).coerceIn(0f, 1f)
+            val fx = cx - 1 + rotRnd(sin(t * 7f + fi) * 0.7f)
+            val by = top - 1
+            pix.glow(cx.toFloat(), (by - 4).toFloat(), 30f * g, 0x7A3AA8, 0.3f * g)
+            pix.dot(fx - 1, by - 2, 3, 1, 0x7A3AA8, g)
+            pix.dot(fx - 1, by - 5, 3, 3, 0xD45AAB, g)
+            pix.dot(fx, by - 7, 1, 2, 0xD45AAB, g)
+            pix.dot(fx, by - 4, 1, 2, 0xFFE8FF, g)
+        }
+    }
 }

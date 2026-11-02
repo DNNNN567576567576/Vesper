@@ -96,6 +96,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -703,8 +704,10 @@ private fun NotePage(
 @Composable
 fun TasksScreen(
     tasks: List<Task>?,
+    snuffed: List<Task>,
     listState: LazyListState,
     onComplete: (Long) -> Unit,
+    onRelight: (Long) -> Unit,
     onAdd: () -> Unit,
 ) {
     val time = rememberRotTime()
@@ -714,10 +717,26 @@ fun TasksScreen(
     val latestComplete by rememberUpdatedState(onComplete)
     val scope = rememberCoroutineScope()
     val candles = remember { CandleRenderer() }
+    val relighting = remember { mutableStateMapOf<Long, Float>() }
+    val relit = remember { HashSet<Long>() }
+    val latestRelight by rememberUpdatedState(onRelight)
+    var open by rememberSaveable { mutableStateOf(false) }
 
     // Leaving the tab mid-animation must not lose the completion.
     DisposableEffect(Unit) {
-        onDispose { completing.keys.toList().forEach { if (fired.add(it)) latestComplete(it) } }
+        onDispose {
+            completing.keys.toList().forEach { if (fired.add(it)) latestComplete(it) }
+            relighting.keys.toList().forEach { if (relit.add(it)) latestRelight(it) }
+        }
+    }
+
+    // Forget rows the database has moved, so a relit task can be snuffed (and relit) again.
+    LaunchedEffect(tasks, snuffed) {
+        if (tasks == null) return@LaunchedEffect
+        completing.keys.removeAll { id -> tasks.none { it.id == id } }
+        fired.retainAll(completing.keys)
+        relighting.keys.removeAll { id -> snuffed.none { it.id == id } }
+        relit.retainAll(relighting.keys)
     }
 
     val begin: (Long) -> Unit = { id ->
@@ -730,12 +749,22 @@ fun TasksScreen(
         }
     }
 
+    val beginRelight: (Long) -> Unit = { id ->
+        if (!relighting.containsKey(id)) {
+            relighting[id] = time.floatValue
+            scope.launch {
+                delay(600)
+                if (relit.add(id)) latestRelight(id)
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             ScreenTitle("Tasks")
             when {
                 tasks == null -> Unit
-                tasks.isEmpty() -> EmptyState("No quests remain.", hint = "Tap the plus to add one.")
+                tasks.isEmpty() && snuffed.isEmpty() -> EmptyState("No quests remain.", hint = "Tap the plus to add one.")
                 else -> Box(Modifier.fillMaxSize()) {
                     // Pools of light, ledges and candles live in one layer behind the rows (text never overlaps them).
                     Canvas(Modifier.fillMaxSize()) {
@@ -752,8 +781,14 @@ fun TasksScreen(
                             val info = items[i]
                             val id = info.key as? Long ?: continue
                             val ly = ((info.offset + pad + info.size) / pxSize).roundToInt() - 4
-                            val start = completing[id]
-                            candles.row(id, ly, w, t, if (start == null) -1f else t - start)
+                            // Keys: lit task = id, snuffed task = -id, plus the toggle (0) and the empty-state item.
+                            if (id > 0L) {
+                                val start = completing[id]
+                                candles.row(id, ly, w, t, if (start == null) -1f else t - start)
+                            } else if (id < 0L && id != Long.MIN_VALUE) {
+                                val start = relighting[-id]
+                                candles.stub(-id, ly, w, t, if (start == null) -1f else t - start)
+                            }
                         }
                         drawIntoCanvas { candles.pix.blit(it.nativeCanvas, 0, 0, pxSize.toInt()) }
                     }
@@ -763,6 +798,9 @@ fun TasksScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
+                        if (tasks.isEmpty()) item(key = Long.MIN_VALUE) {
+                            Box(Modifier.fillMaxWidth().height(380.dp)) { EmptyState("No quests remain.", hint = "Tap the plus to add one.") }
+                        }
                         items(tasks, key = { it.id }) { task ->
                             TaskRow(
                                 task = task,
@@ -771,6 +809,17 @@ fun TasksScreen(
                                 modifier = Modifier.animateItem(placementSpec = null, fadeInSpec = tween(200), fadeOutSpec = tween(160)),
                                 onTap = { begin(task.id) },
                             )
+                        }
+                        if (snuffed.isNotEmpty()) {
+                            item(key = 0L) { SnuffedToggle(open, time, pxSize) { open = !open } }
+                            if (open) items(snuffed, key = { -it.id }) { task ->
+                                SnuffedRow(
+                                    task = task,
+                                    relighting = relighting,
+                                    modifier = Modifier.animateItem(placementSpec = null, fadeInSpec = tween(200), fadeOutSpec = tween(160)),
+                                    onTap = { beginRelight(task.id) },
+                                )
+                            }
                         }
                     }
                 }
@@ -824,6 +873,70 @@ private fun TaskRow(
             modifier = Modifier.weight(1f).padding(top = 12.dp, bottom = 16.dp, end = 18.dp),
             style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 24.sp, color = Px.Text),
         )
+    }
+}
+
+/** Opens and closes the ash ledge. The sigil is a slowly turning dotted ring around a dusky ember (not a plus). */
+@Composable
+private fun SnuffedToggle(open: Boolean, time: FloatState, pxSize: Float, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .clickable(role = Role.Button, onClickLabel = if (open) "hide snuffed tasks" else "show snuffed tasks", onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(Modifier.width(70.dp).height(44.dp)) {
+            val a0 = time.floatValue * 0.4f
+            val cx = 17
+            val cy = (size.height / 2f / pxSize).roundToInt()
+            for (k in 0 until 10) {
+                val a = a0 + k * (2f * PI.toFloat() / 10f)
+                val x = cx + (cos(a) * 4.5f).roundToInt()
+                val y = cy + (sin(a) * 4.5f).roundToInt()
+                drawRect(Px.Primary, Offset(x * pxSize, y * pxSize), Size(pxSize, pxSize))
+            }
+            drawRect(Color(0xFF5A2A48), Offset(cx * pxSize, cy * pxSize), Size(pxSize, pxSize))
+        }
+        Text(
+            "snuffed",
+            modifier = Modifier.padding(end = 18.dp),
+            style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim),
+        )
+    }
+}
+
+@Composable
+private fun SnuffedRow(
+    task: Task,
+    relighting: Map<Long, Float>,
+    modifier: Modifier = Modifier,
+    onTap: () -> Unit,
+) {
+    val haptics = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val id = task.id
+    Row(modifier.fillMaxWidth().heightIn(min = 54.dp).height(IntrinsicSize.Min)) {
+        Box(
+            Modifier
+                .width(70.dp)
+                .fillMaxHeight()
+                .clickable(
+                    interactionSource = interaction,
+                    indication = null,
+                    role = Role.Button,
+                    onClickLabel = "Relight task",
+                    onClick = {
+                        if (!relighting.containsKey(id)) {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onTap()
+                        }
+                    },
+                ),
+        )
+        Column(Modifier.weight(1f).padding(top = 12.dp, bottom = 16.dp, end = 18.dp)) {
+            Text(task.text, style = TextStyle(fontFamily = PageFont, fontSize = 19.sp, lineHeight = 21.sp, color = Color(0xFF6A4A9A)))
+        }
     }
 }
 

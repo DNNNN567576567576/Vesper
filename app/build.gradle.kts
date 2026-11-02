@@ -62,8 +62,8 @@ android {
     sourceSets.getByName("debug").assets.srcDir("$projectDir/schemas")
 }
 
-// Never build an installable APK (installDebug / Run) unless the migration tests pass; protects user data.
-tasks.matching { it.name == "assembleDebug" }.configureEach { dependsOn("testDebugUnitTest") }
+// Never build an installable APK (debug or the release that goes on the phone) unless the migration tests pass; protects user data.
+tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }.configureEach { dependsOn("testDebugUnitTest") }
 
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")

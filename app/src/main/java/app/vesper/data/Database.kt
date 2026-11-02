@@ -27,6 +27,8 @@ data class Note(
 data class Task(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val text: String,
+    /** Epoch millis when the candle was snuffed; null = still lit. Snuffed tasks are kept forever. */
+    val snuffedAt: Long? = null,
 )
 
 @Dao
@@ -49,14 +51,20 @@ interface NoteDao {
 
 @Dao
 interface TaskDao {
-    @Query("SELECT * FROM tasks ORDER BY id ASC")
-    fun observeAll(): Flow<List<Task>>
+    @Query("SELECT * FROM tasks WHERE snuffedAt IS NULL ORDER BY id ASC")
+    fun observeLit(): Flow<List<Task>>
+
+    @Query("SELECT * FROM tasks WHERE snuffedAt IS NOT NULL ORDER BY snuffedAt DESC")
+    fun observeSnuffed(): Flow<List<Task>>
 
     @Insert
     suspend fun insert(task: Task): Long
 
-    @Query("DELETE FROM tasks WHERE id = :id")
-    suspend fun delete(id: Long)
+    @Query("UPDATE tasks SET snuffedAt = :at WHERE id = :id")
+    suspend fun snuff(id: Long, at: Long)
+
+    @Query("UPDATE tasks SET snuffedAt = NULL WHERE id = :id")
+    suspend fun relight(id: Long)
 }
 
 /** A region of the Brain map (a "sub-brain"). Placed automatically around the core by [slot]. */
@@ -211,11 +219,18 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
+/** v4 -> v5: tasks are snuffed (timestamped) instead of deleted. Existing tasks stay lit (NULL). */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `tasks` ADD COLUMN `snuffedAt` INTEGER")
+    }
+}
+
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 4
+const val DB_VERSION = 5
 
 /** The single migration list used by the app and the tests. */
-val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
 
 @Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class, Plan::class, DayFocus::class], version = DB_VERSION, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
