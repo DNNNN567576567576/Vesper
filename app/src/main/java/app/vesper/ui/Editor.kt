@@ -58,11 +58,46 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.ParagraphStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.draw.drawBehind
+import kotlin.math.ceil
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import app.vesper.NoteEditorViewModel
+
+private val ListGapStyle = ParagraphStyle(
+    lineHeight = 38.sp, // 26sp body line + ~12dp; Bottom puts the extra above the text
+    lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Bottom, LineHeightStyle.Trim.None),
+)
+
+/** Visual only: half a line of air before each "- item" line (not the first line). Offsets are untouched. */
+private val ListGap = VisualTransformation { text ->
+    val s = text.text
+    val out = buildAnnotatedString {
+        append(text)
+        var i = 0
+        while (i < s.length) {
+            val e = s.indexOf('\n', i).let { if (it < 0) s.length else it + 1 }
+            if (i > 0 && s.substring(i, e).trimStart(' ').startsWith("-")) addStyle(ListGapStyle, i, e)
+            i = e
+        }
+    }
+    TransformedText(out, OffsetMapping.Identity)
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -161,6 +196,7 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit, onOpenPage: (
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 BasicTextField(
                     value = vm.content,
+                    visualTransformation = ListGap,
                     onValueChange = vm::onContent,
                     enabled = vm.loaded,
                     textStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.Text),
@@ -201,17 +237,48 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit, onOpenPage: (
     }
 
     burnPage?.let { pid ->
-        PixelDialog(onDismiss = { burnPage = null }) {
-            Text(
-                "Burn this page?",
-                style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 0.5.sp, color = Px.Lavender),
-            )
+        TornNoteDialog(
+            title = "Burn \"${(pages.firstOrNull { it.id == pid }?.title ?: "").trim().ifEmpty { "Untitled page" }}\"?",
+            body = "No undo.",
+            onKeep = { burnPage = null },
+            onBurn = { burnPage = null; vm.deletePage(pid) },
+        )
+    }
+}
+
+/** Torn-paper confirmation used for every burn: rotting violet paper, hard dark shadow, plain underlined words. */
+@Composable
+fun TornNoteDialog(title: String, body: String, onKeep: () -> Unit, onBurn: () -> Unit) {
+    val px = rememberRotPxSize().toInt()
+    val inset = with(LocalDensity.current) { (PAPER_SHADOW_PX * px).toDp() }
+    val ink = Color(0xFF140A1C)
+    val seed = remember(title) { title.hashCode().toLong() }
+    @Composable
+    fun Word(text: String, color: Color, onClick: () -> Unit) = Box(
+        Modifier.defaultMinSize(48.dp, 48.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = color, textDecoration = TextDecoration.Underline))
+    }
+    Dialog(onDismissRequest = onKeep, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier
+                .padding(horizontal = 28.dp)
+                .fillMaxWidth()
+                .drawWithCache {
+                    val paper = Pix(ceil(size.width / px).toInt(), ceil(size.height / px).toInt())
+                    renderPaper(paper, seed, tone = 0, shadowRgb = 0x07030B)
+                    onDrawBehind { drawIntoCanvas { paper.blit(it.nativeCanvas, 0, 0, px) } }
+                }
+                .padding(start = 20.dp, end = 12.dp + inset, top = 22.dp, bottom = 6.dp + inset),
+        ) {
+            Text(title, style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 24.sp, color = ink))
+            Spacer(Modifier.height(6.dp))
+            Text(body, style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, lineHeight = 20.sp, color = ink))
             Spacer(Modifier.height(10.dp))
-            Text("Gone for good. No undo.", style = TextStyle(fontSize = 13.sp, lineHeight = 19.sp, color = Px.TextDim))
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("keep", { burnPage = null })
-                PixelButton("burn", { burnPage = null; vm.deletePage(pid) }, primary = true)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Word("keep", ink, onKeep)
+                Word("burn", Color(0xFF5A1E48), onBurn)
             }
         }
     }

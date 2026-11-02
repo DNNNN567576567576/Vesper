@@ -416,35 +416,43 @@ fun NotesScreen(
     }
 
     pendingDelete?.let { id ->
-        PixelDialog(onDismiss = { pendingDelete = null }) {
-            Text(
-                "Burn this page${pageCounts[id]?.let { " and its $it page${if (it == 1) "" else "s"}" }.orEmpty()}?",
-                style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 0.5.sp, color = Px.Lavender),
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "Gone for good. No undo.",
-                style = TextStyle(fontSize = 13.sp, lineHeight = 19.sp, color = Px.TextDim),
-            )
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("keep", { pendingDelete = null })
-                PixelButton("burn", {
-                    pendingDelete = null
-                    burnId = id
-                }, primary = true)
-            }
-        }
+        val pages = pageCounts[id]
+        TornNoteDialog(
+            title = "Burn \"${(shown.firstOrNull { it.id == id }?.title ?: "").trim().ifEmpty { "Untitled page" }}\"?",
+            body = if (pages != null && pages > 0) "and its $pages page${if (pages == 1) "" else "s"}. No undo." else "No undo.",
+            onKeep = { pendingDelete = null },
+            onBurn = { pendingDelete = null; burnId = id },
+        )
     }
 }
 
 private val EmberPink = Color(0xFFD45AAB)
 private val EmberHot = Color(0xFFFFB0E0)
 private val EmberViolet = Color(0xFF9A6BE0)
+private val GhostMid = Color(0xFF9A6BE0)
+private val GhostSoft = Color(0xFFB69AFF)
+private val GhostPale = Color(0xFFE6DCFF)
 private val AshDark = Color(0xFF5A4A6A)
 private val AshDarker = Color(0xFF3A2A48)
 private const val BURN_MS = 900
 private const val PAGE_TOP_ROWS = 9
+
+/** Soft purple aura: stacked translucent pixel rings round the paper, pulsing over ~3s. Nothing is regenerated per frame. */
+private fun DrawScope.drawAura(t: Float, px: Float, fade: Float) {
+    if (fade <= 0f) return
+    val pulse = (0.6f + 0.15f * sin(t * (2f * PI.toFloat() / 3f))) * fade
+    val top = PAGE_TOP_ROWS * px
+    val inset = PAPER_SHADOW_PX * px
+    val alphas = floatArrayOf(0.18f, 0.22f, 0.28f)
+    for (i in 3 downTo 1) {
+        val e = i * px
+        drawRect(
+            Px.Primary.copy(alpha = alphas[3 - i] * pulse),
+            Offset(-e, top - e),
+            Size(size.width - inset + 2f * e, size.height - inset - top + 2f * e),
+        )
+    }
+}
 
 /** Glow and flickering embers on the page's right edge while it is dragged left. */
 private fun DrawScope.drawSwipeEdge(k: Float, t: Float, px: Float, rightInset: Float) {
@@ -453,7 +461,7 @@ private fun DrawScope.drawSwipeEdge(k: Float, t: Float, px: Float, rightInset: F
     val strip = 10f * px
     drawRect(
         Brush.horizontalGradient(
-            listOf(Color.Transparent, EmberPink.copy(alpha = 0.5f * k)),
+            listOf(GhostMid.copy(alpha = 0f), GhostPale.copy(alpha = 0.55f * k)),
             startX = edge - strip,
             endX = edge,
         ),
@@ -467,7 +475,7 @@ private fun DrawScope.drawSwipeEdge(k: Float, t: Float, px: Float, rightInset: F
     for (i in 0 until 8) {
         val r = PAGE_TOP_ROWS + (hf(i, bucket) * (rows - PAGE_TOP_ROWS)).toInt()
         val dx = 1 + (hf(i + 31, bucket) * 3f).toInt()
-        val col = when (i % 3) { 0 -> EmberPink; 1 -> EmberHot; else -> EmberViolet }
+        val col = when (i % 3) { 0 -> GhostMid; 1 -> GhostSoft; else -> GhostPale }
         drawRect(col.copy(alpha = min(1f, k + 0.2f)), Offset(edge - dx * px, r * px), Size(px, px))
     }
 }
@@ -607,10 +615,12 @@ private fun NotePage(
             modifier = Modifier
                 .align(Alignment.CenterStart)
                 .graphicsLayer {
-                    alpha = (-dragPx.floatValue / revealPx).coerceIn(0f, 1f)
+                    val tt = time.floatValue
+                    val flicker = 0.88f + 0.12f * sin(tt * 7f) * sin(tt * 2.3f + index)
+                    alpha = (-dragPx.floatValue / revealPx).coerceIn(0f, 1f) * flicker
                     translationX = leftPx + pageWpx + gapPx + dragPx.floatValue
                 },
-            style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = EmberPink),
+            style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = GhostSoft, shadow = Shadow(GhostMid, blurRadius = 14f)),
         )
         Box(
             Modifier
@@ -623,11 +633,13 @@ private fun NotePage(
                     compositingStrategy = if (burning) CompositingStrategy.Offscreen else CompositingStrategy.Auto
                 }
                 .drawWithContent {
-                    drawContent()
                     val t = time.floatValue
+                    val bs = burnStart.floatValue
+                    val burnK = if (burning && bs >= 0f) ((t - bs) / (BURN_MS / 1000f)).coerceIn(0f, 1f) else 0f
+                    drawAura(t, pxSize, 1f - min(1f, burnK * 4f))
+                    drawContent()
                     if (burning) {
-                        val bs = burnStart.floatValue
-                        if (bs >= 0f) drawBurn(((t - bs) / (BURN_MS / 1000f)).coerceIn(0f, 1f), t, pxSize, id.toInt())
+                        if (bs >= 0f) drawBurn(burnK, t, pxSize, id.toInt())
                     } else {
                         drawSwipeEdge((-dragPx.floatValue / revealPx).coerceIn(0f, 1f), t, pxSize, shadowPx)
                     }
@@ -983,7 +995,8 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
         Row(Modifier.fillMaxWidth().navigationBarsPadding().height(72.dp)) {
             NavTab(
-                icon = R.drawable.grimoire_tab,
+                icon = 0,
+                grid = Icons.Scrolls,
                 label = "Scrolls",
                 active = selected == 0,
                 onClick = { onSelect(0) },

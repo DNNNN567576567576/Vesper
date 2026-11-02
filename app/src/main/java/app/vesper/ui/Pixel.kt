@@ -159,6 +159,19 @@ object Icons {
         ".....XX.....",
         ".....XX.....",
     )
+    val Scrolls = listOf(
+        "..oooooooo..",
+        ".oXooooooXo.",
+        ".oXXXXXXXXo.",
+        "..o......o..",
+        "..o.XXXX.o..",
+        "..o......o..",
+        "..o.XXX..o..",
+        "..o......o..",
+        ".oXXXXXXXXo.",
+        ".oXooooooXo.",
+        "..oooooooo..",
+    )
     val Plus = listOf(
         "...XX...",
         "...XX...",

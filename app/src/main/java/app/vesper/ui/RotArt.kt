@@ -435,9 +435,16 @@ private class CandleWallRenderer : WallPainter {
 // Rotting paper page (static; rendered once per page size, seeded by note id)
 // ---------------------------------------------------------------------------------------------
 
+/** Empty margin (low-res px) kept right/below the paper: room for the aura or the dialog's hard shadow. */
 internal const val PAPER_SHADOW_PX = 3
 
-internal fun renderPaper(pix: Pix, id: Long) {
+// Base strands per tone: violet, ash lavender, dusky rose, deep plum. Plum stays light enough for the #140A1C ink.
+private val PAPER_TONES = intArrayOf(0x8E7CA2, 0x8A8296, 0x8E6A7E, 0x866EAE)
+
+internal fun paperTone(id: Long): Int = ((id * 0x9E3779B1L) ushr 16).toInt() and 3
+
+/** [shadowRgb] >= 0 bakes a hard offset shadow (dialogs); list cards use a live aura instead. */
+internal fun renderPaper(pix: Pix, id: Long, tone: Int = paperTone(id), shadowRgb: Int = -1) {
     val pw = pix.w
     val ph = pix.h
     val r = RotRng((id * 7919L + 13L).toInt())
@@ -445,7 +452,8 @@ internal fun renderPaper(pix: Pix, id: Long) {
     val y1 = ph - PAPER_SHADOW_PX
     if (x1 < 8 || y1 < 8) return
     pix.clear()
-    pix.dot(PAPER_SHADOW_PX, PAPER_SHADOW_PX, x1, y1, 0x030106)
+    if (shadowRgb >= 0) pix.dot(PAPER_SHADOW_PX, PAPER_SHADOW_PX, x1, y1, shadowRgb)
+    val base = PAPER_TONES[tone and 3]
 
     val tops = IntArray(x1)
     val bots = IntArray(x1)
@@ -453,7 +461,7 @@ internal fun renderPaper(pix: Pix, id: Long) {
         val top = (r.next() * 3f).toInt()
         val bot = y1 - (r.next() * 3f).toInt()
         tops[x] = top; bots[x] = bot
-        pix.dot(x, top, 1, bot - top, 0x8E7CA2)
+        pix.dot(x, top, 1, bot - top, base)
         if (r.next() < 0.25f) pix.dot(x, top, 1, 1, 0x5E4E72)
         if (r.next() < 0.25f) pix.dot(x, bot - 1, 1, 1, 0x5E4E72)
     }
@@ -469,7 +477,7 @@ internal fun renderPaper(pix: Pix, id: Long) {
             val rr = (60 + (20 - 60) * m).toInt()
             val gg = (20 + (6 - 20) * m).toInt()
             val bb = (90 + (30 - 90) * m).toInt()
-            pix.dot(x, y, 1, 1, (rr shl 16) or (gg shl 8) or bb, 0.28f + (0.18f - 0.28f) * m)
+            pix.dot(x, y, 1, 1, (rr shl 16) or (gg shl 8) or bb, (0.28f + (0.18f - 0.28f) * m) * (if (tone == 3) 0.6f else 1f))
         }
     }
 
