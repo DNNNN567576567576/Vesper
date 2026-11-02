@@ -550,7 +550,7 @@ private fun DayCell(
             .clip(shape)
             .background(if (isSelected) MoonsSelBg else Color.Transparent)
             .then(if (isSelected) Modifier.border(2.dp, MoonsSelLine, shape) else Modifier)
-            .combinedClickable(role = Role.Button, onClick = onClick, onDoubleClick = onDoubleClick),
+            .tapOrDoubleTap(role = Role.Button, onDoubleTap = onDoubleClick, onTap = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {

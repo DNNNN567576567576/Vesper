@@ -16,6 +16,19 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.text.TextLayoutResult
+import kotlinx.coroutines.coroutineScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -54,6 +67,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Job
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -93,6 +112,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.round
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 // ---------------------------------------------------------------------------------------------
 // Palette + layout
@@ -157,6 +177,63 @@ private fun placeIdeas(lobes: List<Lobe>, ideas: List<Idea>): List<Placed> {
             Placed(idea, lobe, Offset(c.x + cos(aa) * dd, c.y + sin(aa) * dd), ph, bend, k, idea.id == newestId)
         }
     }
+}
+
+/** Camera zoom when a lobe is selected; the thought rings are laid out for this zoom. */
+private const val ORBIT_ZOOM = 2f
+
+private class SelRing(val tls: List<TextLayoutResult>, val target: List<Offset>) {
+    val glows = tls.map(::GlowText)
+}
+
+/**
+ * A label whose blurred Shadow glow is rasterized once into a bitmap and then just blitted.
+ * Android re-blurs a text shadow on every draw, which is costly when done for many labels every frame.
+ */
+private class GlowText(val tl: TextLayoutResult) {
+    private var img: ImageBitmap? = null
+    // the shadow reaches ~3 sigma ≈ 1.73 * radius past the glyphs
+    private val pad = ceil(1.8f * (tl.layoutInput.style.shadow?.blurRadius ?: 0f)).toInt() + 2
+
+    fun draw(scope: DrawScope, left: Float, top: Float, alpha: Float) {
+        val im = img ?: ImageBitmap(tl.size.width + 2 * pad, tl.size.height + 2 * pad).also { bm ->
+            CanvasDrawScope().draw(scope, scope.layoutDirection, androidx.compose.ui.graphics.Canvas(bm), Size(bm.width.toFloat(), bm.height.toFloat())) {
+                drawText(tl, topLeft = Offset(pad.toFloat(), pad.toFloat()))
+            }
+            img = bm
+        }
+        scope.drawImage(im, Offset(round(left) - pad, round(top) - pad), alpha = alpha)
+    }
+}
+
+/**
+ * Ring positions (world units) around [c] for labels [tls]; [u] is device px per world unit at the target zoom.
+ * Ellipses 4:3, evenly spaced angles, per-ring count limited by the longest label; overflow goes to wider rings.
+ */
+private fun ringPositions(c: Offset, tls: List<TextLayoutResult>, u: Float, density: Float): List<Offset> {
+    if (tls.isEmpty()) return emptyList()
+    val maxW = tls.maxOf { it.size.width.toFloat() }
+    val h = tls.maxOf { it.size.height.toFloat() }
+    val spacing = (maxW / u).coerceAtLeast(8f)
+    // clear the lobe name under the lobe (12 world + ~28dp tall) and the lobe itself beside it
+    val ry0 = (12f * u + 28f * density + h / 2f + 6f * density) / u
+    var rx = max(max(32f, ry0 / 0.75f), maxW / (2f * u) + 16f).coerceAtMost(60f)
+    val step = (h / u * 1.8f) / 0.75f
+    val out = ArrayList<Offset>(tls.size)
+    var ring = 0
+    while (out.size < tls.size) {
+        val a = rx; val b = rx * 0.75f
+        val perim = Math.PI.toFloat() * (3f * (a + b) - sqrt((3f * a + b) * (a + 3f * b)))
+        val n = floor(perim / spacing).toInt().coerceAtLeast(1).coerceAtMost(tls.size - out.size)
+        val off = -TAU / 4f + (ring % 2) * (TAU / n / 2f)
+        for (j in 0 until n) {
+            val ang = off + j * TAU / n
+            out.add(Offset(c.x + cos(ang) * a, c.y + sin(ang) * b))
+        }
+        rx += step
+        ring++
+    }
+    return out
 }
 
 /** The vault sun: one fixed node (not a lobe), centered below the brain (x = 0), past the first lobe ring. */
@@ -366,6 +443,13 @@ private fun mixRgb(a: Int, b: Int, m: Float): Int {
     return (r shl 16) or (g shl 8) or bl
 }
 
+private val HEART = arrayOf(
+    "...aa.vv..", "..aXa.vXv.", "..XXXXXX..", ".XhooooXX.", "XhoooooooX", "XoooooXooX",
+    "XoooooXooX", ".XoooXooX.", "..XooooX..", "...XooX...", "....XX....",
+)
+private val HEART_LIVE = intArrayOf(0xB69AFF, 0xD45AAB, 0x7540B8, 0xF596E1, 0xFFF0FF) // a v X o h
+private val HEART_DEAD = intArrayOf(0x4A3A5E, 0x4A2A44, 0x3A2456, 0x5A4870, 0x7A6496)
+
 private val BEADS = floatArrayOf(0.25f, 0.45f, 0.62f, 0.8f)
 private val SPECK_COLS = intArrayOf(0x1E0A24, 0x4A1650, 0x7A2A6A)
 
@@ -574,31 +658,28 @@ private class BrainRenderer(context: Context) {
         }
     }
 
+    /** Anatomical pixel heart at the vault node; [sv] 0 = alive, 1 = dead. Double thump when the pulse arrives. */
     private fun sun(sv: Float, selected: Boolean, d: Float) {
-        val l = 1f - 0.8f * sv
+        val l = 1f - sv
         val ga = (0.35f + 0.3f * beat(1f)) * l * d
         glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
         if (selected) glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
-        glowAt(SUN_X, SUN_Y, 20f, 0xF0C8FF, 0.45f * l * d)
-        val cx = sx(SUN_X); val cy = sy(SUN_Y)
-        for (k in 0 until 12) {
-            val a = t * 0.25f + k * TAU / 12f
-            val len = (if (k % 2 == 0) 10f else 6f) + sin(t * 2f + k) * 1.2f
-            val n = ceil(len * z).toInt().coerceAtLeast(1)
-            for (i in 0..n) {
-                val r = (10f + len * i / n) * z
-                dot(rnd(cx + cos(a) * r), rnd(cy + sin(a) * r), 1, 1, mixRgb(0xF596E1, 0x7540B8, i / n.toFloat()), l * d)
-            }
+        // thump: beatPh crosses 1 as the pulse lands; the window stretches as the heart dies
+        val q = (beatPh - 1f) / (0.25f * (1f + sv))
+        val k = if (q < 0f || q >= 1f) 1f else when {
+            q < 0.2f -> 1f + 0.18f * q / 0.2f
+            q < 0.45f -> 1.18f - 0.13f * (q - 0.2f) / 0.25f
+            q < 0.65f -> 1.05f + 0.09f * (q - 0.45f) / 0.2f
+            else -> 1.14f - 0.14f * (q - 0.65f) / 0.35f
         }
-        val dk = sv * 0.6f
-        disc(cx, cy, 9f * z, mixRgb(0xE070C0, 0x3A1430, dk), d)
-        disc(cx, cy, 8f * z, mixRgb(0xF59AD8, 0x4A1650, dk), d)
-        disc(cx - z, cy - z, 6f * z, mixRgb(0xFFC8F0, 0x5A1E48, dk), d)
-        disc(cx - 3f * z, cy - 3f * z, 2f * z, mixRgb(0xFFF0FF, 0x5A1E48, dk), d)
-        if (sv > 0.02f) {
-            val mx = SUN_X + round(16f * (1f - sv)); val my = SUN_Y - round(2f * (1f - sv))
-            ring(mx, my, 10f, 28, 0f, 0x301426, d)
-            disc(sx(mx), sy(my), 9f * z, 0x06020A, d)
+        val cs = 2f * z * (1f + (k - 1f) * (1f - 0.7f * sv))
+        val cx = sx(SUN_X); val cy = sy(SUN_Y)
+        for (r in HEART.indices) for (c in 0 until 10) {
+            val ch = HEART[r][c]
+            if (ch == '.') continue
+            val i = "avXoh".indexOf(ch)
+            val x0 = rnd(cx + (c - 5) * cs); val y0 = rnd(cy + (r - 5.5f) * cs)
+            dot(x0, y0, rnd(cx + (c - 4) * cs) - x0, rnd(cy + (r - 4.5f) * cs) - y0, mixRgb(HEART_LIVE[i], HEART_DEAD[i], sv), d)
         }
     }
 
@@ -793,7 +874,7 @@ fun BrainScreen(
     val selected = lobeList.firstOrNull { it.id == selectedLobe }
 
     var addingLobe by remember { mutableStateOf(false) }
-    var sheetOpen by remember { mutableStateOf(false) }
+    BackHandler(enabled = selected != null) { onSelectLobe(-1L) }
     var deleting by remember { mutableStateOf<Lobe?>(null) }
     var deletingIdea by remember { mutableStateOf<Idea?>(null) }
     var managing by remember { mutableStateOf(false) }
@@ -835,10 +916,11 @@ fun BrainScreen(
             BrainCanvas(
                 lobeList, placed, selected?.id ?: -1L, camera, sv, sunSel,
                 onTapSun = { onSelectLobe(-1L); sunSel = true },
-                onTapLobe = { id -> sunSel = false; onSelectLobe(id); sheetOpen = false },
+                onTapLobe = { id -> sunSel = false; onSelectLobe(id) },
                 onDoubleTapLobe = { id -> editing = Idea(lobeId = id, title = "", body = "") },
                 onTapBrain = { managing = true },
                 onTapIdea = { editing = it },
+                onDoubleTapIdea = { deletingIdea = it },
                 onTapEmpty = { sunSel = false; onSelectLobe(-1L) },
             )
             ScreenTitle("Brain")
@@ -853,16 +935,6 @@ fun BrainScreen(
                 busy = working != null,
                 onKeep = { keepPicker.launch("vesper-backup-${java.time.LocalDate.now()}.zip") },
                 onRestore = { restorePicker.launch(arrayOf("application/zip", "application/octet-stream")) },
-            )
-        }
-        if (selected != null) {
-            LobeSheet(
-                lobe = selected,
-                ideas = ideaList.filter { it.lobeId == selected.id },
-                open = sheetOpen,
-                onToggle = { sheetOpen = !sheetOpen },
-                onOpenIdea = { editing = it },
-                onDeleteIdea = { deletingIdea = it },
             )
         }
     }
@@ -981,6 +1053,7 @@ private fun BrainCanvas(
     onDoubleTapLobe: (Long) -> Unit,
     onTapBrain: () -> Unit,
     onTapIdea: (Idea) -> Unit,
+    onDoubleTapIdea: (Idea) -> Unit,
     onTapEmpty: () -> Unit,
 ) {
     val density = LocalDensity.current.density
@@ -990,7 +1063,63 @@ private fun BrainCanvas(
     val layout = remember(lobes, placed) { buildLayout(lobes, placed) }
     val selIdx = layout.lobeIds.indexOf(selectedId)
     val measurer = rememberTextMeasurer(cacheSize = 200)
-    val lobeStyle = remember { TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Color(0xFFF0E8FA)) }
+    val ringStyle = remember(density) {
+        TextStyle(fontFamily = PageFont, fontSize = 19.sp, color = Color(0xFFE6DCFF), shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.85f), blurRadius = 14f * density))
+    }
+    // Selected lobe: its label layouts and ring positions, laid out for the fixed target zoom so pinching never reshuffles them.
+    val selRing = remember(layout, selIdx, pxSize, density, ringStyle) {
+        if (selIdx < 0) null else {
+            val first = layout.istart[selIdx]
+            val tls = (first until layout.istart[selIdx + 1]).map {
+                measurer.measure(
+                    ideaLabel(placed[it].idea), ringStyle, overflow = TextOverflow.Ellipsis, maxLines = 1,
+                    constraints = Constraints(maxWidth = (170f * density).toInt().coerceAtLeast(50)),
+                )
+            }
+            SelRing(tls, ringPositions(Offset(layout.lx[selIdx], layout.ly[selIdx]), tls, pxSize * ORBIT_ZOOM, density))
+        }
+    }
+    val ringT = remember { Animatable(if (selectedId >= 0) 1f else 0f) }
+    var firstRun by remember { mutableStateOf(true) }
+    LaunchedEffect(selectedId) {
+        val initial = firstRun
+        firstRun = false
+        val lobe = lobes.firstOrNull { it.id == selectedId }
+        if (lobe == null) { ringT.snapTo(0f); return@LaunchedEffect }
+        if (initial) { ringT.snapTo(1f); return@LaunchedEffect }
+        ringT.snapTo(0f)
+        val c = lobeWorldPos(lobe.slot)
+        val x0 = cam.x; val y0 = cam.y; val s0 = cam.scale
+        val s1 = ORBIT_ZOOM.coerceIn(0.6f, 4f)
+        coroutineScope {
+            launch { ringT.animateTo(1f, tween(300)) }
+            launch {
+                Animatable(0f).animateTo(1f, tween(400, easing = FastOutSlowInEasing)) {
+                    cam.x = x0 + (c.x - x0) * value; cam.y = y0 + (c.y - y0) * value; cam.scale = s0 + (s1 - s0) * value
+                }
+            }
+        }
+    }
+    val labelStyle = { c: Color, glow: Color ->
+        TextStyle(fontFamily = TitleFont, fontSize = 20.sp, color = c, shadow = Shadow(glow.copy(alpha = 0.7f), blurRadius = 12f * density))
+    }
+    val lobeLabels = remember(lobes, layout, density) {
+        List(layout.nL) { i ->
+            val name = lobes[i].name
+            if (name.isBlank()) null else {
+                val lc = Color(layout.lcol[i] or 0xFF000000.toInt())
+                GlowText(measurer.measure(
+                    name, labelStyle(lc, lc), overflow = TextOverflow.Ellipsis, maxLines = 1,
+                    constraints = Constraints(maxWidth = (150f * density).toInt().coerceAtLeast(60)),
+                ))
+            }
+        }
+    }
+    val vaultLabel = remember(sunSv, density) {
+        val c = lerp(Color(0xFFF596E1), Color(0xFF6F6080), sunSv)
+        GlowText(measurer.measure("vault", labelStyle(c, if (sunSv > 0.5f) Color.Transparent else c), maxLines = 1))
+    }
+    val tapScope = rememberCoroutineScope()
     val ideaStyle = remember { TextStyle(fontFamily = PixelFont, fontSize = 7.sp, color = Color(0xFFE6DBF5)) }
     val newestStyle = remember { TextStyle(fontFamily = PixelFont, fontSize = 7.sp, color = Color(0xFFFFC8EF)) }
     val hintStyle = remember { TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim) }
@@ -1025,34 +1154,73 @@ private fun BrainCanvas(
                     cam.y = wy - (ry + pan.y) / (pxSize * next)
                 }
             }
-            .pointerInput(lobes, placed, onTapSun) {
-                fun handle(tap: Offset, double: Boolean) {
+            .pointerInput(lobes, placed, layout, selRing, onTapSun) {
+                // Single taps act at once (waiting for a possible double tap felt laggy). Returns what a
+                // second tap may turn into a double tap: a ring Idea (open is delayed) or a Lobe.
+                var pendingOpen: Job? = null
+                fun handle(tap: Offset): Any? {
                     val u = pxSize * cam.scale
                     val ox = ceil(size.width / pxSize) * pxSize / 2f
                     val oy = ceil(size.height / pxSize) * pxSize / 2f
                     fun screen(w: Offset) = Offset((w.x - cam.x) * u + ox, (w.y - cam.y) * u + oy)
-                    val idea = placed.minByOrNull { (screen(it.pos) - tap).getDistance() }
-                    if (idea != null && (screen(idea.pos) - tap).getDistance() <= maxOf(26.dp.toPx(), 6f * u)) {
-                        onTapIdea(idea.idea)
-                        return
+                    // Drawn (wobbling) dot position when the renderer has one, else the layout position.
+                    fun ipos(k: Int) = if (renderer.ipx.size > k) Offset(renderer.ipx[k], renderer.ipy[k]) else Offset(layout.ix[k], layout.iy[k])
+                    if (selRing != null) {
+                        // Selected lobe: the whole label (plus a margin) is the hit area.
+                        val first = layout.istart[selIdx]
+                        val m = 10.dp.toPx(); val minHalf = 22.dp.toPx()
+                        var best = -1; var bd = Float.MAX_VALUE
+                        for (j in selRing.tls.indices) {
+                            val c = screen(ipos(first + j))
+                            val tl = selRing.tls[j]
+                            val hw = max(tl.size.width / 2f + m, minHalf); val hh = max(tl.size.height / 2f + m, minHalf)
+                            val d = (c - tap).getDistance()
+                            if (abs(tap.x - c.x) <= hw && abs(tap.y - c.y) <= hh && d < bd) { bd = d; best = j }
+                        }
+                        if (best >= 0) {
+                            // opening covers the canvas, so wait out the double-tap window before opening
+                            val idea = placed[first + best].idea
+                            pendingOpen = tapScope.launch { delay(viewConfiguration.doubleTapTimeoutMillis); onTapIdea(idea) }
+                            return idea
+                        }
+                    }
+                    val ik = (0 until layout.nI).minByOrNull { (screen(ipos(it)) - tap).getDistance() }
+                    if (ik != null && (screen(ipos(ik)) - tap).getDistance() <= maxOf(26.dp.toPx(), 6f * u)) {
+                        onTapIdea(placed[ik].idea)
+                        return null
                     }
                     if ((screen(Offset(SUN_X, SUN_Y)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u)) {
                         onTapSun()
-                        return
+                        return null
                     }
                     val lobe = lobes.minByOrNull { (screen(lobeWorldPos(it.slot)) - tap).getDistance() }
                     if (lobe != null && (screen(lobeWorldPos(lobe.slot)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u)) {
-                        if (double) onDoubleTapLobe(lobe.id) else onTapLobe(lobe.id)
-                        return
+                        onTapLobe(lobe.id)
+                        return lobe
                     }
                     // The main brain is the core at the world origin (inside the r35 ring).
                     if (tap.minus(screen(Offset.Zero)).getDistance() <= maxOf(36.dp.toPx(), 30f * u)) {
                         onTapBrain()
-                        return
+                        return null
                     }
                     onTapEmpty()
+                    return null
                 }
-                detectTapGestures(onTap = { handle(it, false) }, onDoubleTap = { handle(it, true) })
+                var lastAt = 0L; var lastPos = Offset.Zero; var lastHit: Any? = null
+                detectTapGestures(onTap = { tap ->
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val hit = lastHit
+                    if (hit != null && now - lastAt <= viewConfiguration.doubleTapTimeoutMillis && (tap - lastPos).getDistance() <= 48.dp.toPx()) {
+                        // Second tap on the same target (the camera may be gliding toward a just-selected lobe).
+                        lastHit = null
+                        when (hit) {
+                            is Idea -> { pendingOpen?.cancel(); onDoubleTapIdea(hit) }
+                            is Lobe -> onDoubleTapLobe(hit.id)
+                        }
+                    } else {
+                        lastAt = now; lastPos = tap; lastHit = handle(tap)
+                    }
+                })
             },
     ) {
         val vw = size.width.toInt()
@@ -1060,6 +1228,17 @@ private fun BrainCanvas(
         if (vw <= 0 || vh <= 0) return@Canvas
         val px = pxSize.toInt()
         renderer.resize(ceil(vw / pxSize).toInt(), ceil(vh / pxSize).toInt())
+        // Scattered base positions everywhere; the selected lobe's thoughts glide onto their ring.
+        for (k in 0 until layout.nI) { layout.ix[k] = placed[k].pos.x; layout.iy[k] = placed[k].pos.y }
+        if (selRing != null) {
+            val t = ringT.value
+            val first = layout.istart[selIdx]
+            for (j in selRing.target.indices) {
+                val b = placed[first + j].pos; val g = selRing.target[j]
+                layout.ix[first + j] = b.x + (g.x - b.x) * t
+                layout.iy[first + j] = b.y + (g.y - b.y) * t
+            }
+        }
         renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel)
         drawIntoCanvas { renderer.blit(it.nativeCanvas, px) }
 
@@ -1073,44 +1252,29 @@ private fun BrainCanvas(
 
         for (i in 0 until layout.nL) {
             val dim = if ((selIdx < 0 && !sunSel) || selIdx == i) 1f else 0.45f
-            val name = lobes[i].name.uppercase()
-            if (name.isBlank()) continue
-            val tl = measurer.measure(
-                name, lobeStyle, overflow = TextOverflow.Ellipsis, maxLines = 1,
-                constraints = Constraints(maxWidth = (150f * density).toInt().coerceAtLeast(60)),
-            )
-            val pad = 3f * density
-            val left = dx(layout.lx[i]) - tl.size.width / 2f - pad
+            val g = lobeLabels[i] ?: continue
+            val tl = g.tl
+            val left = dx(layout.lx[i]) - tl.size.width / 2f
             val top = dy(layout.ly[i] + 12f)
-            val pw = tl.size.width + pad * 2f
-            val ph = tl.size.height + pad * 2f
-            if (left > size.width || left + pw < 0f || top > size.height || top + ph < 0f) continue
-            drawRect(Color(16, 8, 23).copy(alpha = 0.85f * dim), Offset(left, top), Size(pw, ph))
-            val bar = max(1f, density)
-            drawRect(Color(layout.lcol[i] or 0xFF000000.toInt()).copy(alpha = dim), Offset(left, top + ph - bar), Size(pw, bar))
-            drawText(tl, topLeft = Offset(left + pad, top + pad), alpha = dim)
+            if (left > size.width || left + tl.size.width < 0f || top > size.height || top + tl.size.height < 0f) continue
+            g.draw(this, left, top, dim)
         }
 
         run {
             val dim = if (selIdx < 0) 1f else 0.45f
-            val tl = measurer.measure("VAULT", lobeStyle, maxLines = 1)
-            val pad = 3f * density
-            val left = dx(SUN_X) - tl.size.width / 2f - pad
-            val top = dy(SUN_Y + 22f)
-            val pw = tl.size.width + pad * 2f
-            val ph = tl.size.height + pad * 2f
-            drawRect(Color(16, 8, 23).copy(alpha = 0.85f * dim), Offset(left, top), Size(pw, ph))
-            val bar = max(1f, density)
-            drawRect(Color(0xFFF596E1).copy(alpha = dim), Offset(left, top + ph - bar), Size(pw, bar))
-            drawText(tl, topLeft = Offset(left + pad, top + pad), color = if (sunSv > 0.5f) Color(0xFF6F6080) else Color.Unspecified, alpha = dim)
+            vaultLabel.draw(this, dx(SUN_X) - vaultLabel.tl.size.width / 2f, dy(SUN_Y + 22f), dim)
         }
 
         val titleAlpha = ((z - 1.6f) / 0.5f).coerceIn(0f, 1f)
         if (titleAlpha > 0f && renderer.ipx.size >= layout.nI) {
             for (i in 0 until layout.nL) {
+                if (i == selIdx) continue
                 val dim = if ((selIdx < 0 && !sunSel) || selIdx == i) 1f else 0.45f
                 for (k in layout.istart[i] until layout.istart[i + 1]) {
                     val p = placed.getOrNull(k) ?: continue
+                    // cull before measuring: titles are at most 120dp wide and well under 40dp tall
+                    val lx0 = dx(renderer.ipx[k] + 4f); val ly0 = dy(renderer.ipy[k] - 2f)
+                    if (lx0 > size.width || lx0 + 120f * density < 0f || ly0 - 40f * density > size.height || ly0 + 40f * density < 0f) continue
                     val label = ideaLabel(p.idea)
                     if (label.isBlank()) continue
                     val tl = measurer.measure(
@@ -1125,6 +1289,20 @@ private fun BrainCanvas(
                     drawText(tl, color = Color(0xFF07030B), topLeft = Offset(left + density, top + density), alpha = titleAlpha * dim)
                     drawText(tl, topLeft = Offset(left, top), alpha = titleAlpha * dim)
                 }
+            }
+        }
+
+        // Selected lobe: every thought is labelled, always, with a staggered gentle pulse.
+        if (selRing != null && renderer.ipx.size >= layout.nI) {
+            val first = layout.istart[selIdx]
+            selRing.tls.forEachIndexed { j, tl ->
+                val k = first + j
+                if (tl.size.width == 0) return@forEachIndexed
+                val left = dx(renderer.ipx[k]) - tl.size.width / 2f
+                val top = dy(renderer.ipy[k]) - tl.size.height / 2f
+                if (left > size.width || left + tl.size.width < 0f || top > size.height || top + tl.size.height < 0f) return@forEachIndexed
+                val pulse = 0.8f + 0.2f * sin(time * 1.6f + j * 1.3f)
+                selRing.glows[j].draw(this, left, top, pulse)
             }
         }
 
@@ -1153,52 +1331,6 @@ private fun VaultSheet(status: String, busy: Boolean, onKeep: () -> Unit, onRest
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             PixelButton("KEEP A COPY", { if (!busy) onKeep() }, primary = true, modifier = Modifier.weight(1f))
             PixelButton("RESTORE", { if (!busy) onRestore() }, modifier = Modifier.weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun LobeSheet(
-    lobe: Lobe,
-    ideas: List<Idea>,
-    open: Boolean,
-    onToggle: () -> Unit,
-    onOpenIdea: (Idea) -> Unit,
-    onDeleteIdea: (Idea) -> Unit,
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .pixelCard(fill = Px.Surface, border = lobeColor(lobe), shadow = false, notch = 4.dp)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                lobe.name.uppercase(),
-                Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender),
-            )
-            Text(if (open) "v" else "^", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.TextDim))
-        }
-        if (open) {
-            Spacer(Modifier.height(10.dp))
-            LazyColumn(Modifier.heightIn(max = 230.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(ideas, key = { it.id }) { idea ->
-                    Text(
-                        ideaLabel(idea),
-                        Modifier.fillMaxWidth().pixelCard(fill = Px.Bg, shadow = false, notch = 2.dp)
-                            .pointerInput(idea) { detectTapGestures(onTap = { onOpenIdea(idea) }, onDoubleTap = { onDeleteIdea(idea) }) }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = Px.Text),
-                    )
-                }
-            }
         }
     }
 }
