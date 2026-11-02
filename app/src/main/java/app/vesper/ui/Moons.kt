@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -49,8 +47,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
@@ -68,7 +68,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -84,6 +84,7 @@ import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -97,11 +98,11 @@ private val MoonsToday = Color(0xFFFFC8EF)
 private val MoonsDim = Color(0xFF6F6080)
 private val MoonsLabel = Color(0xFF7A6A8C)
 private val MoonsMonth = Color(0xFFA99AB9)
+private val MoonsArrow = Color(0xFFB69AFF)
 private val MoonsSelBg = Color(0xFF1C1128)
 private val MoonsSelLine = Color(0xFF7540B8)
 private val MoonsSheetBg = Color(0xFF120A19)
 private val MoonsSheetLine = Color(0xFF2A1A38)
-private val MoonsChipBg = Color(0xFF0C0712)
 private val MoonsBarBg = Color(0xFF0E0814)
 private val MoonsBarLine = Color(0xFF241532)
 private val MoonsMenuBg = Color(0xFF160D1F)
@@ -110,20 +111,13 @@ private val MoonsInk = Color(0xFFEDE4F7)
 private val MoonsDelete = Color(0xFFE07AB0)
 private val PlanDot = Color(0xFFF0E8FA)
 
-/** 14x14 nav icon for the Moons tab. */
+/** 12x11 nav icon for the Moons tab: a crescent with a tiny twinkle. */
 internal val MoonsNavGrid = listOf(
-    "..X......X....", ".XXXXXXXXXXX..", "XHHHHHHHHHHHX.", "XHHHHHHHHHHHX.", "XCCCCCCCCCCCX.",
-    "XCVCCVCCVCCCX.", "XCCCCCCCCCCCX.", "XCVCCMMCVCCCX.", "XCCCCMMCCCCCX.", "XCVCCVCCVCCCX.",
-    "XCCCCCCCCCCCX.", ".XXXXXXXXXXX..", "..............", "..............",
+    "....ooo.....", "..oooo......", ".ooo........", ".oo.....w...", "ooo....wXw..", "ooo.....w...",
+    "ooo.........", ".oo.........", ".ooo........", "..oooo......", "....ooo.....",
 )
-internal val MoonsNavActive = mapOf(
-    'X' to Color(0xFF100817), 'H' to Color(0xFFB69AFF), 'C' to Color(0xFF47296D),
-    'M' to Color(0xFFD45AAB), 'P' to Color(0xFF7540B8), 'V' to Color(0xFFF0E8FA),
-)
-internal val MoonsNavInactive = mapOf(
-    'X' to Color(0xFF100817), 'H' to Color(0xFF563C78), 'C' to Color(0xFF241432),
-    'M' to Color(0xFF7A3668), 'P' to Color(0xFF39234C), 'V' to Color(0xFF8A7A9A),
-)
+internal val MoonsNavActive = mapOf('o' to Color(0xFFB69AFF), 'X' to Color(0xFFD45AAB), 'w' to Color(0xFFF0E8FA))
+internal val MoonsNavInactive = mapOf('o' to Color(0xFF563C78), 'X' to Color(0xFF7A3668), 'w' to Color(0xFF8A7A9A))
 
 private val CHEV_L = listOf("...X", "..X.", ".X..", "X...", ".X..", "..X.", "...X")
 private val CHEV_R = listOf("X...", ".X..", "..X.", "...X", "..X.", ".X..", "X...")
@@ -155,30 +149,53 @@ private fun moonFrac(day: LocalDate): Double {
     return (((days % SYNODIC) + SYNODIC) % SYNODIC) / SYNODIC
 }
 
-private fun moonBitmap(day: LocalDate): Bitmap {
+// Crater centres (unit-disc coords) and radii; each shows only where the moon is lit.
+private val CRATERS = floatArrayOf(0.28f, 0.28f, 0.1f, 0.5f, -0.1f, 0.09f, -0.1f, 0.58f, 0.1f)
+
+private fun moonBitmap(day: LocalDate, n: Int, lit: Int, hi: Int, crater: Int, dark: Int = 0x1A0F26): Bitmap {
     val frac = moonFrac(day)
     val t = cos(frac * 2 * PI)
-    val px = IntArray(100)
-    for (y in 0 until 10) for (x in 0 until 10) {
-        val dx = (x + 0.5 - 5) / 4.5
-        val dy = (y + 0.5 - 5) / 4.5
+    val px = IntArray(n * n)
+    val rad = n / 2.0 - 0.5
+    for (y in 0 until n) for (x in 0 until n) {
+        val dx = (x + 0.5 - n / 2.0) / rad
+        val dy = (y + 0.5 - n / 2.0) / rad
         if (dx * dx + dy * dy > 1.05) continue
         val w = sqrt(max(0.0, 1 - dy * dy))
-        val lit = if (frac < 0.5) dx > t * w else dx < -t * w
-        px[y * 10 + x] = when {
-            !lit -> 0xFF241432.toInt()
-            dx < -0.3 || dy < -0.3 -> 0xFFE6DCFF.toInt()
-            else -> 0xFFB69AFF.toInt()
+        val isLit = if (frac < 0.5) dx > t * w else dx < -t * w
+        var c = when {
+            !isLit -> dark
+            dx < -0.3 || dy < -0.3 -> hi
+            else -> lit
+        }
+        if (isLit) for (k in 0 until 3) {
+            if (hypot(dx - CRATERS[k * 3], dy - CRATERS[k * 3 + 1]) <= CRATERS[k * 3 + 2]) c = crater
+        }
+        px[y * n + x] = 0xFF000000.toInt() or c
+    }
+    return Bitmap.createBitmap(px, n, n, Bitmap.Config.ARGB_8888)
+}
+
+private fun dayMoon(day: LocalDate, n: Int) = moonBitmap(day, n, 0xC9B0FF, 0xE6DCFF, 0x8F6BD0)
+
+private fun cloudBitmap(wc: Int, hc: Int, seed: Int): Bitmap {
+    val px = IntArray(wc * hc)
+    for (y in 0 until hc) for (x in 0 until wc) for (i in 0 until 5) {
+        val ex = (x + 0.5 - wc * (i + 0.5) / 5) / (wc / 5 + 2)
+        val ey = (y + 0.5 - hc) / (hc * (0.4 + 0.55 * hf(seed, i)))
+        if (ex * ex + ey * ey <= 1.0) {
+            px[y * wc + x] = if (y > hc * 0.7) 0xE6140A1E.toInt() else 0xE61A0F26.toInt()
+            break
         }
     }
-    return Bitmap.createBitmap(px, 10, 10, Bitmap.Config.ARGB_8888)
+    return Bitmap.createBitmap(px, wc, hc, Bitmap.Config.ARGB_8888)
 }
 
 // ---------------------------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------------------------
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MoonsScreen(
     plans: List<Plan>?,
@@ -215,9 +232,8 @@ fun MoonsScreen(
     }
 
     val plansByDay = remember(plans) { plans.orEmpty().groupBy { it.day } }
-    val focusByDay = remember(focus) { focus.orEmpty().groupBy({ it.day }, { it.lobeId }) }
-    val lobeList = lobes.orEmpty()
 
+    var picking by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Plan?>(null) }
     var adding by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Plan?>(null) }
@@ -231,10 +247,10 @@ fun MoonsScreen(
     val goMonth = rememberUpdatedState { delta: Int -> monthIdx += delta }
 
     Box(Modifier.fillMaxSize()) {
-        MoonsBackdrop(time, pxSize)
+        MoonsBackdrop(time, pxSize, today)
         BoxWithConstraints(Modifier.fillMaxSize().padding(bottom = lift)) {
             Column(Modifier.fillMaxSize()) {
-                MoonsHeader(month, onPrev = { goMonth.value(-1) }, onNext = { goMonth.value(1) })
+                MoonsHeader(month, onPrev = { goMonth.value(-1) }, onNext = { goMonth.value(1) }, onPick = { picking = true })
                 Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                         for (d in listOf("M", "T", "W", "T", "F", "S", "S")) {
@@ -249,7 +265,7 @@ fun MoonsScreen(
                         val first = month.atDay(1)
                         first.minusDays((first.dayOfWeek.value - 1).toLong())
                     }
-                    val moons = remember(gridStart) { Array(42) { moonBitmap(gridStart.plusDays(it.toLong())).asImageBitmap() } }
+                    val moons = remember(gridStart) { Array(42) { dayMoon(gridStart.plusDays(it.toLong()), 11).asImageBitmap() } }
                     val swipePx = with(density) { 60.dp.toPx() }
                     Column(
                         Modifier
@@ -274,16 +290,14 @@ fun MoonsScreen(
                                     val i = row * 7 + col
                                     val date = gridStart.plusDays(i.toLong())
                                     val ed = date.toEpochDay()
-                                    val dots = ArrayList<Color>(8)
-                                    focusByDay[ed]?.let { ids -> lobeList.filter { it.id in ids }.forEach { dots.add(lobeColor(it)) } }
-                                    if (plansByDay[ed]?.any { !it.done } == true) dots.add(PlanDot)
                                     DayCell(
                                         date = date,
                                         inMonth = date.month == month.month && date.year == month.year,
                                         isToday = date == today,
                                         isSelected = ed == selected,
                                         moon = moons[i],
-                                        dots = dots,
+                                        unfinished = plansByDay[ed]?.any { !it.done } == true,
+                                        time = time,
                                         modifier = Modifier.weight(1f),
                                         onDoubleClick = { selected = ed; adding = true },
                                     ) {
@@ -320,37 +334,6 @@ fun MoonsScreen(
                             style = TextStyle(fontFamily = PageFont, fontSize = 16.sp, color = MoonsDim),
                         )
                         Spacer(Modifier.height(12.dp))
-                        SheetLabel("FOCUS FROM BRAIN")
-                        Spacer(Modifier.height(6.dp))
-                        if (lobeList.isEmpty()) {
-                            Text(
-                                "no lobes yet. grow one in Brain.",
-                                style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, color = Color(0xFF5F5070)),
-                            )
-                        } else {
-                            val focused = focusByDay[selected].orEmpty()
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                for (l in lobeList) {
-                                    val on = l.id in focused
-                                    val c = lobeColor(l)
-                                    val shape = RoundedCornerShape(10.dp)
-                                    Text(
-                                        l.name.uppercase(Locale.ENGLISH),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier
-                                            .alpha(if (on) 1f else 0.38f)
-                                            .clip(shape)
-                                            .background(MoonsChipBg)
-                                            .border(2.dp, c, shape)
-                                            .clickable(role = Role.Checkbox) { onToggleFocus(selected, l.id, !on) }
-                                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                                        style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = c),
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(14.dp))
                         SheetLabel("PLANS")
                         Spacer(Modifier.height(4.dp))
                         val dayPlans = plansByDay[selected].orEmpty()
@@ -392,6 +375,10 @@ fun MoonsScreen(
                 }
             }
         }
+    }
+
+    if (picking) {
+        MonthPicker(monthIdx, onDismiss = { picking = false }) { monthIdx = it; picking = false }
     }
 
     menuFor?.let { p ->
@@ -497,7 +484,7 @@ private fun MenuRow(text: String, color: Color, onClick: () -> Unit) {
 }
 
 @Composable
-private fun MoonsHeader(month: YearMonth, onPrev: () -> Unit, onNext: () -> Unit) {
+private fun MoonsHeader(month: YearMonth, onPrev: () -> Unit, onNext: () -> Unit, onPick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(start = 22.dp, end = 6.dp, top = 20.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -512,29 +499,40 @@ private fun MoonsHeader(month: YearMonth, onPrev: () -> Unit, onNext: () -> Unit
             ),
         )
         Spacer(Modifier.weight(1f))
-        ArrowButton(CHEV_L, "Previous month", onPrev)
+        ArrowButton(CHEV_L, "Previous month", onPrev, Alignment.CenterEnd)
         Text(
             monthTitle(month),
             maxLines = 1,
             softWrap = false,
+            modifier = Modifier
+                .clickable(role = Role.Button, onClick = onPick)
+                .semantics { contentDescription = "Pick month" }
+                .padding(vertical = 12.dp),
             style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = MoonsMonth),
         )
-        ArrowButton(CHEV_R, "Next month", onNext)
+        ArrowButton(CHEV_R, "Next month", onNext, Alignment.CenterStart)
     }
 }
 
 @Composable
-private fun ArrowButton(grid: List<String>, description: String, onClick: () -> Unit) {
+private fun ArrowButton(
+    grid: List<String>, description: String, onClick: () -> Unit,
+    align: Alignment = Alignment.Center, pixel: Dp = 2.dp,
+) {
     Box(
         Modifier
             .size(44.dp)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics { contentDescription = description },
-        contentAlignment = Alignment.Center,
+        contentAlignment = align,
     ) {
-        PixelIcon(grid, Px.Lavender, pixel = 3.dp)
+        PixelIcon(grid, MoonsArrow, pixel = pixel)
     }
 }
+
+private val SPARK_X = floatArrayOf(0.14f, 0.84f, 0.08f, 0.92f, 0.8f)
+private val SPARK_Y = floatArrayOf(0.2f, 0.12f, 0.55f, 0.5f, 0.82f)
+private val SPARK_PERIOD = floatArrayOf(1.2f, 0.8f, 1.6f, 1.0f, 1.4f)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -544,7 +542,8 @@ private fun DayCell(
     isToday: Boolean,
     isSelected: Boolean,
     moon: ImageBitmap,
-    dots: List<Color>,
+    unfinished: Boolean,
+    time: FloatState,
     modifier: Modifier,
     onDoubleClick: () -> Unit,
     onClick: () -> Unit,
@@ -555,7 +554,19 @@ private fun DayCell(
             .height(52.dp)
             .clip(shape)
             .background(if (isSelected) MoonsSelBg else Color.Transparent)
-            .then(if (isSelected) Modifier.border(2.dp, MoonsSelLine, shape) else Modifier)
+            // today keeps a lavender frame even when selected; sparkles still mark the selection
+            .then(if (isToday) Modifier.border(2.dp, Px.Lavender.copy(alpha = 0.45f), shape) else if (isSelected) Modifier.border(2.dp, MoonsSelLine, shape) else Modifier)
+            .then(
+                if (!isSelected) Modifier else Modifier.drawWithContent {
+                    drawContent()
+                    val t = time.floatValue
+                    for (k in 0 until 5) {
+                        val a = 0.15f + 0.85f * max(0f, sin(t * 6.2832f / SPARK_PERIOD[k] + k * 1.7f))
+                        val d = (if (k % 2 == 0) 3.dp else 2.dp).toPx()
+                        drawRect(PlanDot.copy(alpha = a), Offset(SPARK_X[k] * size.width, SPARK_Y[k] * size.height), Size(d, d))
+                    }
+                },
+            )
             .tapOrDoubleTap(role = Role.Button, onDoubleTap = onDoubleClick, onTap = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -573,24 +584,120 @@ private fun DayCell(
             filterQuality = FilterQuality.None,
         )
         Canvas(Modifier.padding(top = 2.dp).size(width = 44.dp, height = 4.dp)) {
-            val d = 4.dp.toPx()
-            val step = 6.dp.toPx()
-            val n = dots.size.coerceAtMost(7)
-            val total = n * step - 2.dp.toPx()
-            val x0 = (size.width - total) / 2f
-            for (k in 0 until n) drawRect(dots[k], Offset(x0 + k * step, 0f), Size(d, d))
+            if (unfinished) {
+                val d = 4.dp.toPx()
+                drawRect(PlanDot, Offset((size.width - d) / 2f, 0f), Size(d, d))
+            }
         }
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// Background (deep violet, one glow, twinkling stars)
+// Month picker ("night sky")
 // ---------------------------------------------------------------------------------------------
 
+private const val PINK_LIT = 0xFFC8EF
+private const val PINK_HI = 0xFFF0FF
+private const val PINK_CRATER = 0xD88AC0
+
 @Composable
-private fun MoonsBackdrop(time: FloatState, pxSize: Float) {
+private fun MonthPicker(monthIdx: Int, onDismiss: () -> Unit, onPick: (Int) -> Unit) {
+    val time = rememberRotTime()
+    var year by remember { mutableStateOf(monthIdx / 12) }
+    val moons = remember(year, monthIdx) {
+        Array(12) {
+            val d = LocalDate.of(year, it + 1, 15)
+            (if (year * 12 + it == monthIdx) moonBitmap(d, 12, PINK_LIT, PINK_HI, PINK_CRATER) else dayMoon(d, 12)).asImageBitmap()
+        }
+    }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val shape = RoundedCornerShape(12.dp)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .clip(shape)
+                .background(Brush.verticalGradient(listOf(Color(0xFF0C0618), Color(0xFF1A0B30))))
+                .border(1.dp, Color(0xFF3A2456), shape),
+        ) {
+            Canvas(Modifier.matchParentSize()) {
+                val t = time.floatValue
+                val d = 2.dp.toPx()
+                for (i in 0 until 24) {
+                    val a = 0.2f + 0.7f * max(0f, sin(t * 1.4f + hf(i, 5) * 6.28f))
+                    drawRect(Color(0xFFCDB8FF).copy(alpha = a), Offset(hf(i, 11) * size.width, hf(i, 29) * size.height), Size(d, d))
+                }
+            }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ArrowButton(CHEV_L, "Previous year", { year-- }, pixel = 3.dp)
+                    Text(
+                        year.toString(),
+                        Modifier.padding(horizontal = 18.dp),
+                        style = TextStyle(
+                            fontFamily = TitleFont, fontSize = 32.sp, color = Px.Lavender,
+                            shadow = Shadow(Color(0xAAB69AFF), Offset.Zero, 18f),
+                        ),
+                    )
+                    ArrowButton(CHEV_R, "Next year", { year++ }, pixel = 3.dp)
+                }
+                Spacer(Modifier.height(8.dp))
+                for (r in 0 until 4) {
+                    Row(Modifier.fillMaxWidth()) {
+                        for (c in 0 until 3) {
+                            val m = r * 3 + c
+                            val cur = year * 12 + m == monthIdx
+                            val cell = RoundedCornerShape(10.dp)
+                            Column(
+                                Modifier
+                                    .weight(1f)
+                                    .padding(2.dp)
+                                    .clip(cell)
+                                    .then(if (cur) Modifier.background(Color(0xFF2A1640)) else Modifier)
+                                    .clickable(role = Role.Button) { onPick(year * 12 + m) }
+                                    .padding(vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(
+                                    Modifier.size(29.dp).then(
+                                        if (!cur) Modifier else Modifier.drawBehind {
+                                            val a = 0.2f + 0.14f * sin(time.floatValue * 3f)
+                                            drawCircle(Color(0xFFFFC8EF).copy(alpha = a * 0.6f), size.minDimension * 0.95f)
+                                            drawCircle(Color(0xFFFFC8EF).copy(alpha = a), size.minDimension * 0.65f)
+                                        },
+                                    ),
+                                ) {
+                                    Image(moons[m], null, Modifier.size(29.dp), filterQuality = FilterQuality.None)
+                                }
+                                Text(
+                                    java.time.Month.of(m + 1).getDisplayName(DateTextStyle.FULL, Locale.ENGLISH),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    style = TextStyle(fontFamily = TitleFont, fontSize = 20.sp, color = if (cur) MoonsToday else MoonsText),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Background (deep violet, big phase moon, drifting clouds, twinkling stars)
+// ---------------------------------------------------------------------------------------------
+
+private val CLOUD_Y = intArrayOf(16, 34, 50)
+private val CLOUD_V = floatArrayOf(1.6f, 1.0f, 2.0f) // low-res px per second
+private val CLOUD_OFF = floatArrayOf(0.1f, 0.5f, 0.8f)
+
+@Composable
+private fun MoonsBackdrop(time: FloatState, pxSize: Float, today: LocalDate) {
     val pix = remember { Pix(1, 1) }
     val px = pxSize.toInt().coerceAtLeast(1)
+    val bigMoon = remember(today) { dayMoon(today, 56) }
+    val clouds = remember { arrayOf(cloudBitmap(44, 14, 1), cloudBitmap(60, 18, 2), cloudBitmap(50, 15, 3)) }
     Canvas(Modifier.fillMaxSize()) {
         val t = time.floatValue
         val w = ceil(size.width / px).toInt()
@@ -598,11 +705,19 @@ private fun MoonsBackdrop(time: FloatState, pxSize: Float) {
         if (w <= 0 || h <= 0) return@Canvas
         pix.resize(w, h)
         pix.fill(MoonsBase)
-        val s = density / pxSize // low-res px per dp
-        pix.glow(300f * s, 80f * s, 280f * s, 0x462882, 0.35f, add = false)
+        val mx = w - 34
+        val my = 40
+        pix.glow(mx.toFloat(), my.toFloat(), 64f, 0x7540B8, 0.4f, add = false)
         for (i in 0 until 90) {
             val a = 0.25f + 0.5f * max(0f, sin(t * 1.2f + hf(i, 5) * 6.28f))
             pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, if (i % 5 == 4) 0xD45AAB else 0xCDB8FF, a)
+        }
+        pix.canvas.drawBitmap(bigMoon, (mx - 28).toFloat(), (my - 28).toFloat(), null)
+        for (i in 0 until 3) {
+            val c = clouds[i]
+            val span = w + c.width
+            val x = (t * CLOUD_V[i] + CLOUD_OFF[i] * span) % span - c.width
+            pix.canvas.drawBitmap(c, rotRnd(x).toFloat(), CLOUD_Y[i].toFloat(), null)
         }
         drawIntoCanvas { pix.blit(it.nativeCanvas, 0, 0, px) }
     }
