@@ -5,9 +5,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.room.Room
 import app.vesper.data.AppDatabase
-import app.vesper.data.MIGRATION_1_2
-import app.vesper.data.MIGRATION_2_3
-import app.vesper.data.MIGRATION_3_4
+import app.vesper.data.ALL_MIGRATIONS
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,7 +25,7 @@ class NotebookApp : Application() {
 
     val db: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, DB_NAME)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(*ALL_MIGRATIONS)
             .build()
     }
 
