@@ -1,5 +1,26 @@
 package app.vesper.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+import kotlin.math.PI
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Paint
@@ -131,20 +152,14 @@ private val SEND = listOf(
 )
 private val CROSS = listOf("X...X", ".X.X.", "..X..", ".X.X.", "X...X")
 
-/** 14x14 nav icon for the Shrine tab. */
+/** 14x12 nav icon for the Grimoire tab: an open book. */
 internal val ShrineNavGrid = listOf(
-    "......X.......", ".....XMX......", "....XMHMX.....", "....XHHHX.....", ".....XHX......",
-    "..XXXXXXXXX...", ".XPPPPPPPPPX..", ".XPCCCCCCCPX..", ".XPCVVVVVCPX..", ".XPCVCCCVCPX..",
-    ".XPCVVVVVCPX..", ".XPCCCCCCCPX..", ".XPPPPPPPPPX..", "..XXXXXXXXX...",
+    "..............", ".XX........XX.", ".XoXX....XXoX.", ".XooXX..XXooX.", ".XoooXXXXoooX.",
+    ".XoooXwwXoooX.", ".XoooXwwXoooX.", ".XoooXwwXoooX.", ".XoooXwwXoooX.", ".XXXXXwwXXXXX.",
+    "......XX......", "..............",
 )
-internal val ShrineNavActive = mapOf(
-    'X' to Color(0xFF100817), 'H' to Color(0xFFB69AFF), 'C' to Color(0xFF47296D),
-    'M' to Color(0xFFD45AAB), 'P' to Color(0xFF7540B8), 'V' to Color(0xFFF0E8FA),
-)
-internal val ShrineNavInactive = mapOf(
-    'X' to Color(0xFF100817), 'H' to Color(0xFF563C78), 'C' to Color(0xFF241432),
-    'M' to Color(0xFF7A3668), 'P' to Color(0xFF39234C), 'V' to Color(0xFF8A7A9A),
-)
+internal val ShrineNavActive = mapOf('X' to Color(0xFFD45AAB), 'o' to Color(0xFFB69AFF), 'w' to Color(0xFFF0E8FA))
+internal val ShrineNavInactive = mapOf('X' to Color(0xFF7A3668), 'o' to Color(0xFF563C78), 'w' to Color(0xFF8A7A9A))
 
 // ---------------------------------------------------------------------------------------------
 // Feed model
@@ -207,7 +222,8 @@ fun ShrineScreen(
     val density = LocalDensity.current
     val feed = remember(posts) { if (posts == null) emptyList() else buildFeed(posts) }
 
-    var menuFor by remember { mutableStateOf<Post?>(null) }
+    var menuFor by remember { mutableStateOf<MenuTarget?>(null) }
+    var writing by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Post?>(null) }
     var deleting by remember { mutableStateOf<Post?>(null) }
     var viewing by remember { mutableStateOf<Post?>(null) }
@@ -223,14 +239,9 @@ fun ShrineScreen(
         }
     }
 
-    // The bottom nav bar stays under the keyboard, so only lift the screen by what the keyboard covers above it.
-    val imeBottom = WindowInsets.ime.getBottom(density)
-    val navTotal = with(density) { 74.dp.roundToPx() } + WindowInsets.navigationBars.getBottom(density)
-    val lift = with(density) { (imeBottom - navTotal).coerceAtLeast(0).toDp() }
-
     Box(Modifier.fillMaxSize()) {
         ShrineBackdrop(time, pxSize)
-        BoxWithConstraints(Modifier.fillMaxSize().padding(bottom = lift)) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
             val innerWidthPx = with(density) { (maxWidth - 32.dp).roundToPx() }
             Column(Modifier.fillMaxSize()) {
                 ShrineHeader()
@@ -238,7 +249,7 @@ fun ShrineScreen(
                     LazyColumn(
                         state = listState,
                         reverseLayout = true,
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 4.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 96.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         items(feed, key = { it.key }) { item ->
@@ -249,7 +260,7 @@ fun ShrineScreen(
                                     time = time,
                                     pxSize = pxSize,
                                     imageWidthPx = innerWidthPx,
-                                    onMenu = { menuFor = item.post },
+                                    onMenu = { menuFor = MenuTarget(item.post, it) },
                                     onPhoto = { viewing = item.post },
                                 )
                             }
@@ -262,33 +273,25 @@ fun ShrineScreen(
                             style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = ShrineDim),
                         )
                     }
+                    SigilFab("Keep something", { writing = true }, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp), quill = true)
                 }
-                Composer(draft, draftPhoto, sending, onDraft, onDraftPhoto, onSend)
             }
         }
     }
-
-    menuFor?.let { post ->
+    menuFor?.let { t ->
         val clipboard = LocalClipboardManager.current
-        Dialog(onDismissRequest = { menuFor = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Column(
-                Modifier
-                    .width(220.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(ShrineBtnBg)
-                    .border(2.dp, ShrineMenuLine, RoundedCornerShape(10.dp))
-                    .padding(vertical = 6.dp),
-            ) {
-                MenuRow("edit", ShrineText) { menuFor = null; editing = post }
-                if (!post.text.isNullOrEmpty()) {
-                    MenuRow("copy text", ShrineText) {
-                        clipboard.setText(AnnotatedString(post.text))
-                        menuFor = null
-                    }
-                }
-                MenuRow("delete", ShrineDelete) { menuFor = null; deleting = post }
-            }
-        }
+        ArcMenu(
+            t.rect,
+            hasText = !t.post.text.isNullOrEmpty(),
+            onDismiss = { menuFor = null },
+            onEdit = { menuFor = null; editing = t.post },
+            onCopy = { clipboard.setText(AnnotatedString(t.post.text.orEmpty())); menuFor = null },
+            onDelete = { menuFor = null; deleting = t.post },
+        )
+    }
+
+    if (writing) {
+        WritingPage(draft, draftPhoto, sending, onDraft, onDraftPhoto, onSend, onClose = { writing = false })
     }
 
     editing?.let { post ->
@@ -350,13 +353,135 @@ private fun DayPill(label: String) {
     }
 }
 
+private class MenuTarget(val post: Post, val rect: Rect)
+
+private val PEN = listOf("......XX", ".....XXX", "....XXX.", "...XXX..", "..XXX...", ".MXX....", ".MM.....", "M.......")
+private val PAGES = listOf("XXXXX...", "X...X...", "X..XXXXX", "X..X...X", "X..X...X", "XXXX...X", "...X...X", "...XXXXX")
+private val FLAME = listOf("...X....", "..XX....", ".XXXX...", ".XXXXX..", "XXXoXXX.", "XXooXXX.", "XXooXXX.", ".XXXXX..", "..XXX...")
+
+/** Three small round buttons in a smile-shaped arc below the post (above it when there is no room). */
 @Composable
-private fun MenuRow(text: String, color: Color, onClick: () -> Unit) {
-    Text(
-        text,
-        modifier = Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(horizontal = 18.dp, vertical = 10.dp),
-        style = TextStyle(fontFamily = PageFont, fontSize = 21.sp, color = color),
-    )
+private fun ArcMenu(
+    rect: Rect,
+    hasText: Boolean,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit,
+    onCopy: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val gap = with(density) { 6.dp.roundToPx() }
+    val provider = remember(rect, gap) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
+                val x = (rect.center.x - popupContentSize.width / 2f).toInt().coerceIn(0, max(0, windowSize.width - popupContentSize.width))
+                val below = rect.bottom.toInt() + gap
+                val y = if (below + popupContentSize.height <= windowSize.height) below else rect.top.toInt() - popupContentSize.height - gap
+                return IntOffset(x, y.coerceIn(0, max(0, windowSize.height - popupContentSize.height)))
+            }
+        }
+    }
+    val a = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { a.animateTo(1f, tween(150)) }
+    val items = buildList {
+        add(Triple("Edit post", PEN, onEdit))
+        if (hasText) add(Triple("Copy text", PAGES, onCopy))
+        add(Triple("Delete post", FLAME, onDelete))
+    }
+    Popup(provider, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true)) {
+        Box(Modifier.size(width = 132.dp, height = 50.dp).graphicsLayer { alpha = a.value; scaleX = 0.6f + 0.4f * a.value; scaleY = 0.6f + 0.4f * a.value }) {
+            items.forEachIndexed { i, (label, grid, act) ->
+                val u = i - (items.size - 1) / 2f
+                Box(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .offset(x = (u * 46).dp, y = (10 * (1 - u * u)).dp)
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(ShrineBtnBg)
+                        .border(2.dp, Color(0xFF5A3E7A), CircleShape)
+                        .clickable(role = Role.Button, onClick = act)
+                        .semantics { contentDescription = label },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    PixelArt(grid, if (grid === FLAME) mapOf('X' to Px.Magenta, 'o' to Px.Lavender) else mapOf('X' to Px.Lavender, 'M' to Px.Magenta), 2.dp)
+                }
+            }
+        }
+    }
+}
+
+/** Full-screen writing page: back, attach and keep on top; the attachment chip; then the open text area. */
+@Composable
+private fun WritingPage(
+    draft: String,
+    photo: Uri?,
+    sending: Boolean,
+    onDraft: (String) -> Unit,
+    onPhoto: (Uri?) -> Unit,
+    onSend: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) onPhoto(uri) }
+    val ctx = LocalContext.current
+    val canSend = !sending && (draft.isNotBlank() || photo != null)
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Column(Modifier.fillMaxSize().background(ShrineBase).statusBarsPadding().navigationBarsPadding().imePadding()) {
+            Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 14.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                SigilFab("Back", onClose, back = true)
+                Spacer(Modifier.weight(1f))
+                BarButton(
+                    ATT, if (photo != null) Px.Magenta else ShrineIconDim,
+                    fill = ShrineBtnBg, line = ShrineBtnLine, description = "Attach photo or video",
+                ) { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
+                Spacer(Modifier.width(8.dp))
+                BarButton(
+                    SEND, Color(0xFFF0E8FA).copy(alpha = if (canSend) 1f else 0.45f),
+                    fill = Color(0xFF5A2F94), line = Color(0xFF8A6AD0), description = "Keep post",
+                ) { if (canSend) { onSend(); onClose() } }
+            }
+            if (photo != null) {
+                val thumb by produceState<Bitmap?>(null, photo) { value = ShrineBitmaps.thumb(ctx, photo, 48) }
+                Row(
+                    Modifier
+                        .padding(start = 18.dp, top = 8.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF1C1128))
+                        .border(2.dp, Px.Magenta, RoundedCornerShape(10.dp))
+                        .clickable(role = Role.Button, onClickLabel = "Remove attachment") { onPhoto(null) }
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    thumb?.let {
+                        Image(it.asImageBitmap(), null, Modifier.size(22.dp).clip(RoundedCornerShape(4.dp)), contentScale = ContentScale.Crop)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(if (ctx.contentResolver.getType(photo)?.startsWith("video/") == true) "video attached" else "photo attached", style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = ShrineText))
+                    Spacer(Modifier.width(8.dp))
+                    PixelIcon(CROSS, Px.Magenta, pixel = 2.dp)
+                }
+            }
+            BasicTextField(
+                value = draft,
+                onValueChange = onDraft,
+                textStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = ShrineText),
+                cursorBrush = SolidColor(Px.Lavender),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 22.dp, vertical = 14.dp).focusRequester(focus),
+                decorationBox = { inner ->
+                    Box(Modifier.fillMaxSize()) {
+                        if (draft.isEmpty()) Text("keep something…", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = ShrineDim))
+                        inner()
+                    }
+                },
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -370,7 +495,7 @@ private fun PostCard(
     time: FloatState,
     pxSize: Float,
     imageWidthPx: Int,
-    onMenu: () -> Unit,
+    onMenu: (Rect) -> Unit,
     onPhoto: () -> Unit,
 ) {
     val px = pxSize.toInt().coerceAtLeast(1)
@@ -383,12 +508,15 @@ private fun PostCard(
     val img = post.imagePath ?: post.videoPath
     val hasText = !post.text.isNullOrEmpty()
     val timeText = timeOf(post.createdAt) + if (post.editedAt != null) " · edited" else ""
+    val where = remember { arrayOfNulls<LayoutCoordinates>(1) }
+    val openMenu = { where[0]?.takeIf { it.isAttached }?.let { onMenu(it.boundsInWindow()) }; Unit }
 
     Box(
         Modifier
             .fillMaxWidth()
             .padding(bottom = 14.dp)
-            .combinedClickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}, onDoubleClick = onMenu),
+            .onGloballyPositioned { where[0] = it }
+            .combinedClickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}, onDoubleClick = openMenu),
     ) {
         // Paper + shadow + embers, behind the content. Time is only read in the draw phase.
         Spacer(
@@ -442,7 +570,7 @@ private fun PostCard(
         ) {
             if (img != null) {
                 Box(Modifier.fillMaxWidth()) {
-                    PostPhoto(img, post.videoPath != null, imageWidthPx, onPhoto, onMenu)
+                    PostPhoto(img, post.videoPath != null, imageWidthPx, onPhoto, openMenu)
                     if (!hasText) {
                         Text(
                             timeText,
@@ -726,95 +854,8 @@ private fun PhotoViewer(post: Post, onClose: () -> Unit) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Composer
+// Writing page parts
 // ---------------------------------------------------------------------------------------------
-
-@Composable
-private fun Composer(
-    draft: String,
-    photo: Uri?,
-    sending: Boolean,
-    onDraft: (String) -> Unit,
-    onPhoto: (Uri?) -> Unit,
-    onSend: () -> Unit,
-) {
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) onPhoto(uri) }
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    val ctx = LocalContext.current
-    val canSend = !sending && (draft.isNotBlank() || photo != null)
-
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(ShrineBarBg)
-            .drawBehind { drawRect(ShrineBarLine, size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx())) }
-            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 10.dp),
-    ) {
-        if (photo != null) {
-            val thumb by produceState<Bitmap?>(null, photo) { value = ShrineBitmaps.thumb(ctx, photo, 48) }
-            Row(
-                Modifier
-                    .padding(bottom = 8.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF1C1128))
-                    .border(2.dp, Px.Magenta, RoundedCornerShape(10.dp))
-                    .clickable(role = Role.Button, onClickLabel = "Remove attachment") { onPhoto(null) }
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                thumb?.let {
-                    Image(
-                        it.asImageBitmap(), null,
-                        Modifier.size(22.dp).clip(RoundedCornerShape(4.dp)),
-                        contentScale = ContentScale.Crop,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text(if (ctx.contentResolver.getType(photo)?.startsWith("video/") == true) "video attached" else "photo attached", style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = ShrineText))
-                Spacer(Modifier.width(8.dp))
-                PixelIcon(CROSS, Px.Magenta, pixel = 2.dp)
-            }
-        }
-        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BarButton(
-                ATT, if (photo != null) Px.Magenta else ShrineIconDim,
-                fill = ShrineBtnBg, line = ShrineBtnLine, description = "Attach photo or video",
-            ) {
-                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-            }
-            val shape = RoundedCornerShape(10.dp)
-            BasicTextField(
-                value = draft,
-                onValueChange = onDraft,
-                interactionSource = interaction,
-                textStyle = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = ShrineText),
-                cursorBrush = SolidColor(Px.Lavender),
-                maxLines = 5,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 40.dp)
-                    .clip(shape)
-                    .background(ShrineBase)
-                    .border(2.dp, if (focused) Color(0xFF5A3E7A) else ShrineBtnLine, shape)
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                decorationBox = { inner ->
-                    Box(Modifier.heightIn(min = 24.dp), contentAlignment = Alignment.CenterStart) {
-                        if (draft.isEmpty()) {
-                            Text("keep something...", style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = ShrineDim))
-                        }
-                        inner()
-                    }
-                },
-            )
-            BarButton(
-                SEND, Color(0xFFF0E8FA).copy(alpha = if (canSend) 1f else 0.45f),
-                fill = Color(0xFF5A2F94), line = Color(0xFF8A6AD0), description = "Keep post",
-            ) { if (canSend) onSend() }
-        }
-    }
-}
 
 @Composable
 private fun BarButton(grid: List<String>, tint: Color, fill: Color, line: Color, description: String, onClick: () -> Unit) {
@@ -863,7 +904,7 @@ private fun EditDialog(post: Post, onDismiss: () -> Unit, onSave: (String) -> Un
 }
 
 // ---------------------------------------------------------------------------------------------
-// Background (dark fog, specks, rising sparks, vignette)
+// Background (specks, fading runes, vignette)
 // ---------------------------------------------------------------------------------------------
 
 private val SPECKS = intArrayOf(0x160818, 0x2A0F30, 0x1E0A24)
@@ -879,23 +920,16 @@ private fun ShrineBackdrop(time: FloatState, pxSize: Float) {
         if (w <= 0 || h <= 0) return@Canvas
         pix.resize(w, h)
         pix.fill(0x08040C)
-        val sx = w / 180f
-        val sy = h / 390f
-        for (i in 0 until 3) {
-            val cx = (90f + sin(t * 0.04f + i * 2.1f) * 60f) * sx
-            val cy = (195f + cos(t * 0.03f + i * 1.4f) * 150f) * sy
-            val rgb = if (i % 2 == 0) 0x34186E else 0x501860
-            pix.glow(cx, cy, 90f * (sx + sy) / 2f, rgb, if (i % 2 == 0) 0.2f else 0.22f, add = false)
-        }
         for (i in 0 until 120) {
             pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, SPECKS[i % 3])
         }
-        for (i in 0 until 17) {
-            val x = (i * 37 + 11) % w + sin(t * 0.6f + i) * 3f
-            val rawY = h - (t * (2 + i % 3) + i * 53)
-            val y = ((rawY % h) + h) % h
-            val a = 0.15f + 0.25f * max(0f, sin(t * 1.2f + i))
-            pix.dot(floor(x).toInt(), floor(y).toInt(), 1, 1, if (i % 2 == 0) 0x5A1E48 else 0x7A2A5E, a)
+        for (i in 0 until 14) {
+            val rune = RUNES[i % RUNES.size]
+            val period = 3f + 4f * hf(i, 17)
+            val a = 0.5f * (0.5f + 0.5f * sin(t * (2f * PI.toFloat() / period) + hf(i, 5) * 6.2832f))
+            val rx = (hf(i, 51) * (w - 6)).toInt()
+            val ry = (hf(i, 73) * (h - 8)).toInt()
+            for (y in 0 until 7) for (x in 0 until 5) if (rune[y][x] == 'X') pix.dot(rx + x, ry + y, 1, 1, 0x5A3E7A, a)
         }
         drawIntoCanvas { pix.blit(it.nativeCanvas, 0, 0, px) }
         val unit = size.width / 180f
@@ -912,3 +946,15 @@ private fun ShrineBackdrop(time: FloatState, pxSize: Float) {
         )
     }
 }
+
+// Elder-Futhark-ish 5x7 rune bitmaps for the background.
+private val RUNES = listOf(
+    listOf("X....", "XX...", "X.X..", "X..X.", "X.X..", "X....", "X...."),
+    listOf("XXX..", "XX.X.", "X..X.", "X..X.", "X..X.", "X..X.", "X..X."),
+    listOf("X....", "XX...", "X.X..", "X..X.", "X.X..", "XX...", "X...."),
+    listOf("X....", "XX...", "X.X..", "XX...", "X.X..", "X....", "X...."),
+    listOf("XXX..", "X..X.", "X..X.", "XXX..", "X.X..", "X..X.", "X...X"),
+    listOf("...X.", "..X..", ".X...", "X....", ".X...", "..X..", "...X."),
+    listOf("..X..", "..X..", "..X..", "..X..", "..X..", "..X..", "..X.."),
+    listOf(".X...", "X....", ".X...", "..X..", ".X...", "X....", ".X..."),
+)

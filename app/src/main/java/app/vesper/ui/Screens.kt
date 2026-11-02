@@ -138,7 +138,7 @@ fun ScreenTitle(text: String) {
 
 /** Pixel-art round add button: a glowing sigil with a slowly turning dotted ring. Drawn on a 41x41 grid of 2dp pixels (the 58dp button plus room for the glow and the press ring). */
 @Composable
-fun SigilFab(description: String, onClick: () -> Unit, modifier: Modifier = Modifier, back: Boolean = false) {
+fun SigilFab(description: String, onClick: () -> Unit, modifier: Modifier = Modifier, back: Boolean = false, quill: Boolean = false) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -175,7 +175,7 @@ fun SigilFab(description: String, onClick: () -> Unit, modifier: Modifier = Modi
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.requiredSize((SIGIL_GRID * 2).dp)) {
-            drawSigil(pix, time.floatValue, press, ringStart.floatValue, back)
+            drawSigil(pix, time.floatValue, press, ringStart.floatValue, back, quill)
             drawIntoCanvas {
                 dst.set(0, 0, size.width.toInt(), size.height.toInt())
                 it.nativeCanvas.drawBitmap(pix.bmp, null, dst, paint)
@@ -262,7 +262,7 @@ private fun drawMatch(pix: Pix, t: Float, press: Float) {
     }
 }
 
-private fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back: Boolean) {
+private fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back: Boolean, quill: Boolean) {
     val c = SIGIL_GRID / 2 + 0.5f
     pix.clear()
     pix.glow(c, c, 17f, 0x7540B8, 0.35f + 0.15f * sin(t * 1.6f) + 0.4f * press)
@@ -290,6 +290,17 @@ private fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back: 
     val pressedLook = press > 0.5f
     val arm = if (pressedLook) 0xFFD0F0 else 0xC9B0FF
     val ci = c.toInt()
+    if (quill) {
+        // Diagonal feather: shaft from the nib (bottom left) to the tip, with a vane on both sides and an ink dot.
+        for (i in 0..10) {
+            val x = ci - 5 + i
+            val y = ci + 5 - i
+            pix.dot(x, y, 1, 1, arm)
+            if (i in 4..9) { pix.dot(x - 1, y, 1, 1, arm); pix.dot(x, y - 1, 1, 1, arm) }
+            if (i in 3..7) { pix.dot(x + 1, y, 1, 1, arm); pix.dot(x, y + 1, 1, 1, arm) }
+        }
+        pix.dot(ci - 6, ci + 6, 1, 1, 0xD45AAB)
+    } else {
     pix.dot(ci - 5, ci, 11, 1, arm)
     if (back) {
         // Arrowhead pointing left.
@@ -297,6 +308,7 @@ private fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back: 
     } else {
         pix.dot(ci, ci - 5, 1, 11, arm)
         pix.dot(ci, ci, 1, 1, if (pressedLook) 0xFFD0F0 else 0xE6DCFF)
+    }
     }
 
     // Ring released by a press.

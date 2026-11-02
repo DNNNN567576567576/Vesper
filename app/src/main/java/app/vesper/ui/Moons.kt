@@ -116,8 +116,14 @@ internal val MoonsNavGrid = listOf(
     "XCVCCVCCVCCCX.", "XCCCCCCCCCCCX.", "XCVCCMMCVCCCX.", "XCCCCMMCCCCCX.", "XCVCCVCCVCCCX.",
     "XCCCCCCCCCCCX.", ".XXXXXXXXXXX..", "..............", "..............",
 )
-internal val MoonsNavActive = ShrineNavActive
-internal val MoonsNavInactive = ShrineNavInactive
+internal val MoonsNavActive = mapOf(
+    'X' to Color(0xFF100817), 'H' to Color(0xFFB69AFF), 'C' to Color(0xFF47296D),
+    'M' to Color(0xFFD45AAB), 'P' to Color(0xFF7540B8), 'V' to Color(0xFFF0E8FA),
+)
+internal val MoonsNavInactive = mapOf(
+    'X' to Color(0xFF100817), 'H' to Color(0xFF563C78), 'C' to Color(0xFF241432),
+    'M' to Color(0xFF7A3668), 'P' to Color(0xFF39234C), 'V' to Color(0xFF8A7A9A),
+)
 
 private val CHEV_L = listOf("...X", "..X.", ".X..", "X...", ".X..", "..X.", "...X")
 private val CHEV_R = listOf("X...", ".X..", "..X.", "...X", "..X.", ".X..", "X...")
