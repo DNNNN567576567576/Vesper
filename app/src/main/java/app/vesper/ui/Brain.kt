@@ -747,15 +747,8 @@ fun BrainScreen(
                 onTapIdea = { editing = it },
                 onTapEmpty = { onSelectLobe(-1L) },
             )
-            Text(
-                "BRAIN",
-                Modifier.align(Alignment.TopCenter).padding(top = 14.dp),
-                style = TextStyle(
-                    fontFamily = PixelFont, fontSize = 13.sp, color = Px.Lavender,
-                    shadow = Shadow(Color(0xFF6E1F5A), Offset(2f, 2f), 0f),
-                ),
-            )
-            PixelFab(
+            ScreenTitle("Brain")
+            SigilFab(
                 "Grow a new lobe",
                 onClick = { addingLobe = true },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp),

@@ -326,7 +326,7 @@ private fun ShrineHeader(count: Int) {
         verticalAlignment = Alignment.Bottom,
     ) {
         Text(
-            "Shrine",
+            "Grimoire",
             modifier = Modifier.alignByBaseline(),
             style = TextStyle(
                 fontFamily = TitleFont,

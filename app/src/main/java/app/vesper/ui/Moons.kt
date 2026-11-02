@@ -593,13 +593,13 @@ private fun MoonsComposer(draft: String, onDraft: (String) -> Unit, onSend: () -
                 Modifier
                     .size(40.dp)
                     .clip(shape)
-                    .background(Color(0xFF5A2F94))
-                    .border(2.dp, Color(0xFF8A6AD0), shape)
+                    .background(Color(0xFF120A19))
+                    .border(2.dp, Px.Primary, shape)
                     .clickable(role = Role.Button) { if (canSend) onSend() }
                     .semantics { contentDescription = "Add plan" },
                 contentAlignment = Alignment.Center,
             ) {
-                PixelIcon(PLUS, Color(0xFFF0E8FA).copy(alpha = if (canSend) 1f else 0.45f), pixel = 2.dp)
+                PixelIcon(PLUS, Px.Lavender.copy(alpha = if (canSend) 1f else 0.45f), pixel = 2.dp)
             }
         }
     }

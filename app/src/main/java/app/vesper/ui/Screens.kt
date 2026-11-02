@@ -129,59 +129,6 @@ fun ScreenTitle(text: String) {
     )
 }
 
-/** Square plus button, bottom-right, with a hard pixel bevel and a breathing halo. */
-@Composable
-fun PixelFab(description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.90f else 1f,
-        animationSpec = spring(dampingRatio = 0.45f, stiffness = 900f),
-        label = "fabPress",
-    )
-    val glow by rememberInfiniteTransition(label = "fabGlow").animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(2800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "glow",
-    )
-    Box(
-        modifier
-            .size(62.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .drawBehind {
-                drawCircle(
-                    Brush.radialGradient(
-                        colors = listOf(Px.Primary.copy(alpha = 0.26f + 0.16f * glow), Color.Transparent),
-                        center = center,
-                        radius = size.maxDimension * (0.78f + 0.16f * glow),
-                    )
-                )
-            }
-            .pixelCard(fill = Px.Primary, border = Px.Lavender, notch = 5.dp)
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                role = Role.Button,
-                onClickLabel = description,
-                onClick = onClick,
-            )
-            .semantics { contentDescription = description },
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val inset = 2.dp.toPx()
-            val t = 1.5.dp.toPx()
-            drawRect(Px.Lavender.copy(alpha = 0.40f), Offset(inset, inset), Size(size.width - inset * 2f, t))
-            drawRect(Color.Black.copy(alpha = 0.45f), Offset(inset, size.height - inset - t), Size(size.width - inset * 2f, t))
-        }
-        PixelIcon(Icons.Plus, Px.Text, pixel = 4.dp)
-    }
-}
-
 /** Pixel-art round add button: a glowing sigil with a slowly turning dotted ring. Drawn on a 41x41 grid of 2dp pixels (the 58dp button plus room for the glow and the press ring). */
 @Composable
 fun SigilFab(description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -761,10 +708,12 @@ fun TasksScreen(
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            ScreenTitle("Tasks")
             when {
-                tasks == null -> Unit
-                tasks.isEmpty() && snuffed.isEmpty() -> EmptyState("No quests remain.", hint = "Tap the plus to add one.")
+                tasks == null -> ScreenTitle("Tasks")
+                tasks.isEmpty() && snuffed.isEmpty() -> {
+                    ScreenTitle("Tasks")
+                    EmptyState("No quests remain.", hint = "Tap the plus to add one.")
+                }
                 else -> Box(Modifier.fillMaxSize()) {
                     // Pools of light, ledges and candles live in one layer behind the rows (text never overlaps them).
                     Canvas(Modifier.fillMaxSize()) {
@@ -794,10 +743,12 @@ fun TasksScreen(
                     }
                     LazyColumn(
                         state = listState,
-                        contentPadding = PaddingValues(top = 22.dp, bottom = 112.dp),
+                        contentPadding = PaddingValues(bottom = 112.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
+                        // String key: the candle canvas only reads Long keys, so it skips the title.
+                        item(key = "title") { Box(Modifier.padding(bottom = 6.dp)) { ScreenTitle("Tasks") } }
                         if (tasks.isEmpty()) item(key = Long.MIN_VALUE) {
                             Box(Modifier.fillMaxWidth().height(380.dp)) { EmptyState("No quests remain.", hint = "Tap the plus to add one.") }
                         }
@@ -825,7 +776,7 @@ fun TasksScreen(
                 }
             }
         }
-        PixelFab("Add task", onAdd, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
+        SigilFab("Add task", onAdd, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
     }
 }
 
@@ -976,7 +927,7 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
                 grid = ShrineNavGrid,
                 activePalette = ShrineNavActive,
                 inactivePalette = ShrineNavInactive,
-                label = "Shrine",
+                label = "Grimoire",
                 active = selected == 3,
                 onClick = { onSelect(3) },
                 modifier = Modifier.weight(1f),
