@@ -186,6 +186,82 @@ fun SigilFab(description: String, onClick: () -> Unit, modifier: Modifier = Modi
 
 private const val SIGIL_GRID = 41
 
+/** Add button for Flames: a diagonal pixel matchstick whose head glows and flares when pressed. Same 58dp target and 41x41 grid as [SigilFab]. */
+@Composable
+fun MatchFab(description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.90f else 1f,
+        animationSpec = spring(dampingRatio = 0.45f, stiffness = 900f),
+        label = "matchScale",
+    )
+    val press by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = tween(140),
+        label = "matchPress",
+    )
+    val time = rememberRotTime()
+    val pix = remember { Pix(SIGIL_GRID, SIGIL_GRID) }
+    val dst = remember { android.graphics.Rect() }
+    val paint = remember { android.graphics.Paint().apply { isAntiAlias = false; isFilterBitmap = false } }
+    Box(
+        modifier
+            .size(58.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClickLabel = description,
+                onClick = onClick,
+            )
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.requiredSize((SIGIL_GRID * 2).dp)) {
+            drawMatch(pix, time.floatValue, press)
+            drawIntoCanvas {
+                dst.set(0, 0, size.width.toInt(), size.height.toInt())
+                it.nativeCanvas.drawBitmap(pix.bmp, null, dst, paint)
+            }
+        }
+    }
+}
+
+private fun drawMatch(pix: Pix, t: Float, press: Float) {
+    pix.clear()
+    val hx = 32
+    val hy = 15
+    val pulse = 0.5f + 0.5f * sin(t * 2f * PI.toFloat() / 1.6f)
+    pix.glow(hx + 0.5f, hy + 0.5f, 11f + 6f * press, 0x7540B8, 0.3f + 0.25f * pulse + 0.35f * press)
+    pix.glow(hx + 0.5f, hy + 0.5f, 6f + 3f * press, 0xD45AAB, 0.3f + 0.2f * pulse + 0.4f * press)
+
+    // Stick at ~25 degrees, 2px thick with a shaded lower edge, from bottom-left up to the head.
+    for (i in 0..24) {
+        val x = floor(9 + i * 0.906f).toInt()
+        val y = floor(26 - i * 0.4226f).toInt()
+        pix.dot(x, y, 1, 1, 0xC9B0FF)
+        pix.dot(x, y + 1, 1, 1, 0x8F6BD0)
+    }
+
+    // Head.
+    val flare = press > 0.5f
+    pix.disc(hx + 0.5f, hy + 0.5f, if (flare) 3.6f else 3.2f, 0xD45AAB)
+    pix.dot(hx - 1, hy - 1, 2, 1, if (flare) 0xFFE8FF else 0xFF9AD8)
+
+    // Embers rising while pressed.
+    if (press > 0.2f) {
+        for (k in 0 until 4) {
+            val f = (t * 2.2f + k * 0.27f) % 1f
+            pix.dot(hx + rotRnd(sin(k * 2.1f + t * 6f) * 3f), hy - 4 - (f * 9f).toInt(), 1, 1, if (k % 2 == 0) 0xFFD0F0 else 0xD45AAB, (1f - f) * press)
+        }
+    }
+}
+
 private fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back: Boolean) {
     val c = SIGIL_GRID / 2 + 0.5f
     pix.clear()
@@ -819,7 +895,7 @@ fun TasksScreen(
                         for (i in 0 until items.size) {
                             val info = items[i]
                             val id = info.key as? Long ?: continue
-                            val ly = ((info.offset + pad + info.size) / pxSize).roundToInt() - 4
+                            val ly = ((info.offset + pad + info.size / 2f) / pxSize).roundToInt() // row's vertical middle
                             // Keys: lit task = id, snuffed task = -id, plus the toggle (0) and the empty-state item.
                             if (id > 0L) {
                                 val start = completing[id]
@@ -870,7 +946,7 @@ fun TasksScreen(
                 }
             }
         }
-        SigilFab("Add flame", onAdd, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
+        MatchFab("Add flame", onAdd, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
     }
 }
 
@@ -1003,7 +1079,8 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = R.drawable.scroll_tab,
+                icon = 0,
+                grid = Icons.Flames,
                 label = "Flames",
                 active = selected == 1,
                 onClick = { onSelect(1) },

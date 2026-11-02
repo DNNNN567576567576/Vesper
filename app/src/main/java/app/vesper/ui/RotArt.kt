@@ -558,10 +558,18 @@ internal class CandleRenderer {
      * One task: [ly] is the ledge's top row in low-res px, [p] seconds since completion was tapped (negative = alive).
      * Everything derives from [id] so the candle never changes.
      */
-    fun row(id: Long, ly: Int, w: Int, t: Float, p: Float) {
+    /** Little holder under a puddle (13 wide): plate 2px wider each side with a lit rim, and a narrower foot. */
+    private fun dish(cx: Int, ly: Int, plate: Int, rim: Int, foot: Int) {
+        pix.dot(cx - 8, ly, 17, 1, rim)
+        pix.dot(cx - 8, ly + 1, 17, 1, plate)
+        pix.dot(cx - 4, ly + 2, 9, 2, foot)
+    }
+
+    fun row(id: Long, mid: Int, w: Int, t: Float, p: Float) {
         val s = id.toInt() * 31 + 7
         val fi = (id % 1000L).toFloat()
         val ch = 12 + (hf(s, 1) * 7f).toInt()
+        val ly = mid + ch / 2 - 2 // body (ch) + dish (4) spans ly-ch..ly+4, so its middle sits on [mid]
         val cx = 17
         val top = ly - ch
         val flame = if (p < 0f) 1f else (1f - p / 0.4f).coerceIn(0f, 1f)
@@ -574,15 +582,6 @@ internal class CandleRenderer {
                 (0.32f + 0.08f * sin(t * 9f + fi * 2f) + 0.05f * sin(t * 23f + fi)) * flame,
             )
             pix.glow(cx.toFloat(), (ly - ch - 4).toFloat(), 18f, 0xD45AAB, 0.2f * flame)
-        }
-
-        // Ledge with a few mould specks.
-        pix.dot(7, ly, w - 14, 1, 0x3A2030)
-        pix.dot(7, ly + 1, w - 14, 3, 0x1E0E18)
-        for (k in 0 until 8) {
-            val sx = 7 + (hf(s, 20 + k) * (w - 14)).toInt()
-            val sy = ly + 1 + (hf(s, 40 + k) * 3f).toInt()
-            pix.dot(sx, sy, 1, 1, if (k % 2 == 0) 0x4A5A2A else 0x3A2A1A)
         }
 
         // Candle body: 6 wide, x from cx-3 to cx+2.
@@ -599,6 +598,7 @@ internal class CandleRenderer {
         }
         pix.dot(cx - 6, ly - 1, 13, 1, 0x8F6BD0)
         pix.dot(cx - 4, ly - 2, 9, 1, 0xB69AFF)
+        dish(cx, ly, 0x5A3E7A, 0xB69AFF, 0x3A2456)
 
         // Wick and flame.
         val xc = cx - 1
@@ -630,19 +630,18 @@ internal class CandleRenderer {
      * A snuffed task: melted stub, wax puddle and one thin wisp of smoke on a dimmer ledge.
      * [p] is seconds since relighting was tapped (negative = still ash); the flame grows back over 0.6 s.
      */
-    fun stub(id: Long, ly: Int, w: Int, t: Float, p: Float) {
+    fun stub(id: Long, mid: Int, w: Int, t: Float, p: Float) {
         val fi = (id % 1000L).toFloat()
         val cx = 17
+        val ly = mid // stub (5) + dish (4) spans ly-5..ly+4, middle ~ly
         val top = ly - 5
         pix.ma = 1f
-
-        pix.dot(7, ly, w - 14, 1, 0x2A1824)
-        pix.dot(7, ly + 1, w - 14, 3, 0x170B13)
 
         pix.dot(cx - 6, ly - 1, 13, 1, 0x5A4870)
         pix.dot(cx - 4, ly - 2, 9, 1, 0x6A5480)
         pix.dot(cx - 2, top, 5, 3, 0x7A6496)
         pix.dot(cx - 2, top, 5, 1, 0x301426)
+        dish(cx, ly, 0x3A2A48, 0x5A4870, 0x241830)
         // Bent wick: up, then flopped over.
         pix.dot(cx - 1, top - 1, 1, 2, 0x0A0508)
         pix.dot(cx, top - 2, 1, 1, 0x0A0508)

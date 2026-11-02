@@ -172,6 +172,19 @@ object Icons {
         ".oXooooooXo.",
         "..oooooooo..",
     )
+    val Flames = listOf(
+        ".....X......",
+        "....XX......",
+        "....XoX.....",
+        "...XooX.....",
+        "..XXoooX....",
+        "..XooooX....",
+        ".XoooooXX...",
+        ".XooXooooX..",
+        ".XooXXoooX..",
+        "..XoooooX...",
+        "...XXXXX....",
+    )
     val Plus = listOf(
         "...XX...",
         "...XX...",

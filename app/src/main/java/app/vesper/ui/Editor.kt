@@ -37,6 +37,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -74,6 +77,18 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.draw.drawBehind
 import kotlin.math.ceil
 import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.text.style.TextAlign
+import kotlin.math.sin
+import kotlin.math.abs
+import kotlin.math.pow
+import kotlin.math.PI
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -298,6 +313,7 @@ fun PixelDialog(onDismiss: () -> Unit, content: @Composable () -> Unit) {
     }
 }
 
+/** "Smoke words": a big flickering flame over a bare text field on a dark scrim. Done lights it; tapping outside or back cancels. */
 @Composable
 fun AddTaskDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
@@ -307,48 +323,80 @@ fun AddTaskDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
         onDismiss()
     }
     LaunchedEffect(Unit) { focus.requestFocus() }
-    PixelDialog(onDismiss) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            PixelIcon(Icons.Star, Px.Magenta, pixel = 2.dp)
-            Spacer(Modifier.width(10.dp))
-            Text("NEW TASK", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
-        }
-        Spacer(Modifier.height(6.dp))
-        Canvas(Modifier.fillMaxWidth().height(3.dp)) {
-            val s = 5.dp.toPx()
-            var x = 0f
-            while (x < size.width) {
-                drawRect(Px.Border, Offset(x, 0f), Size(s / 2f, size.height))
-                x += s
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var clock by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) { while (true) clock = withFrameNanos { it } }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color(0xFF05020A).copy(alpha = 0.88f))
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss)
+                .imePadding(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(Modifier.fillMaxWidth(0.7f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    BasicTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            fontFamily = PageFont, fontSize = 26.sp, color = Color(0xFFE6DCFF), textAlign = TextAlign.Center,
+                            shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.8f), Offset.Zero, 14f),
+                        ),
+                        cursorBrush = SolidColor(Color.Transparent),
+                        onTextLayout = { layout = it },
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { submit() }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(focus).semantics { contentDescription = "New flame" },
+                        decorationBox = { inner ->
+                            // end padding = flame width so text + flame sit centred together
+                            Box(Modifier.fillMaxWidth().padding(end = if (text.isEmpty()) 0.dp else (CW * CELL_DP).dp), contentAlignment = Alignment.Center) {
+                                if (text.isEmpty()) Text("\u2026", style = TextStyle(fontFamily = PageFont, fontSize = 26.sp, color = Color(0xFFE6DCFF).copy(alpha = 0.3f)))
+                                Box(Modifier.drawWithContent {
+                                    drawContent()
+                                    // caret is always at the end (plain String value)
+                                    val r = layout?.getCursorRect(text.length) ?: return@drawWithContent
+                                    val left = if (text.isEmpty()) r.left - CW * CELL_DP / 2 * density else r.right + 1.dp.toPx()
+                                    drawSpiritFlame(left, r.bottom, clock / 1e9f)
+                                }) { inner() }
+                            }
+                        },
+                    )
+                    Box(
+                        Modifier.fillMaxWidth().height(2.dp)
+                            .background(Brush.horizontalGradient(listOf(Color.Transparent, Color(0xFF9A6BE0), Color.Transparent)))
+                    )
+                }
             }
         }
-        Spacer(Modifier.height(16.dp))
-        BasicTextField(
-            value = text,
-            onValueChange = { text = it },
-            singleLine = true,
-            textStyle = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, lineHeight = 20.sp, color = Px.Text),
-            cursorBrush = SolidColor(Px.Magenta),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { submit() }),
-            modifier = Modifier.fillMaxWidth().focusRequester(focus),
-            decorationBox = { inner ->
-                Box(
-                    Modifier.fillMaxWidth().pixelCard(fill = Px.Bg, shadow = false, notch = 2.dp)
-                        .padding(horizontal = 14.dp, vertical = 17.dp)
-                ) {
-                    if (text.isEmpty()) Text(
-                        "What needs doing?",
-                        style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, lineHeight = 18.sp, color = Px.TextDim.copy(alpha = 0.45f)),
-                    )
-                    inner()
-                }
-            },
-        )
-        Spacer(Modifier.height(18.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-            PixelButton("CANCEL", onDismiss)
-            PixelButton("ADD", ::submit, primary = true)
+    }
+}
+
+private val FLAME_PAL = intArrayOf(
+    0, 0xFF140628.toInt(), 0xFF280A4B.toInt(), 0xFF3E126E.toInt(), 0xFF551E96.toInt(), 0xFF6E32B9.toInt(),
+    0xFF8C50D2.toInt(), 0xFFAA78EB.toInt(), 0xFFC8A5FA.toInt(), 0xFFE6D7FF.toInt(), 0xFFFAF5FF.toInt(),
+).map { Color(it) }
+
+private const val CW = 8
+private const val CH = 12
+private const val CELL_DP = 2.5f
+
+/** Pixel spirit flame (CW x CH cells, cell = CELL_DP) with its bottom-left at (left, bottom); t in seconds. */
+private fun DrawScope.drawSpiritFlame(left: Float, bottom: Float, t: Float) {
+    val cell = CELL_DP * density
+    val top = bottom - CH * cell
+    for (y in 0 until CH) {
+        val b = (y + 0.5f) / CH
+        val cx = CW / 2f + sin(t * 2 + y * 0.3f) * 1.5f * (1 - b)
+        val hw = sin(b * PI.toFloat() * 0.95f) * CW * 0.32f * b.pow(0.4f) * (0.9f + 0.1f * sin(t * 5 + y))
+        if (hw <= 0f) continue
+        for (x in 0 until CW) {
+            var v = (1 - abs(x + 0.5f - cx) / hw + sin(x + t * 6) * 0.12f * (1 - b)) * 10 * minOf(1f, b * 1.5f)
+            if (b > 0.75f) v += 2
+            val i = minOf(10, v.toInt())
+            if (v > 0 && i > 0) drawRect(FLAME_PAL[i], Offset(left + x * cell, top + y * cell), Size(cell, cell))
         }
     }
 }
