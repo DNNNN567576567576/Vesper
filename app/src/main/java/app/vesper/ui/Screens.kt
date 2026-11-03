@@ -1083,44 +1083,37 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
         Row(Modifier.fillMaxWidth().navigationBarsPadding().height(72.dp)) {
             NavTab(
-                icon = 0,
-                grid = Icons.Scrolls,
+                icon = R.drawable.tab_scrolls,
                 label = "Scrolls",
                 active = selected == 0,
                 onClick = { onSelect(0) },
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = 0,
-                grid = Icons.Flames,
+                icon = R.drawable.tab_flames,
+                zoom = 1.2f, // tall thin shape reads small next to the wider icons
                 label = "Flames",
                 active = selected == 1,
                 onClick = { onSelect(1) },
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = 0,
-                grid = Icons.Brain,
+                icon = R.drawable.tab_brain,
                 label = "Brain",
                 active = selected == 2,
                 onClick = { onSelect(2) },
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = 0,
-                grid = ShrineNavGrid,
-                activePalette = ShrineNavActive,
-                inactivePalette = ShrineNavInactive,
+                icon = R.drawable.tab_grimoire,
                 label = "Grimoire",
                 active = selected == 3,
                 onClick = { onSelect(3) },
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = 0,
-                grid = MoonsNavGrid,
-                activePalette = MoonsNavActive,
-                inactivePalette = MoonsNavInactive,
+                icon = R.drawable.tab_moons,
+                zoom = 1.35f, // the moon art sits on a coarser grid, so it reads smaller than the others
                 label = "Moons",
                 active = selected == 4,
                 onClick = { onSelect(4) },
@@ -1137,9 +1130,7 @@ private fun NavTab(
     active: Boolean,
     onClick: () -> Unit,
     modifier: Modifier,
-    grid: List<String>? = null,
-    activePalette: Map<Char, Color>? = null,
-    inactivePalette: Map<Char, Color>? = null,
+    zoom: Float = 1f,
 ) {
     val navScale by animateFloatAsState(
         targetValue = if (active) 1f else 0f,
@@ -1153,37 +1144,19 @@ private fun NavTab(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        if (grid != null) {
-            Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
-                PixelArt(
-                    grid,
-                    if (activePalette != null && inactivePalette != null) {
-                        if (active) activePalette else inactivePalette
-                    } else mapOf('X' to Px.Magenta, 'o' to Px.Lavender),
-                    if (activePalette != null) 2.dp else 3.dp,
-                    Modifier.graphicsLayer {
-                        val k = 0.84f + 0.16f * navScale
-                        scaleX = k
-                        scaleY = k
-                        alpha = if (active || activePalette != null) 1f else 0.38f
-                    },
-                )
-            }
-        } else {
         Image(
             bitmap = ImageBitmap.imageResource(icon),
             contentDescription = null,
             modifier = Modifier
                 .size(34.dp)
                 .graphicsLayer {
-                    val k = 0.84f + 0.16f * navScale
+                    val k = (0.84f + 0.16f * navScale) * zoom
                     scaleX = k
                     scaleY = k
                     alpha = if (active) 1f else 0.38f
                 },
             filterQuality = FilterQuality.None,
         )
-        }
         Text(
             label,
             modifier = Modifier.padding(top = 5.dp),

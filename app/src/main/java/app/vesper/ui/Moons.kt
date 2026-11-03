@@ -111,13 +111,6 @@ private val MoonsInk = Color(0xFFEDE4F7)
 private val MoonsDelete = Color(0xFFE07AB0)
 private val PlanDot = Color(0xFFF0E8FA)
 
-/** 12x11 nav icon for the Moons tab: a crescent with a tiny twinkle. */
-internal val MoonsNavGrid = listOf(
-    "....ooo.....", "..oooo......", ".ooo........", ".oo.....w...", "ooo....wXw..", "ooo.....w...",
-    "ooo.........", ".oo.........", ".ooo........", "..oooo......", "....ooo.....",
-)
-internal val MoonsNavActive = mapOf('o' to Color(0xFFB69AFF), 'X' to Color(0xFFD45AAB), 'w' to Color(0xFFF0E8FA))
-internal val MoonsNavInactive = mapOf('o' to Color(0xFF563C78), 'X' to Color(0xFF7A3668), 'w' to Color(0xFF8A7A9A))
 
 private val CHEV_L = listOf("...X", "..X.", ".X..", "X...", ".X..", "..X.", "...X")
 private val CHEV_R = listOf("X...", ".X..", "..X.", "...X", "..X.", ".X..", "X...")

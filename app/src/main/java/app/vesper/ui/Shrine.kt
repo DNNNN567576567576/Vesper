@@ -152,15 +152,6 @@ private val SEND = listOf(
 )
 private val CROSS = listOf("X...X", ".X.X.", "..X..", ".X.X.", "X...X")
 
-/** 14x12 nav icon for the Grimoire tab: an open book. */
-internal val ShrineNavGrid = listOf(
-    "..............", ".XX........XX.", ".XoXX....XXoX.", ".XooXX..XXooX.", ".XoooXXXXoooX.",
-    ".XoooXwwXoooX.", ".XoooXwwXoooX.", ".XoooXwwXoooX.", ".XoooXwwXoooX.", ".XXXXXwwXXXXX.",
-    "......XX......", "..............",
-)
-internal val ShrineNavActive = mapOf('X' to Color(0xFFD45AAB), 'o' to Color(0xFFB69AFF), 'w' to Color(0xFFF0E8FA))
-internal val ShrineNavInactive = mapOf('X' to Color(0xFF7A3668), 'o' to Color(0xFF563C78), 'w' to Color(0xFF8A7A9A))
-
 // ---------------------------------------------------------------------------------------------
 // Feed model
 // ---------------------------------------------------------------------------------------------

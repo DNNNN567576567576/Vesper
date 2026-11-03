@@ -240,6 +240,9 @@ private fun ringPositions(c: Offset, tls: List<TextLayoutResult>, u: Float, dens
 private const val SUN_X = 0f
 private const val SUN_Y = 125f
 private const val SUN_BEND = 8f
+private const val SKULL_SCALE = 1f // sprite is pre-sized: 22x26 world units (lobe: 24x19.5)
+/** Eye centers in sprite pixels relative to the sprite center (from the bright pink pixels). */
+private val SKULL_EYES = arrayOf(floatArrayOf(-1f, 0f), floatArrayOf(7f, 0f))
 
 /** 0 = fresh, 1 = fully eclipsed: grace of 7 days, then 14 days to go dark. Never backed up = 1. */
 private fun staleness(last: Long?): Float =
@@ -443,13 +446,6 @@ private fun mixRgb(a: Int, b: Int, m: Float): Int {
     return (r shl 16) or (g shl 8) or bl
 }
 
-private val HEART = arrayOf(
-    "...aa.vv..", "..aXa.vXv.", "..XXXXXX..", ".XhooooXX.", "XhoooooooX", "XoooooXooX",
-    "XoooooXooX", ".XoooXooX.", "..XooooX..", "...XooX...", "....XX....",
-)
-private val HEART_LIVE = intArrayOf(0xB69AFF, 0xD45AAB, 0x7540B8, 0xF596E1, 0xFFF0FF) // a v X o h
-private val HEART_DEAD = intArrayOf(0x4A3A5E, 0x4A2A44, 0x3A2456, 0x5A4870, 0x7A6496)
-
 private val BEADS = floatArrayOf(0.25f, 0.45f, 0.62f, 0.8f)
 private val SPECK_COLS = intArrayOf(0x1E0A24, 0x4A1650, 0x7A2A6A)
 
@@ -472,6 +468,8 @@ private class BrainRenderer(context: Context) {
 
     private val coreSprite = decode(context, app.vesper.R.drawable.brain_main)
     private val lobeSprite = decode(context, app.vesper.R.drawable.brain_lobe)
+    private val skullSprite = decode(context, app.vesper.R.drawable.vault_skull)
+    private val skullDeadSprite = decode(context, app.vesper.R.drawable.vault_skull_dead)
 
     private val px = Paint().apply { isAntiAlias = false; isFilterBitmap = false; isDither = false }
     private val spritePaint = Paint().apply { isAntiAlias = false; isFilterBitmap = false }
@@ -658,28 +656,26 @@ private class BrainRenderer(context: Context) {
         }
     }
 
-    /** Anatomical pixel heart at the vault node; [sv] 0 = alive, 1 = dead. Double thump when the pulse arrives. */
+    /** Skull at the vault node; [sv] 0 = alive, 1 = dead. Eyes flare when the pulse arrives. */
     private fun sun(sv: Float, selected: Boolean, d: Float) {
         val l = 1f - sv
         val ga = (0.35f + 0.3f * beat(1f)) * l * d
         glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
         if (selected) glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
-        // thump: beatPh crosses 1 as the pulse lands; the window stretches as the heart dies
-        val q = (beatPh - 1f) / (0.25f * (1f + sv))
-        val k = if (q < 0f || q >= 1f) 1f else when {
-            q < 0.2f -> 1f + 0.18f * q / 0.2f
-            q < 0.45f -> 1.18f - 0.13f * (q - 0.2f) / 0.25f
-            q < 0.65f -> 1.05f + 0.09f * (q - 0.45f) / 0.2f
-            else -> 1.14f - 0.14f * (q - 0.65f) / 0.35f
-        }
-        val cs = 2f * z * (1f + (k - 1f) * (1f - 0.7f * sv))
-        val cx = sx(SUN_X); val cy = sy(SUN_Y)
-        for (r in HEART.indices) for (c in 0 until 10) {
-            val ch = HEART[r][c]
-            if (ch == '.') continue
-            val i = "avXoh".indexOf(ch)
-            val x0 = rnd(cx + (c - 5) * cs); val y0 = rnd(cy + (r - 5.5f) * cs)
-            dot(x0, y0, rnd(cx + (c - 4) * cs) - x0, rnd(cy + (r - 4.5f) * cs) - y0, mixRgb(HEART_LIVE[i], HEART_DEAD[i], sv), d)
+    }
+
+    /** Skull + eye flare, drawn after the dither pass so the checker doesn't show on the bone. */
+    private fun skull(sv: Float, d: Float) {
+        val l = 1f - sv
+        sprite(skullDeadSprite, SUN_X, SUN_Y, SKULL_SCALE, d, false)
+        sprite(skullSprite, SUN_X, SUN_Y, SKULL_SCALE, l * d, false)
+        // eye flare: beatPh crosses 1 as the pulse lands, fades over ~0.6 s (0.27 of beatPh)
+        val q = (beatPh - 1f) / 0.27f
+        if (q < 0f || q >= 1f) return
+        val f = (1f - q) * (1f - q) * l * d
+        for (e in SKULL_EYES) {
+            glowAt(SUN_X + e[0] * SKULL_SCALE, SUN_Y + e[1] * SKULL_SCALE, 7f, 0xF596E1, 0.9f * f)
+            glowAt(SUN_X + e[0] * SKULL_SCALE, SUN_Y + e[1] * SKULL_SCALE, 12f, 0xD45AAB, 0.5f * f)
         }
     }
 
@@ -846,6 +842,7 @@ private class BrainRenderer(context: Context) {
 
         // 2x2 dither + vignette
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), ditherPaint)
+        skull(sv, sunDim)
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), vignette)
     }
 }
@@ -1262,7 +1259,7 @@ private fun BrainCanvas(
 
         run {
             val dim = if (selIdx < 0) 1f else 0.45f
-            vaultLabel.draw(this, dx(SUN_X) - vaultLabel.tl.size.width / 2f, dy(SUN_Y + 22f), dim)
+            vaultLabel.draw(this, dx(SUN_X) - vaultLabel.tl.size.width / 2f, dy(SUN_Y + 24f), dim)
         }
 
         val titleAlpha = ((z - 1.6f) / 0.5f).coerceIn(0f, 1f)
