@@ -1,4 +1,4 @@
-﻿pluginManagement {
+pluginManagement {
     repositories {
         google()
         mavenCentral()
@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Vesper"
-include(":app")
+include(":app", ":shared")
