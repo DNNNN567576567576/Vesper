@@ -101,6 +101,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import kotlin.math.ceil
@@ -178,7 +179,7 @@ fun SigilFab(description: String, onClick: () -> Unit, modifier: Modifier = Modi
             drawSigil(pix, time.floatValue, press, ringStart.floatValue, back, quill)
             drawIntoCanvas {
                 dst.set(0, 0, size.width.toInt(), size.height.toInt())
-                it.nativeCanvas.drawBitmap(pix.bmp, null, dst, paint)
+                it.nativeCanvas.drawBitmap(pix.bmp.asAndroidBitmap(), null, dst, paint)
             }
         }
     }
@@ -226,7 +227,7 @@ fun MatchFab(description: String, onClick: () -> Unit, modifier: Modifier = Modi
             drawMatch(pix, time.floatValue, press)
             drawIntoCanvas {
                 dst.set(0, 0, size.width.toInt(), size.height.toInt())
-                it.nativeCanvas.drawBitmap(pix.bmp, null, dst, paint)
+                it.nativeCanvas.drawBitmap(pix.bmp.asAndroidBitmap(), null, dst, paint)
             }
         }
     }
@@ -774,7 +775,7 @@ private fun NotePage(
                     .drawWithCache {
                         val paper = Pix(ceil(size.width / px).toInt(), ceil(size.height / px).toInt())
                         renderPaper(paper, id)
-                        onDrawBehind { drawIntoCanvas { paper.blit(it.nativeCanvas, 0, 0, px) } }
+                        onDrawBehind { drawIntoCanvas { paper.blit(it, 0, 0, px) } }
                     }
                     .padding(start = 18.dp, end = 18.dp + shadowPad, top = 22.dp, bottom = 20.dp + shadowPad),
             ) {
@@ -808,7 +809,7 @@ private fun NotePage(
                         drawPin(pin, time.floatValue, index)
                         drawIntoCanvas {
                             pin.blit(
-                                it.nativeCanvas,
+                                it,
                                 (size.width / 2f).toInt() + (pinOffset - PIN_CX) * px,
                                 (2 + 9 - PIN_CY) * px,
                                 px,
@@ -917,7 +918,7 @@ fun TasksScreen(
                                 candles.stub(-id, ly, w, t, if (start == null) -1f else t - start)
                             }
                         }
-                        drawIntoCanvas { candles.pix.blit(it.nativeCanvas, 0, 0, pxSize.toInt()) }
+                        drawIntoCanvas { candles.pix.blit(it, 0, 0, pxSize.toInt()) }
                     }
                     LazyColumn(
                         state = listState,

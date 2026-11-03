@@ -65,7 +65,6 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -283,7 +282,7 @@ fun TornNoteDialog(title: String, body: String, onKeep: () -> Unit, onBurn: () -
                 .drawWithCache {
                     val paper = Pix(ceil(size.width / px).toInt(), ceil(size.height / px).toInt())
                     renderPaper(paper, seed, tone = 0, shadowRgb = 0x07030B)
-                    onDrawBehind { drawIntoCanvas { paper.blit(it.nativeCanvas, 0, 0, px) } }
+                    onDrawBehind { drawIntoCanvas { paper.blit(it, 0, 0, px) } }
                 }
                 .padding(start = 20.dp, end = 12.dp + inset, top = 22.dp, bottom = 6.dp + inset),
         ) {

@@ -1,16 +1,6 @@
 package app.vesper.ui
 
-import android.graphics.Bitmap
-import android.graphics.BitmapShader
-import android.graphics.Paint
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffColorFilter
-import android.graphics.PorterDuffXfermode
-import android.graphics.RadialGradient
-import android.graphics.Rect
-import android.graphics.RectF
-import android.graphics.Shader
-import android.util.SparseArray
+import androidx.collection.MutableIntObjectMap
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -21,8 +11,19 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Canvas
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.RadialGradientShader
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.withFrameNanos
 import kotlin.math.PI
@@ -82,63 +83,63 @@ internal class RotRng(seed: Int) {
     }
 }
 
-private val GLOW_SPRITE: Bitmap by lazy {
-    Bitmap.createBitmap(
+private val GLOW_SPRITE: ImageBitmap by lazy {
+    imageBitmapOf(
         IntArray(64 * 64) { i ->
             val dx = (i % 64 - 31.5f) / 32f
             val dy = (i / 64 - 31.5f) / 32f
             val a = (1f - hypot(dx, dy)).coerceIn(0f, 1f)
             ((a * 255f).toInt() shl 24) or 0xFFFFFF
         },
-        64, 64, Bitmap.Config.ARGB_8888,
+        64, 64,
     )
 }
 
+private val DITHER: ImageBitmap by lazy { imageBitmapOf(intArrayOf(0xFF000000.toInt(), 0, 0, 0xFF000000.toInt()), 2, 2) }
+
+private fun pixPaint(fq: FilterQuality = FilterQuality.None) = hardPaint().apply { filterQuality = fq }
+
 /** A low-res ARGB bitmap with integer-pixel drawing helpers. Reused every frame; nothing here allocates per call. */
 internal class Pix(w: Int = 1, h: Int = 1) {
-    var bmp: Bitmap = Bitmap.createBitmap(max(1, w), max(1, h), Bitmap.Config.ARGB_8888)
+    var bmp: ImageBitmap = ImageBitmap(max(1, w), max(1, h))
         private set
-    private var cv = android.graphics.Canvas(bmp)
-    val canvas: android.graphics.Canvas get() = cv
+    private var cv = Canvas(bmp)
+    val canvas: Canvas get() = cv
     val w: Int get() = bmp.width
     val h: Int get() = bmp.height
 
     /** Master alpha multiplier for everything drawn afterwards. */
     var ma = 1f
 
-    private val px = Paint().apply { isAntiAlias = false; isFilterBitmap = false; isDither = false }
-    private val clr = Paint().apply {
-        isAntiAlias = false
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
-    }
-    private val blitPaint = Paint().apply { isAntiAlias = false; isFilterBitmap = false }
-    private val glowAdd = Paint().apply {
-        isAntiAlias = false; isFilterBitmap = true
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
-    }
-    private val glowOver = Paint().apply { isAntiAlias = false; isFilterBitmap = true }
-    private val filters = SparseArray<PorterDuffColorFilter>()
-    private val rectF = RectF()
-    private val dst = Rect()
+    private val px = pixPaint()
+    private val clr = pixPaint().apply { blendMode = BlendMode.Clear }
+    private val src = pixPaint().apply { blendMode = BlendMode.Src }
+    private val blitPaint = pixPaint()
+    private val glowAdd = pixPaint(FilterQuality.Low).apply { blendMode = BlendMode.Plus }
+    private val glowOver = pixPaint(FilterQuality.Low)
+    private val filters = MutableIntObjectMap<ColorFilter>()
 
     /** Returns true if the bitmap was recreated (contents lost). */
     fun resize(nw: Int, nh: Int): Boolean {
         val ww = max(1, nw)
         val hh = max(1, nh)
         if (ww == bmp.width && hh == bmp.height) return false
-        bmp = Bitmap.createBitmap(ww, hh, Bitmap.Config.ARGB_8888)
-        cv = android.graphics.Canvas(bmp)
+        bmp = ImageBitmap(ww, hh)
+        cv = Canvas(bmp)
         return true
     }
 
-    fun clear() = bmp.eraseColor(0)
-    fun fill(rgb: Int) = bmp.eraseColor(0xFF000000.toInt() or rgb)
+    fun clear() = cv.drawRect(0f, 0f, bmp.width.toFloat(), bmp.height.toFloat(), clr)
+    fun fill(rgb: Int) {
+        src.color = Color(0xFF000000.toInt() or rgb)
+        cv.drawRect(0f, 0f, bmp.width.toFloat(), bmp.height.toFloat(), src)
+    }
 
     fun dot(x: Int, y: Int, ww: Int, hh: Int, rgb: Int, a: Float = 1f) {
         if (x + ww <= 0 || y + hh <= 0 || x >= bmp.width || y >= bmp.height) return
         val al = (a * ma * 255f).toInt().coerceIn(0, 255)
         if (al == 0) return
-        px.color = (al shl 24) or (rgb and 0xFFFFFF)
+        px.color = Color((al shl 24) or (rgb and 0xFFFFFF))
         cv.drawRect(x.toFloat(), y.toFloat(), (x + ww).toFloat(), (y + hh).toFloat(), px)
     }
 
@@ -165,14 +166,8 @@ internal class Pix(w: Int = 1, h: Int = 1) {
         }
     }
 
-    private fun filterFor(rgb: Int): PorterDuffColorFilter {
-        var f = filters.get(rgb)
-        if (f == null) {
-            f = PorterDuffColorFilter(0xFF000000.toInt() or rgb, PorterDuff.Mode.SRC_IN)
-            filters.put(rgb, f)
-        }
-        return f
-    }
+    private fun filterFor(rgb: Int): ColorFilter =
+        filters.getOrPut(rgb) { ColorFilter.tint(Color(0xFF000000.toInt() or rgb), BlendMode.SrcIn) }
 
     /** Radial glow; additive by default, normal blend when [add] is false. */
     fun glow(cx: Float, cy: Float, r: Float, rgb: Int, a: Float, add: Boolean = true) {
@@ -181,15 +176,23 @@ internal class Pix(w: Int = 1, h: Int = 1) {
         if (cx + r < 0 || cy + r < 0 || cx - r > bmp.width || cy - r > bmp.height) return
         val p = if (add) glowAdd else glowOver
         p.colorFilter = filterFor(rgb)
-        p.alpha = al
-        rectF.set(cx - r, cy - r, cx + r, cy + r)
-        cv.drawBitmap(GLOW_SPRITE, null, rectF, p)
+        p.alpha = al / 255f
+        // Compose has no float-rect drawImageRect: map the 64px sprite onto (l,t)-(cx+r,cy+r) with the same matrix.
+        val l = cx - r
+        val t = cy - r
+        cv.save()
+        cv.translate(l, t)
+        cv.scale((cx + r - l) / 64f, (cy + r - t) / 64f)
+        cv.drawImage(GLOW_SPRITE, Offset.Zero, p)
+        cv.restore()
     }
 
     /** Scales up to [pxSize] device px per pixel with no filtering, top-left at ([left],[top]). */
-    fun blit(target: android.graphics.Canvas, left: Int, top: Int, pxSize: Int) {
-        dst.set(left, top, left + bmp.width * pxSize, top + bmp.height * pxSize)
-        target.drawBitmap(bmp, null, dst, blitPaint)
+    fun blit(target: Canvas, left: Int, top: Int, pxSize: Int) {
+        target.drawImageRect(
+            bmp, IntOffset.Zero, IntSize(bmp.width, bmp.height),
+            IntOffset(left, top), IntSize(bmp.width * pxSize, bmp.height * pxSize), blitPaint,
+        )
     }
 }
 
@@ -216,7 +219,7 @@ internal object NotesWallScroll {
     val offsetPx = mutableFloatStateOf(0f)
 }
 
-private interface WallPainter {
+internal interface WallPainter {
     val pix: Pix
     fun draw(w: Int, h: Int, t: Float, scroll: Float)
 }
@@ -233,23 +236,19 @@ private fun WallLayer(notes: Boolean) {
         if (w <= 0 || h <= 0) return@Canvas
         val scroll = if (notes) NotesWallScroll.offsetPx.floatValue / pxSize else 0f
         renderer.draw(w, h, t, scroll)
-        drawIntoCanvas { renderer.pix.blit(it.nativeCanvas, 0, 0, pxSize.toInt()) }
+        drawIntoCanvas { renderer.pix.blit(it, 0, 0, pxSize.toInt()) }
     }
 }
 
 private fun wrapF(v: Float, m: Float): Float = v - floor(v / m) * m
 
-private fun makeDitherPaint(alpha: Float) = Paint().apply {
-    isAntiAlias = false; isFilterBitmap = false
-    shader = BitmapShader(
-        Bitmap.createBitmap(intArrayOf(0xFF000000.toInt(), 0, 0, 0xFF000000.toInt()), 2, 2, Bitmap.Config.ARGB_8888),
-        Shader.TileMode.REPEAT, Shader.TileMode.REPEAT,
-    )
-    this.alpha = (alpha * 255f).toInt()
+private fun makeDitherPaint(alpha: Float) = pixPaint().apply {
+    shader = ImageShader(DITHER, TileMode.Repeated, TileMode.Repeated)
+    this.alpha = (alpha * 255f).toInt() / 255f // same truncated 8-bit alpha the android Paint got
 }
 
 /** Living notes wall: drifting fog, breathing stains, pulsing veins, motes, parallax with the list scroll. */
-private class NotesWallRenderer : WallPainter {
+internal class NotesWallRenderer : WallPainter {
     override val pix = Pix()
 
     private val stX = IntArray(8)
@@ -278,12 +277,8 @@ private class NotesWallRenderer : WallPainter {
     private val mPh = FloatArray(moteN)
 
     private val ditherPaint = makeDitherPaint(0.22f)
-    private val vignette = Paint().apply { isAntiAlias = false }
-    private val vigColors = intArrayOf(
-        android.graphics.Color.argb(0, 3, 0, 6),
-        android.graphics.Color.argb(0, 3, 0, 6),
-        android.graphics.Color.argb((0.82f * 255f).toInt(), 3, 0, 6),
-    )
+    private val vignette = pixPaint()
+    private val vigColors = listOf(Color(0x00030006), Color(0x00030006), Color(((0.82f * 255f).toInt() shl 24) or 0x030006))
 
     private fun build(w: Int, h: Int) {
         val r = RotRng(4242)
@@ -371,14 +366,12 @@ private class NotesWallRenderer : WallPainter {
         val cv = pix.canvas
         cv.drawRect(0f, 0f, wf, hf0, ditherPaint)
         val inner = (0.2f + 0.02f * sin(t * 0.5f)) / 0.66f
-        vignette.shader = RadialGradient(
-            wf / 2f, hf0 * 0.45f, hf0 * 0.66f, vigColors, floatArrayOf(0f, inner, 1f), Shader.TileMode.CLAMP,
-        )
+        vignette.shader = RadialGradientShader(Offset(wf / 2f, hf0 * 0.45f), hf0 * 0.66f, vigColors, listOf(0f, inner, 1f), TileMode.Clamp)
         cv.drawRect(0f, 0f, wf, hf0, vignette)
     }
 }
 
-private class CandleWallRenderer : WallPainter {
+internal class CandleWallRenderer : WallPainter {
     override val pix = Pix()
 
     private val stX = FloatArray(7)
@@ -389,7 +382,7 @@ private class CandleWallRenderer : WallPainter {
     private val spC = IntArray(260)
 
     private val ditherPaint = makeDitherPaint(0.18f)
-    private val vignette = Paint().apply { isAntiAlias = false }
+    private val vignette = pixPaint()
 
     private fun build(w: Int, h: Int) {
         val r = RotRng(777)
@@ -400,10 +393,10 @@ private class CandleWallRenderer : WallPainter {
         for (i in 0 until 260) {
             spX[i] = (r.next() * w).toInt(); spY[i] = (r.next() * h).toInt(); spC[i] = spk[(r.next() * 3f).toInt().coerceAtMost(2)]
         }
-        val c0 = android.graphics.Color.argb(0, 4, 1, 8)
-        val c1 = android.graphics.Color.argb((0.8f * 255f).toInt(), 4, 1, 8)
-        vignette.shader = RadialGradient(
-            w / 2f, h * 0.45f, h * 0.66f, intArrayOf(c0, c0, c1), floatArrayOf(0f, 0.2f / 0.66f, 1f), Shader.TileMode.CLAMP,
+        val c0 = Color(0x00040108)
+        val c1 = Color(((0.8f * 255f).toInt() shl 24) or 0x040108)
+        vignette.shader = RadialGradientShader(
+            Offset(w / 2f, h * 0.45f), h * 0.66f, listOf(c0, c0, c1), listOf(0f, 0.2f / 0.66f, 1f), TileMode.Clamp,
         )
     }
 

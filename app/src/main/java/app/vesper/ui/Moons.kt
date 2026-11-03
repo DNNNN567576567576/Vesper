@@ -705,13 +705,13 @@ private fun MoonsBackdrop(time: FloatState, pxSize: Float, today: LocalDate) {
             val a = 0.25f + 0.5f * max(0f, sin(t * 1.2f + hf(i, 5) * 6.28f))
             pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, if (i % 5 == 4) 0xD45AAB else 0xCDB8FF, a)
         }
-        pix.canvas.drawBitmap(bigMoon, (mx - 28).toFloat(), (my - 28).toFloat(), null)
+        pix.canvas.nativeCanvas.drawBitmap(bigMoon, (mx - 28).toFloat(), (my - 28).toFloat(), null)
         for (i in 0 until 3) {
             val c = clouds[i]
             val span = w + c.width
             val x = (t * CLOUD_V[i] + CLOUD_OFF[i] * span) % span - c.width
-            pix.canvas.drawBitmap(c, rotRnd(x).toFloat(), CLOUD_Y[i].toFloat(), null)
+            pix.canvas.nativeCanvas.drawBitmap(c, rotRnd(x).toFloat(), CLOUD_Y[i].toFloat(), null)
         }
-        drawIntoCanvas { pix.blit(it.nativeCanvas, 0, 0, px) }
+        drawIntoCanvas { pix.blit(it, 0, 0, px) }
     }
 }

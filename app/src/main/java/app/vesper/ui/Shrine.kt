@@ -922,7 +922,7 @@ private fun ShrineBackdrop(time: FloatState, pxSize: Float) {
             val ry = (hf(i, 73) * (h - 8)).toInt()
             for (y in 0 until 7) for (x in 0 until 5) if (rune[y][x] == 'X') pix.dot(rx + x, ry + y, 1, 1, 0x5A3E7A, a)
         }
-        drawIntoCanvas { pix.blit(it.nativeCanvas, 0, 0, px) }
+        drawIntoCanvas { pix.blit(it, 0, 0, px) }
         val unit = size.width / 180f
         drawRect(
             Brush.radialGradient(
