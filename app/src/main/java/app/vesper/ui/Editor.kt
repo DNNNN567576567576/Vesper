@@ -339,8 +339,9 @@ fun AddTaskDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
                 Column(Modifier.fillMaxWidth(0.7f), horizontalAlignment = Alignment.CenterHorizontally) {
                     BasicTextField(
                         value = text,
-                        onValueChange = { text = it },
-                        singleLine = true,
+                        // wraps instead of scrolling so the caret rect (and the flame) stays on screen; Enter is Done, not a newline
+                        onValueChange = { text = it.replace('\n', ' ') },
+                        maxLines = 4,
                         textStyle = TextStyle(
                             fontFamily = PageFont, fontSize = 26.sp, color = Color(0xFFE6DCFF), textAlign = TextAlign.Center,
                             shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.8f), Offset.Zero, 14f),
