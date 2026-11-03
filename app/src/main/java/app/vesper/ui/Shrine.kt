@@ -23,10 +23,6 @@ import androidx.compose.ui.window.PopupProperties
 import kotlin.math.PI
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Paint
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffColorFilter
-import android.graphics.PorterDuffXfermode
 import android.net.Uri
 import android.util.LruCache
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -82,7 +78,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Canvas
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
@@ -90,7 +92,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -491,10 +492,7 @@ private fun PostCard(
 ) {
     val px = pxSize.toInt().coerceAtLeast(1)
     val shadowOffset = with(LocalDensity.current) { 3.dp.toPx() }
-    val shadowPaint = remember { Paint().apply { isFilterBitmap = false; colorFilter = PorterDuffColorFilter(0xFF040206.toInt(), PorterDuff.Mode.SRC_IN) } }
-    val paperPaint = remember { Paint().apply { isFilterBitmap = false } }
-    val emberPaint = remember { Paint().apply { isAntiAlias = false } }
-    val maskPaint = remember { Paint().apply { isFilterBitmap = false; xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) } }
+    val paints = remember { PaperPaints() }
     val seed = post.id.toInt()
     val img = post.imagePath ?: post.videoPath
     val hasText = !post.text.isNullOrEmpty()
@@ -518,15 +516,7 @@ private fun PostCard(
                     val h = ceil(size.height / px).toInt().coerceAtLeast(2)
                     val paper = BurnedPaper.get(seed, w, h)
                     onDrawBehind {
-                        drawIntoCanvas { c ->
-                            val cv = c.nativeCanvas
-                            val dst = android.graphics.Rect(0, 0, w * px, h * px)
-                            cv.save()
-                            cv.translate(shadowOffset, shadowOffset)
-                            cv.drawBitmap(paper.bmp, null, dst, shadowPaint)
-                            cv.restore()
-                            cv.drawBitmap(paper.bmp, null, dst, paperPaint)
-                        }
+                        drawIntoCanvas { paints.drawBehind(it, paper, w, h, px, shadowOffset) }
                     }
                 },
         )
@@ -541,21 +531,7 @@ private fun PostCard(
                     val paper = BurnedPaper.get(seed, w, h)
                     onDrawWithContent {
                         drawContent()
-                        drawIntoCanvas { c ->
-                            val cv = c.nativeCanvas
-                            val dst = android.graphics.Rect(0, 0, w * px, h * px)
-                            cv.drawBitmap(paper.scorch, null, dst, paperPaint)
-                            cv.drawBitmap(paper.mask, null, dst, maskPaint)
-                            val t = time.floatValue
-                            for (i in paper.ex.indices) {
-                                val f = max(0f, sin(t * (0.6f + paper.eh2[i] * 1.2f) + paper.eh2[i] * 40f))
-                                if (f < 0.35f) continue
-                                emberPaint.color = if (f > 0.9f) EMBER_HI else if (f > 0.65f) EMBER_MID else EMBER_LO
-                                val x = (paper.ex[i] * px).toFloat()
-                                val y = (paper.ey[i] * px).toFloat()
-                                cv.drawRect(x, y, x + px, y + px, emberPaint)
-                            }
-                        }
+                        drawIntoCanvas { paints.drawFront(it, paper, w, h, px, time.floatValue) }
                     }
                 },
         ) {
@@ -642,9 +618,44 @@ private fun PlayMarker() {
 // Burned paper (low-res bitmap per post id + size, cached)
 // ---------------------------------------------------------------------------------------------
 
-private class Paper(val bmp: Bitmap, val scorch: Bitmap, val mask: Bitmap, val ex: IntArray, val ey: IntArray, val eh2: FloatArray)
+/** The four paints that cut and shade a post card's paper; split out of PostCard so the compositing is testable. */
+internal class PaperPaints {
+    private fun paint() = hardPaint().apply { filterQuality = FilterQuality.None }
+    private val shadow = paint().apply { colorFilter = ColorFilter.tint(Color(0xFF040206.toInt()), BlendMode.SrcIn) }
+    private val paper = paint()
+    private val ember = paint()
+    private val mask = paint().apply { blendMode = BlendMode.DstIn }
 
-private object BurnedPaper {
+    private fun Canvas.stretch(img: ImageBitmap, w: Int, h: Int, px: Int, p: Paint) =
+        drawImageRect(img, IntOffset.Zero, IntSize(img.width, img.height), IntOffset.Zero, IntSize(w * px, h * px), p)
+
+    /** Drop shadow then the paper itself. */
+    fun drawBehind(cv: Canvas, p: Paper, w: Int, h: Int, px: Int, shadowOffset: Float) {
+        cv.save()
+        cv.translate(shadowOffset, shadowOffset)
+        cv.stretch(p.bmp, w, h, px, shadow)
+        cv.restore()
+        cv.stretch(p.bmp, w, h, px, paper)
+    }
+
+    /** Over the card content (in an offscreen layer): scorch, cut the burnt shape, then glowing embers. */
+    fun drawFront(cv: Canvas, p: Paper, w: Int, h: Int, px: Int, t: Float) {
+        cv.stretch(p.scorch, w, h, px, paper)
+        cv.stretch(p.mask, w, h, px, mask)
+        for (i in p.ex.indices) {
+            val f = max(0f, sin(t * (0.6f + p.eh2[i] * 1.2f) + p.eh2[i] * 40f))
+            if (f < 0.35f) continue
+            ember.color = Color(if (f > 0.9f) EMBER_HI else if (f > 0.65f) EMBER_MID else EMBER_LO)
+            val x = (p.ex[i] * px).toFloat()
+            val y = (p.ey[i] * px).toFloat()
+            cv.drawRect(x, y, x + px, y + px, ember)
+        }
+    }
+}
+
+internal class Paper(val bmp: ImageBitmap, val scorch: ImageBitmap, val mask: ImageBitmap, val ex: IntArray, val ey: IntArray, val eh2: FloatArray)
+
+internal object BurnedPaper {
     private const val BURN = 0.87f
     private const val EMB = 1.0f
     private const val R = 7f
@@ -662,7 +673,7 @@ private object BurnedPaper {
         return render(seed, w, h).also { cache.put(key, it) }
     }
 
-    private fun render(seed: Int, w: Int, h: Int): Paper {
+    fun render(seed: Int, w: Int, h: Int): Paper {
         val pixels = IntArray(w * h)
         val scorch = IntArray(w * h)
         val mask = IntArray(w * h)
@@ -702,13 +713,7 @@ private object BurnedPaper {
                 pixels[y * w + x] = 0xFF000000.toInt() or (r shl 16) or (g shl 8) or b
             }
         }
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        bmp.setPixels(pixels, 0, w, 0, 0, w, h)
-        val scorchBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        scorchBmp.setPixels(scorch, 0, w, 0, 0, w, h)
-        val maskBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        maskBmp.setPixels(mask, 0, w, 0, 0, w, h)
-        return Paper(bmp, scorchBmp, maskBmp, ex.toIntArray(), ey.toIntArray(), eh.toFloatArray())
+        return Paper(imageBitmapOf(pixels, w, h), imageBitmapOf(scorch, w, h), imageBitmapOf(mask, w, h), ex.toIntArray(), ey.toIntArray(), eh.toFloatArray())
     }
 }
 

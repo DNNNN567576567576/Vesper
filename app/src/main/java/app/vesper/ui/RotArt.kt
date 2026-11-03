@@ -188,11 +188,11 @@ internal class Pix(w: Int = 1, h: Int = 1) {
     }
 
     /** Scales up to [pxSize] device px per pixel with no filtering, top-left at ([left],[top]). */
-    fun blit(target: Canvas, left: Int, top: Int, pxSize: Int) {
-        target.drawImageRect(
-            bmp, IntOffset.Zero, IntSize(bmp.width, bmp.height),
-            IntOffset(left, top), IntSize(bmp.width * pxSize, bmp.height * pxSize), blitPaint,
-        )
+    fun blit(target: Canvas, left: Int, top: Int, pxSize: Int) = blitTo(target, left, top, bmp.width * pxSize, bmp.height * pxSize)
+
+    /** Nearest-neighbour stretch to [dw] x [dh] device px, top-left at ([left],[top]); the size need not be a whole multiple. */
+    fun blitTo(target: Canvas, left: Int, top: Int, dw: Int, dh: Int) {
+        target.drawImageRect(bmp, IntOffset.Zero, IntSize(bmp.width, bmp.height), IntOffset(left, top), IntSize(dw, dh), blitPaint)
     }
 }
 

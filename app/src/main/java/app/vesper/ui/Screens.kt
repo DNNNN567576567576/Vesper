@@ -100,8 +100,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import kotlin.math.ceil
@@ -156,8 +154,6 @@ fun SigilFab(description: String, onClick: () -> Unit, modifier: Modifier = Modi
     val ringStart = remember { mutableFloatStateOf(-10f) }
     LaunchedEffect(pressed) { if (pressed) ringStart.floatValue = time.floatValue }
     val pix = remember { Pix(SIGIL_GRID, SIGIL_GRID) }
-    val dst = remember { android.graphics.Rect() }
-    val paint = remember { android.graphics.Paint().apply { isAntiAlias = false; isFilterBitmap = false } }
     Box(
         modifier
             .size(58.dp)
@@ -177,10 +173,7 @@ fun SigilFab(description: String, onClick: () -> Unit, modifier: Modifier = Modi
     ) {
         Canvas(Modifier.requiredSize((SIGIL_GRID * 2).dp)) {
             drawSigil(pix, time.floatValue, press, ringStart.floatValue, back, quill)
-            drawIntoCanvas {
-                dst.set(0, 0, size.width.toInt(), size.height.toInt())
-                it.nativeCanvas.drawBitmap(pix.bmp.asAndroidBitmap(), null, dst, paint)
-            }
+            drawIntoCanvas { pix.blitTo(it, 0, 0, size.width.toInt(), size.height.toInt()) }
         }
     }
 }
@@ -204,8 +197,6 @@ fun MatchFab(description: String, onClick: () -> Unit, modifier: Modifier = Modi
     )
     val time = rememberRotTime()
     val pix = remember { Pix(SIGIL_GRID, SIGIL_GRID) }
-    val dst = remember { android.graphics.Rect() }
-    val paint = remember { android.graphics.Paint().apply { isAntiAlias = false; isFilterBitmap = false } }
     Box(
         modifier
             .size(58.dp)
@@ -225,15 +216,12 @@ fun MatchFab(description: String, onClick: () -> Unit, modifier: Modifier = Modi
     ) {
         Canvas(Modifier.requiredSize((SIGIL_GRID * 2).dp)) {
             drawMatch(pix, time.floatValue, press)
-            drawIntoCanvas {
-                dst.set(0, 0, size.width.toInt(), size.height.toInt())
-                it.nativeCanvas.drawBitmap(pix.bmp.asAndroidBitmap(), null, dst, paint)
-            }
+            drawIntoCanvas { pix.blitTo(it, 0, 0, size.width.toInt(), size.height.toInt()) }
         }
     }
 }
 
-private fun drawMatch(pix: Pix, t: Float, press: Float) {
+internal fun drawMatch(pix: Pix, t: Float, press: Float) {
     pix.clear()
     val hx = 32
     val hy = 15
@@ -263,7 +251,7 @@ private fun drawMatch(pix: Pix, t: Float, press: Float) {
     }
 }
 
-private fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back: Boolean, quill: Boolean) {
+internal fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back: Boolean, quill: Boolean) {
     val c = SIGIL_GRID / 2 + 0.5f
     pix.clear()
     pix.glow(c, c, 17f, 0x7540B8, 0.35f + 0.15f * sin(t * 1.6f) + 0.4f * press)

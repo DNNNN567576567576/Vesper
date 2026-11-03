@@ -1,6 +1,5 @@
 package app.vesper.ui
 
-import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -56,9 +55,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -145,7 +142,7 @@ private fun moonFrac(day: LocalDate): Double {
 // Crater centres (unit-disc coords) and radii; each shows only where the moon is lit.
 private val CRATERS = floatArrayOf(0.28f, 0.28f, 0.1f, 0.5f, -0.1f, 0.09f, -0.1f, 0.58f, 0.1f)
 
-private fun moonBitmap(day: LocalDate, n: Int, lit: Int, hi: Int, crater: Int, dark: Int = 0x1A0F26): Bitmap {
+internal fun moonBitmap(day: LocalDate, n: Int, lit: Int, hi: Int, crater: Int, dark: Int = 0x1A0F26): ImageBitmap {
     val frac = moonFrac(day)
     val t = cos(frac * 2 * PI)
     val px = IntArray(n * n)
@@ -166,12 +163,12 @@ private fun moonBitmap(day: LocalDate, n: Int, lit: Int, hi: Int, crater: Int, d
         }
         px[y * n + x] = 0xFF000000.toInt() or c
     }
-    return Bitmap.createBitmap(px, n, n, Bitmap.Config.ARGB_8888)
+    return imageBitmapOf(px, n, n)
 }
 
-private fun dayMoon(day: LocalDate, n: Int) = moonBitmap(day, n, 0xC9B0FF, 0xE6DCFF, 0x8F6BD0)
+internal fun dayMoon(day: LocalDate, n: Int) = moonBitmap(day, n, 0xC9B0FF, 0xE6DCFF, 0x8F6BD0)
 
-private fun cloudBitmap(wc: Int, hc: Int, seed: Int): Bitmap {
+internal fun cloudBitmap(wc: Int, hc: Int, seed: Int): ImageBitmap {
     val px = IntArray(wc * hc)
     for (y in 0 until hc) for (x in 0 until wc) for (i in 0 until 5) {
         val ex = (x + 0.5 - wc * (i + 0.5) / 5) / (wc / 5 + 2)
@@ -181,7 +178,7 @@ private fun cloudBitmap(wc: Int, hc: Int, seed: Int): Bitmap {
             break
         }
     }
-    return Bitmap.createBitmap(px, wc, hc, Bitmap.Config.ARGB_8888)
+    return imageBitmapOf(px, wc, hc)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -258,7 +255,7 @@ fun MoonsScreen(
                         val first = month.atDay(1)
                         first.minusDays((first.dayOfWeek.value - 1).toLong())
                     }
-                    val moons = remember(gridStart) { Array(42) { dayMoon(gridStart.plusDays(it.toLong()), 11).asImageBitmap() } }
+                    val moons = remember(gridStart) { Array(42) { dayMoon(gridStart.plusDays(it.toLong()), 11) } }
                     val swipePx = with(density) { 60.dp.toPx() }
                     Column(
                         Modifier
@@ -600,7 +597,7 @@ private fun MonthPicker(monthIdx: Int, onDismiss: () -> Unit, onPick: (Int) -> U
     val moons = remember(year, monthIdx) {
         Array(12) {
             val d = LocalDate.of(year, it + 1, 15)
-            (if (year * 12 + it == monthIdx) moonBitmap(d, 12, PINK_LIT, PINK_HI, PINK_CRATER) else dayMoon(d, 12)).asImageBitmap()
+            (if (year * 12 + it == monthIdx) moonBitmap(d, 12, PINK_LIT, PINK_HI, PINK_CRATER) else dayMoon(d, 12))
         }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -696,22 +693,30 @@ private fun MoonsBackdrop(time: FloatState, pxSize: Float, today: LocalDate) {
         val w = ceil(size.width / px).toInt()
         val h = ceil(size.height / px).toInt()
         if (w <= 0 || h <= 0) return@Canvas
-        pix.resize(w, h)
-        pix.fill(MoonsBase)
-        val mx = w - 34
-        val my = 40
-        pix.glow(mx.toFloat(), my.toFloat(), 64f, 0x7540B8, 0.4f, add = false)
-        for (i in 0 until 90) {
-            val a = 0.25f + 0.5f * max(0f, sin(t * 1.2f + hf(i, 5) * 6.28f))
-            pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, if (i % 5 == 4) 0xD45AAB else 0xCDB8FF, a)
-        }
-        pix.canvas.nativeCanvas.drawBitmap(bigMoon, (mx - 28).toFloat(), (my - 28).toFloat(), null)
-        for (i in 0 until 3) {
-            val c = clouds[i]
-            val span = w + c.width
-            val x = (t * CLOUD_V[i] + CLOUD_OFF[i] * span) % span - c.width
-            pix.canvas.nativeCanvas.drawBitmap(c, rotRnd(x).toFloat(), CLOUD_Y[i].toFloat(), null)
-        }
+        drawMoonsBackdrop(pix, t, w, h, bigMoon, clouds)
         drawIntoCanvas { pix.blit(it, 0, 0, px) }
+    }
+}
+
+// Sprites are drawn 1:1 at whole pixels, no filtering, no dither, like the old Paint-less drawBitmap(.., null).
+private val moonPaint by lazy { hardPaint().apply { filterQuality = FilterQuality.None } }
+
+/** Draws the whole backdrop into [pix] (resized to [w] x [h]). */
+internal fun drawMoonsBackdrop(pix: Pix, t: Float, w: Int, h: Int, bigMoon: ImageBitmap, clouds: Array<ImageBitmap>) {
+    pix.resize(w, h)
+    pix.fill(MoonsBase)
+    val mx = w - 34
+    val my = 40
+    pix.glow(mx.toFloat(), my.toFloat(), 64f, 0x7540B8, 0.4f, add = false)
+    for (i in 0 until 90) {
+        val a = 0.25f + 0.5f * max(0f, sin(t * 1.2f + hf(i, 5) * 6.28f))
+        pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, if (i % 5 == 4) 0xD45AAB else 0xCDB8FF, a)
+    }
+    pix.canvas.drawImage(bigMoon, Offset((mx - 28).toFloat(), (my - 28).toFloat()), moonPaint)
+    for (i in 0 until 3) {
+        val c = clouds[i]
+        val span = w + c.width
+        val x = (t * CLOUD_V[i] + CLOUD_OFF[i] * span) % span - c.width
+        pix.canvas.drawImage(c, Offset(rotRnd(x).toFloat(), CLOUD_Y[i].toFloat()), moonPaint)
     }
 }
