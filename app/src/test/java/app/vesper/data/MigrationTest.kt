@@ -3,10 +3,8 @@ package app.vesper.data
 import android.content.Context
 import androidx.core.content.contentValuesOf
 import androidx.room.Room
-import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -23,7 +21,7 @@ class MigrationTest {
     private val name = "migration-test.db"
 
     @get:Rule
-    val helper = MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), AppDatabase::class.java)
+    val helper = migrationTestHelper()
 
     private fun SupportSQLiteDatabase.insertNote() {
         execSQL("INSERT INTO notes (id, title, content, updatedAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000)")

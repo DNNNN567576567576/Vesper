@@ -2,9 +2,7 @@ package app.vesper.data
 
 import android.net.Uri
 import androidx.room.Room
-import androidx.room.testing.MigrationTestHelper
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.platform.app.InstrumentationRegistry
 import app.vesper.NotebookApp
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -35,7 +33,7 @@ class BackupTest {
     private val video = Random(8).nextBytes(200_000)
 
     @get:Rule
-    val helper = MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), AppDatabase::class.java)
+    val helper = migrationTestHelper()
 
     private data class Snapshot(
         val notes: List<Note>, val lit: List<Task>, val snuffed: List<Task>, val lobes: List<Lobe>,
