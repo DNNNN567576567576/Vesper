@@ -1,17 +1,17 @@
 ﻿package app.vesper.data
 
 import androidx.room.ColumnInfo
+import androidx.room.ConstructedBy
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.Insert
-import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.RoomDatabaseConstructor
 import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
@@ -148,15 +148,6 @@ interface BrainDao {
     suspend fun deleteIdea(id: Long)
 }
 
-/** v1 -> v2: adds the Brain tables. Notes and tasks are not touched. */
-val MIGRATION_1_2 = object : Migration(1, 2) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS `lobes` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `colorIndex` INTEGER NOT NULL, `slot` INTEGER NOT NULL)")
-        db.execSQL("CREATE TABLE IF NOT EXISTS `ideas` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `lobeId` INTEGER NOT NULL, `title` TEXT NOT NULL, `body` TEXT NOT NULL, `noteId` INTEGER, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`lobeId`) REFERENCES `lobes`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
-        db.execSQL("CREATE INDEX IF NOT EXISTS `index_ideas_lobeId` ON `ideas` (`lobeId`)")
-    }
-}
-
 /** One entry in the Shrine feed: optional text, optional photo or video. [imagePath]/[videoPath] are file names inside `filesDir/shrine`. */
 @Entity(tableName = "posts")
 data class Post(
@@ -184,13 +175,6 @@ interface PostDao {
 
     @Query("DELETE FROM posts WHERE id = :id")
     suspend fun delete(id: Long)
-}
-
-/** v2 -> v3: adds the Shrine table. Notes, tasks and Brain tables are not touched. */
-val MIGRATION_2_3 = object : Migration(2, 3) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS `posts` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `text` TEXT, `imagePath` TEXT, `createdAt` INTEGER NOT NULL, `editedAt` INTEGER)")
-    }
 }
 
 /** A plan for one local day. [day] is `LocalDate.toEpochDay()`. */
@@ -246,45 +230,6 @@ interface MoonsDao {
     suspend fun deleteFocus(day: Long, lobeId: Long)
 }
 
-/** v3 -> v4: adds the Moons tables. Every existing table is left untouched. */
-val MIGRATION_3_4 = object : Migration(3, 4) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS `plans` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `day` INTEGER NOT NULL, `text` TEXT NOT NULL, `done` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS `index_plans_day` ON `plans` (`day`)")
-        db.execSQL("CREATE TABLE IF NOT EXISTS `day_focus` (`day` INTEGER NOT NULL, `lobeId` INTEGER NOT NULL, PRIMARY KEY(`day`, `lobeId`), FOREIGN KEY(`lobeId`) REFERENCES `lobes`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
-        db.execSQL("CREATE INDEX IF NOT EXISTS `index_day_focus_lobeId` ON `day_focus` (`lobeId`)")
-    }
-}
-
-/** v4 -> v5: tasks are snuffed (timestamped) instead of deleted. Existing tasks stay lit (NULL). */
-val MIGRATION_4_5 = object : Migration(4, 5) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE `tasks` ADD COLUMN `snuffedAt` INTEGER")
-    }
-}
-
-/** v5 -> v6: notes get a manual-sort position, starting out in the current "recently edited" order. */
-val MIGRATION_5_6 = object : Migration(5, 6) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE `notes` ADD COLUMN `position` INTEGER NOT NULL DEFAULT 0")
-        db.execSQL("UPDATE `notes` SET `position` = (SELECT COUNT(*) FROM `notes` n2 WHERE n2.`updatedAt` > `notes`.`updatedAt` OR (n2.`updatedAt` = `notes`.`updatedAt` AND n2.`id` > `notes`.`id`))")
-    }
-}
-
-/** v6 -> v7: Grimoire posts can hold a video. Existing posts have none (NULL). */
-val MIGRATION_6_7 = object : Migration(6, 7) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE `posts` ADD COLUMN `videoPath` TEXT")
-    }
-}
-
-/** v7 -> v8: notes can be pages of a main scroll. Existing notes stay top-level (NULL). */
-val MIGRATION_7_8 = object : Migration(7, 8) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE `notes` ADD COLUMN `parentId` INTEGER")
-    }
-}
-
 /** A deleted synced row, written by the delete triggers (FK cascades included) so peers can delete it too. Kept forever. */
 @Entity(tableName = "sync_tombstones", primaryKeys = ["tbl", "uid"])
 data class SyncTombstone(val tbl: String, val uid: String, val deletedAt: Long)
@@ -295,7 +240,7 @@ fun newUid(): String = kotlin.uuid.Uuid.random().toHexString()
 /** The tables that carry uid + syncAt. day_focus and posts are not synced yet. */
 val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "ideas", "plans")
 
-private const val NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)"
+internal const val NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)"
 
 /**
  * Change tracking without touching any DAO. Insert: fill an empty uid and a 0 syncAt. Update: bump syncAt unless the
@@ -314,42 +259,21 @@ fun syncTriggerSql(t: String) = listOf(
         "INSERT OR REPLACE INTO `sync_tombstones` (`tbl`, `uid`, `deletedAt`) VALUES ('$t', OLD.uid, $NOW_MS); END",
 )
 
-fun createSyncTriggers(db: SupportSQLiteDatabase) = SYNCED_TABLES.forEach { t -> syncTriggerSql(t).forEach(db::execSQL) }
-
-/** Room builds a fresh install from the entities, which carry no triggers; IF NOT EXISTS makes this a no-op afterwards. */
-val SYNC_TRIGGERS_CALLBACK = object : RoomDatabase.Callback() {
-    override fun onOpen(db: SupportSQLiteDatabase) = createSyncTriggers(db)
-}
-
-/**
- * v8 -> v9: sync ids and clocks. Existing rows get deterministic uids ('notes-12'), so an old backup restored later
- * migrates to the same uids and never duplicates on sync; random uids are 32 hex chars and can't collide with them.
- */
-val MIGRATION_8_9 = object : Migration(8, 9) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS `sync_tombstones` (`tbl` TEXT NOT NULL, `uid` TEXT NOT NULL, `deletedAt` INTEGER NOT NULL, PRIMARY KEY(`tbl`, `uid`))")
-        val clock = mapOf("notes" to "updatedAt", "tasks" to "snuffedAt", "lobes" to "NULL", "ideas" to "updatedAt", "plans" to "createdAt")
-        for (t in SYNCED_TABLES) {
-            db.execSQL("ALTER TABLE `$t` ADD COLUMN `uid` TEXT NOT NULL DEFAULT ''")
-            db.execSQL("ALTER TABLE `$t` ADD COLUMN `syncAt` INTEGER NOT NULL DEFAULT 0")
-            db.execSQL("UPDATE `$t` SET `uid` = '$t-' || `id`, `syncAt` = max(coalesce(${clock.getValue(t)}, $NOW_MS), 1)")
-            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_${t}_uid` ON `$t` (`uid`)")
-        }
-        createSyncTriggers(db) // after the backfill, so it isn't tracked as edits
-    }
-}
-
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
 const val DB_VERSION = 9
 
-/** The single migration list used by the app and the tests. */
-val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
-
 @Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class], version = DB_VERSION, exportSchema = true)
+@ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun taskDao(): TaskDao
     abstract fun brainDao(): BrainDao
     abstract fun postDao(): PostDao
     abstract fun moonsDao(): MoonsDao
+}
+
+/** Room KMP: KSP generates the actual for each target. Android still builds through Room.databaseBuilder(context, AppDatabase::class.java, name). */
+@Suppress("KotlinNoActualForExpect")
+expect object AppDatabaseConstructor : RoomDatabaseConstructor<AppDatabase> {
+    override fun initialize(): AppDatabase
 }

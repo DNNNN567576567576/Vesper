@@ -3,7 +3,6 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("com.google.devtools.ksp")
 }
 
 // Release signing lives outside the build script so the repo never carries secrets inline.
@@ -55,15 +54,11 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
     // Robolectric only sees the debug build's merged assets, so the schema JSONs MigrationTestHelper reads go there (debug APK only, ~20 KB).
-    sourceSets.getByName("debug").assets.directories += "$projectDir/schemas"
+    sourceSets.getByName("debug").assets.directories += "$rootDir/shared/schemas"
 }
 
 // Never build an installable APK (debug or the release that goes on the phone) unless the migration tests pass; protects user data.
 tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }.configureEach { dependsOn("testDebugUnitTest") }
-
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
-}
 
 dependencies {
     implementation(project(":shared"))
@@ -80,7 +75,6 @@ dependencies {
 
     implementation("androidx.room:room-runtime:2.8.5")
     implementation("androidx.room:room-ktx:2.8.5")
-    ksp("androidx.room:room-compiler:2.8.5")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.room:room-testing:2.8.5")
