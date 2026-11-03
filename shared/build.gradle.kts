@@ -10,6 +10,7 @@ kotlin {
         namespace = "app.vesper.shared"
         compileSdk = 37
         minSdk = 26
+        androidResources { enable = true } // without it CMP 1.12.2 packs no composeResources into the APK assets
     }
     jvm("desktop")
     jvmToolchain(17)
@@ -17,6 +18,12 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation("org.jetbrains.compose.runtime:runtime:1.12.2")
+            api("org.jetbrains.compose.components:components-resources:1.12.2")
         }
     }
+}
+
+compose.resources {
+    publicResClass = true // :app reads Res until the UI moves here (A6)
+    packageOfResClass = "app.vesper.res"
 }

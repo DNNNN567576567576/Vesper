@@ -12,8 +12,19 @@ import androidx.compose.ui.text.font.createFontFamilyResolver
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.res.imageResource
-import app.vesper.R
+import app.vesper.res.Res
+import app.vesper.res.brain_lobe
+import app.vesper.res.brain_main
+import app.vesper.res.vault_skull
+import app.vesper.res.vault_skull_dead
+import kotlinx.coroutines.runBlocking
+import org.jetbrains.compose.resources.DrawableResource
+import org.jetbrains.compose.resources.ExperimentalResourceApi
+import org.robolectric.RuntimeEnvironment
+import org.jetbrains.compose.resources.decodeToImageBitmap
+import org.jetbrains.compose.resources.getDrawableResourceBytes
+import org.jetbrains.compose.resources.getSystemResourceEnvironment
+import org.jetbrains.compose.resources.setResourceReaderAndroidContext
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import org.junit.After
@@ -22,7 +33,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -46,10 +56,14 @@ class BrainPixelTest {
     }
 
     // ---- the only version-specific part (pre-port: android Bitmap + BitmapFactory) ----
-    private fun newRenderer(): BrainRenderer {
-        val res = RuntimeEnvironment.getApplication().resources
-        fun img(id: Int) = ImageBitmap.imageResource(res, id)
-        return BrainRenderer(img(R.drawable.brain_main), img(R.drawable.brain_lobe), img(R.drawable.vault_skull), img(R.drawable.vault_skull_dead))
+    // Sprites come from :shared's Compose resources through the same reader and decoder imageResource() uses
+    // (unqualified = mdpi, never upscaled), so this also proves they are packaged and not density-scaled.
+    @OptIn(ExperimentalResourceApi::class)
+    private fun newRenderer(): BrainRenderer = runBlocking {
+        setResourceReaderAndroidContext(RuntimeEnvironment.getApplication()) // Robolectric doesn't start CMP's context provider
+        val env = getSystemResourceEnvironment()
+        suspend fun img(r: DrawableResource) = getDrawableResourceBytes(env, r).decodeToImageBitmap()
+        BrainRenderer(img(Res.drawable.brain_main), img(Res.drawable.brain_lobe), img(Res.drawable.vault_skull), img(Res.drawable.vault_skull_dead))
     }
     private fun pixels(r: BrainRenderer): IntArray = IntArray(r.W * r.H).also { r.pix.bmp.readPixels(it) }
     private fun blitPixels(r: BrainRenderer, px: Int): IntArray {

@@ -28,13 +28,16 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import app.vesper.R
+import app.vesper.res.Res
+import app.vesper.res.jacquard24
+import app.vesper.res.pressstart2p
+import app.vesper.res.vt323
+import org.jetbrains.compose.resources.Font
 import kotlin.math.roundToInt
 
 /** Palette (starting from the brief, nudged for contrast). */
@@ -51,13 +54,14 @@ object Px {
     val Shadow = Color(0xFF07030B)
 }
 
-val PixelFont = FontFamily(Font(R.font.pressstart2p))
+// Compose resource fonts are @Composable (they need the platform asset reader), so these are composable getters.
+val PixelFont: FontFamily @Composable get() = FontFamily(Font(Res.font.pressstart2p))
 
 /** Screen titles on Notes and Tasks. */
-val TitleFont = FontFamily(Font(R.font.jacquard24))
+val TitleFont: FontFamily @Composable get() = FontFamily(Font(Res.font.jacquard24))
 
 /** Note pages and task text. */
-val PageFont = FontFamily(Font(R.font.vt323))
+val PageFont: FontFamily @Composable get() = FontFamily(Font(Res.font.vt323))
 
 @Composable
 fun PixelTheme(content: @Composable () -> Unit) {

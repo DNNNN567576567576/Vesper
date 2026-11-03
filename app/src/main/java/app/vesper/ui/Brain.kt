@@ -60,7 +60,12 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RadialGradientShader
 import androidx.compose.ui.graphics.TileMode
-import androidx.compose.ui.res.imageResource
+import app.vesper.res.Res
+import app.vesper.res.brain_lobe
+import app.vesper.res.brain_main
+import app.vesper.res.vault_skull
+import app.vesper.res.vault_skull_dead
+import org.jetbrains.compose.resources.imageResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.runtime.rememberCoroutineScope
@@ -975,16 +980,17 @@ private fun BrainCanvas(
 ) {
     val density = LocalDensity.current.density
     val pxSize = remember(density) { round(2.28f * density).coerceAtLeast(1f) }
-    val core = ImageBitmap.imageResource(app.vesper.R.drawable.brain_main)
-    val lobeImg = ImageBitmap.imageResource(app.vesper.R.drawable.brain_lobe)
-    val skull = ImageBitmap.imageResource(app.vesper.R.drawable.vault_skull)
-    val skullDead = ImageBitmap.imageResource(app.vesper.R.drawable.vault_skull_dead)
+    val core = imageResource(Res.drawable.brain_main)
+    val lobeImg = imageResource(Res.drawable.brain_lobe)
+    val skull = imageResource(Res.drawable.vault_skull)
+    val skullDead = imageResource(Res.drawable.vault_skull_dead)
     val renderer = remember { BrainRenderer(core, lobeImg, skull, skullDead) }
     val layout = remember(lobes, placed) { buildLayout(lobes, placed) }
     val selIdx = layout.lobeIds.indexOf(selectedId)
     val measurer = rememberTextMeasurer(cacheSize = 200)
+    val pageFont = PageFont; val titleFont = TitleFont; val pixelFont = PixelFont // composable getters, read outside remember
     val ringStyle = remember(density) {
-        TextStyle(fontFamily = PageFont, fontSize = 19.sp, color = Color(0xFFE6DCFF), shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.85f), blurRadius = 14f * density))
+        TextStyle(fontFamily = pageFont, fontSize = 19.sp, color = Color(0xFFE6DCFF), shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.85f), blurRadius = 14f * density))
     }
     // Selected lobe: its label layouts and ring positions, laid out for the fixed target zoom so pinching never reshuffles them.
     val selRing = remember(layout, selIdx, pxSize, density, ringStyle) {
@@ -1021,7 +1027,7 @@ private fun BrainCanvas(
         }
     }
     val labelStyle = { c: Color, glow: Color ->
-        TextStyle(fontFamily = TitleFont, fontSize = 20.sp, color = c, shadow = Shadow(glow.copy(alpha = 0.7f), blurRadius = 12f * density))
+        TextStyle(fontFamily = titleFont, fontSize = 20.sp, color = c, shadow = Shadow(glow.copy(alpha = 0.7f), blurRadius = 12f * density))
     }
     val lobeLabels = remember(lobes, layout, density) {
         List(layout.nL) { i ->
@@ -1040,9 +1046,9 @@ private fun BrainCanvas(
         GlowText(measurer.measure("vault", labelStyle(c, if (sunSv > 0.5f) Color.Transparent else c), maxLines = 1))
     }
     val tapScope = rememberCoroutineScope()
-    val ideaStyle = remember { TextStyle(fontFamily = PixelFont, fontSize = 7.sp, color = Color(0xFFE6DBF5)) }
-    val newestStyle = remember { TextStyle(fontFamily = PixelFont, fontSize = 7.sp, color = Color(0xFFFFC8EF)) }
-    val hintStyle = remember { TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim) }
+    val ideaStyle = remember { TextStyle(fontFamily = pixelFont, fontSize = 7.sp, color = Color(0xFFE6DBF5)) }
+    val newestStyle = remember { TextStyle(fontFamily = pixelFont, fontSize = 7.sp, color = Color(0xFFFFC8EF)) }
+    val hintStyle = remember { TextStyle(fontFamily = pixelFont, fontSize = 9.sp, color = Px.TextDim) }
 
     var time by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) {

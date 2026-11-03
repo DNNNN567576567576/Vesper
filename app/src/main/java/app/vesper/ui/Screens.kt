@@ -114,6 +114,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.vesper.R
+import app.vesper.res.Res
+import app.vesper.res.tab_brain
+import app.vesper.res.tab_flames
+import app.vesper.res.tab_grimoire
+import app.vesper.res.tab_moons
+import app.vesper.res.tab_scrolls
+import org.jetbrains.compose.resources.DrawableResource
+import org.jetbrains.compose.resources.imageResource
 import app.vesper.data.Note
 import app.vesper.data.Task
 import kotlin.math.PI
@@ -1072,14 +1080,14 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
         Row(Modifier.fillMaxWidth().navigationBarsPadding().height(72.dp)) {
             NavTab(
-                icon = R.drawable.tab_scrolls,
+                icon = Res.drawable.tab_scrolls,
                 label = "Scrolls",
                 active = selected == 0,
                 onClick = { onSelect(0) },
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = R.drawable.tab_flames,
+                icon = Res.drawable.tab_flames,
                 zoom = 1.2f, // tall thin shape reads small next to the wider icons
                 label = "Flames",
                 active = selected == 1,
@@ -1087,21 +1095,21 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = R.drawable.tab_brain,
+                icon = Res.drawable.tab_brain,
                 label = "Brain",
                 active = selected == 2,
                 onClick = { onSelect(2) },
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = R.drawable.tab_grimoire,
+                icon = Res.drawable.tab_grimoire,
                 label = "Grimoire",
                 active = selected == 3,
                 onClick = { onSelect(3) },
                 modifier = Modifier.weight(1f),
             )
             NavTab(
-                icon = R.drawable.tab_moons,
+                icon = Res.drawable.tab_moons,
                 zoom = 1.35f, // the moon art sits on a coarser grid, so it reads smaller than the others
                 label = "Moons",
                 active = selected == 4,
@@ -1114,7 +1122,7 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
 
 @Composable
 private fun NavTab(
-    icon: Int,
+    icon: DrawableResource,
     label: String,
     active: Boolean,
     onClick: () -> Unit,
@@ -1134,7 +1142,7 @@ private fun NavTab(
         verticalArrangement = Arrangement.Center,
     ) {
         Image(
-            bitmap = ImageBitmap.imageResource(icon),
+            bitmap = imageResource(icon),
             contentDescription = null,
             modifier = Modifier
                 .size(34.dp)
