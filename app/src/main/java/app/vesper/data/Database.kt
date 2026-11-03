@@ -1,5 +1,6 @@
 ﻿package app.vesper.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -14,7 +15,7 @@ import androidx.room.RoomDatabase
 import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
-@Entity(tableName = "notes")
+@Entity(tableName = "notes", indices = [Index(value = ["uid"], unique = true)])
 data class Note(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
@@ -25,14 +26,22 @@ data class Note(
     val position: Int = 0,
     /** Set = this is a page inside the main scroll with that id (one level only); null = a top-level scroll. */
     val parentId: Long? = null,
+    /** Sync identity, the same on every device. Rows from before v9 got '<table>-<id>'; see [MIGRATION_8_9]. */
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    /** Sync clock (epoch ms), kept current by the [syncTriggerSql] triggers; 0 = stamped on insert. Not shown in the UI. */
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
 )
 
-@Entity(tableName = "tasks")
+@Entity(tableName = "tasks", indices = [Index(value = ["uid"], unique = true)])
 data class Task(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val text: String,
     /** Epoch millis when the candle was snuffed; null = still lit. Snuffed tasks are kept forever. */
     val snuffedAt: Long? = null,
+    /** Sync identity, the same on every device. Rows from before v9 got '<table>-<id>'; see [MIGRATION_8_9]. */
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    /** Sync clock (epoch ms), kept current by the [syncTriggerSql] triggers; 0 = stamped on insert. Not shown in the UI. */
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
 )
 
 @Dao
@@ -83,19 +92,23 @@ interface TaskDao {
 }
 
 /** A region of the Brain map (a "sub-brain"). Placed automatically around the core by [slot]. */
-@Entity(tableName = "lobes")
+@Entity(tableName = "lobes", indices = [Index(value = ["uid"], unique = true)])
 data class Lobe(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val colorIndex: Int,
     val slot: Int,
+    /** Sync identity, the same on every device. Rows from before v9 got '<table>-<id>'; see [MIGRATION_8_9]. */
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    /** Sync clock (epoch ms), kept current by the [syncTriggerSql] triggers; 0 = stamped on insert. Not shown in the UI. */
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
 )
 
 /** One thought inside a lobe. [noteId] optionally points at a note; it is not a foreign key because notes are deleted permanently. */
 @Entity(
     tableName = "ideas",
     foreignKeys = [ForeignKey(Lobe::class, ["id"], ["lobeId"], onDelete = ForeignKey.CASCADE)],
-    indices = [Index("lobeId")],
+    indices = [Index("lobeId"), Index(value = ["uid"], unique = true)],
 )
 data class Idea(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -105,6 +118,10 @@ data class Idea(
     val noteId: Long? = null,
     /** Internal only, used to list recent thoughts first. Never shown. */
     val updatedAt: Long = System.currentTimeMillis(),
+    /** Sync identity, the same on every device. Rows from before v9 got '<table>-<id>'; see [MIGRATION_8_9]. */
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    /** Sync clock (epoch ms), kept current by the [syncTriggerSql] triggers; 0 = stamped on insert. Not shown in the UI. */
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
 )
 
 @Dao
@@ -177,13 +194,17 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
 }
 
 /** A plan for one local day. [day] is `LocalDate.toEpochDay()`. */
-@Entity(tableName = "plans", indices = [Index("day")])
+@Entity(tableName = "plans", indices = [Index("day"), Index(value = ["uid"], unique = true)])
 data class Plan(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val day: Long,
     val text: String,
     val done: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
+    /** Sync identity, the same on every device. Rows from before v9 got '<table>-<id>'; see [MIGRATION_8_9]. */
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    /** Sync clock (epoch ms), kept current by the [syncTriggerSql] triggers; 0 = stamped on insert. Not shown in the UI. */
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
 )
 
 /** A Brain lobe marked as the focus of one day. Removed automatically when the lobe is deleted. */
@@ -264,13 +285,67 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
     }
 }
 
+/** A deleted synced row, written by the delete triggers (FK cascades included) so peers can delete it too. Kept forever. */
+@Entity(tableName = "sync_tombstones", primaryKeys = ["tbl", "uid"])
+data class SyncTombstone(val tbl: String, val uid: String, val deletedAt: Long)
+
+@OptIn(kotlin.uuid.ExperimentalUuidApi::class)
+fun newUid(): String = kotlin.uuid.Uuid.random().toHexString()
+
+/** The tables that carry uid + syncAt. day_focus and posts are not synced yet. */
+val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "ideas", "plans")
+
+private const val NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)"
+
+/**
+ * Change tracking without touching any DAO. Insert: fill an empty uid and a 0 syncAt. Update: bump syncAt unless the
+ * statement itself raised it (sync code writes newer explicit values; a stale full-row @Update writing an older one is
+ * still bumped). Delete: tombstone, which also fires for FK cascade deletes. recursive_triggers is off, so the
+ * triggers' own UPDATEs never re-fire the trigger that issued them.
+ */
+fun syncTriggerSql(t: String) = listOf(
+    "CREATE TRIGGER IF NOT EXISTS `sync_${t}_insert` AFTER INSERT ON `$t` WHEN NEW.uid = '' OR NEW.syncAt = 0 BEGIN " +
+        "UPDATE `$t` SET uid = CASE WHEN NEW.uid = '' THEN lower(hex(randomblob(16))) ELSE uid END, " +
+        "syncAt = CASE WHEN NEW.syncAt = 0 THEN $NOW_MS ELSE syncAt END WHERE id = NEW.id; END",
+    // OLD.uid <> '': the insert trigger filling a uid is not an edit.
+    "CREATE TRIGGER IF NOT EXISTS `sync_${t}_update` AFTER UPDATE ON `$t` WHEN NEW.syncAt <= OLD.syncAt AND OLD.uid <> '' BEGIN " +
+        "UPDATE `$t` SET syncAt = max($NOW_MS, OLD.syncAt + 1) WHERE id = NEW.id; END",
+    "CREATE TRIGGER IF NOT EXISTS `sync_${t}_delete` AFTER DELETE ON `$t` BEGIN " +
+        "INSERT OR REPLACE INTO `sync_tombstones` (`tbl`, `uid`, `deletedAt`) VALUES ('$t', OLD.uid, $NOW_MS); END",
+)
+
+fun createSyncTriggers(db: SupportSQLiteDatabase) = SYNCED_TABLES.forEach { t -> syncTriggerSql(t).forEach(db::execSQL) }
+
+/** Room builds a fresh install from the entities, which carry no triggers; IF NOT EXISTS makes this a no-op afterwards. */
+val SYNC_TRIGGERS_CALLBACK = object : RoomDatabase.Callback() {
+    override fun onOpen(db: SupportSQLiteDatabase) = createSyncTriggers(db)
+}
+
+/**
+ * v8 -> v9: sync ids and clocks. Existing rows get deterministic uids ('notes-12'), so an old backup restored later
+ * migrates to the same uids and never duplicates on sync; random uids are 32 hex chars and can't collide with them.
+ */
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `sync_tombstones` (`tbl` TEXT NOT NULL, `uid` TEXT NOT NULL, `deletedAt` INTEGER NOT NULL, PRIMARY KEY(`tbl`, `uid`))")
+        val clock = mapOf("notes" to "updatedAt", "tasks" to "snuffedAt", "lobes" to "NULL", "ideas" to "updatedAt", "plans" to "createdAt")
+        for (t in SYNCED_TABLES) {
+            db.execSQL("ALTER TABLE `$t` ADD COLUMN `uid` TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE `$t` ADD COLUMN `syncAt` INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("UPDATE `$t` SET `uid` = '$t-' || `id`, `syncAt` = max(coalesce(${clock.getValue(t)}, $NOW_MS), 1)")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_${t}_uid` ON `$t` (`uid`)")
+        }
+        createSyncTriggers(db) // after the backfill, so it isn't tracked as edits
+    }
+}
+
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 8
+const val DB_VERSION = 9
 
 /** The single migration list used by the app and the tests. */
-val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
 
-@Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class, Plan::class, DayFocus::class], version = DB_VERSION, exportSchema = true)
+@Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class], version = DB_VERSION, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun taskDao(): TaskDao

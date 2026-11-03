@@ -1,6 +1,7 @@
 package app.vesper.data
 
 import android.content.Context
+import android.database.sqlite.SQLiteConstraintException
 import androidx.core.content.contentValuesOf
 import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
@@ -8,6 +9,8 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -161,9 +164,46 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate8To9() {
+        helper.createDatabase(name, 8).apply {
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0)")
+            execSQL("INSERT INTO tasks (id, text) VALUES (1, 'buy candles')")
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, parentId) VALUES (2, 'page', 'x', 1700000005000, 0, 1)")
+            execSQL("INSERT INTO tasks (id, text, snuffedAt) VALUES (2, 'light the lamp', 1700000003000)")
+            insertBrain() // lobe 1, idea 1 (updatedAt 1700000001000)
+            execSQL("INSERT INTO plans (id, day, text, done, createdAt) VALUES (1, 20000, 'plan', 0, 1700000004000)")
+            execSQL("INSERT INTO day_focus (day, lobeId) VALUES (20000, 1)")
+            insertPost(); close()
+        }
+        val before = System.currentTimeMillis()
+        val db = helper.runMigrationsAndValidate(name, 9, true, MIGRATION_8_9)
+        val after = System.currentTimeMillis()
+        db.assertNoteAndTask(); db.assertBrain(); db.assertPost()
+        fun uidAndClock(t: String, id: Long) = db.query("SELECT uid, syncAt FROM $t WHERE id = $id").use { it.moveToFirst(); it.getString(0) to it.getLong(1) }
+        assertEquals("notes-1" to 1700000000000, uidAndClock("notes", 1))
+        assertEquals("notes-2" to 1700000005000, uidAndClock("notes", 2))
+        assertEquals("tasks-2" to 1700000003000, uidAndClock("tasks", 2))
+        assertEquals("ideas-1" to 1700000001000, uidAndClock("ideas", 1))
+        assertEquals("plans-1" to 1700000004000, uidAndClock("plans", 1))
+        for ((t, id) in listOf("tasks" to 1L, "lobes" to 1L)) { // no timestamp of their own: migration time
+            val (uid, at) = uidAndClock(t, id)
+            assertEquals("$t-$id", uid); assertTrue("$t syncAt $at", at in before - 1..after)
+        }
+        db.assertIndexes("index_notes_uid", "index_tasks_uid", "index_lobes_uid", "index_ideas_uid", "index_plans_uid")
+        db.query("SELECT COUNT(*) FROM sync_tombstones").use { it.moveToFirst(); assertEquals(0, it.getInt(0)) }
+        db.query("SELECT COUNT(*) FROM day_focus").use { it.moveToFirst(); assertEquals(1, it.getInt(0)) }
+        try { // uid is unique
+            db.execSQL("INSERT INTO notes (title, content, updatedAt, position, uid) VALUES ('dup', 'x', 1, 0, 'notes-1')"); fail("duplicate uid accepted")
+        } catch (_: SQLiteConstraintException) {}
+    }
+
+    @Test
     fun migrateAllFrom1() {
         helper.createDatabase(name, 1).apply { insertNote(); close() }
-        helper.runMigrationsAndValidate(name, DB_VERSION, true, *ALL_MIGRATIONS).assertNoteAndTask()
+        val db = helper.runMigrationsAndValidate(name, DB_VERSION, true, *ALL_MIGRATIONS)
+        db.assertNoteAndTask()
+        db.query("SELECT uid, syncAt FROM notes WHERE id = 1").use { it.moveToFirst(); assertEquals("notes-1", it.getString(0)); assertEquals(1700000000000, it.getLong(1)) }
+        db.query("SELECT uid FROM tasks WHERE id = 1").use { it.moveToFirst(); assertEquals("tasks-1", it.getString(0)) }
     }
 
     @Test

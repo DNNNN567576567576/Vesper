@@ -102,16 +102,22 @@ class BackupTest {
     }
 
     @Test
-    fun restoresAndMigratesOldVersionBackup(): Unit = runBlocking {
-        helper.createDatabase("old.db", 4).apply {
-            execSQL("INSERT INTO notes (id, title, content, updatedAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000)")
+    fun restoresAndMigratesV4Backup() = restoresAndMigratesOldVersionBackup(4)
+
+    @Test
+    fun restoresAndMigratesV8Backup() = restoresAndMigratesOldVersionBackup(8)
+
+    private fun restoresAndMigratesOldVersionBackup(version: Int): Unit = runBlocking {
+        helper.createDatabase("old.db", version).apply {
+            if (version < 6) execSQL("INSERT INTO notes (id, title, content, updatedAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000)")
+            else execSQL("INSERT INTO notes (id, title, content, updatedAt, position) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0)")
             execSQL("INSERT INTO tasks (id, text) VALUES (1, 'buy candles')")
             execSQL("INSERT INTO lobes (id, name, colorIndex, slot) VALUES (1, 'Work', 2, 0)")
             execSQL("INSERT INTO plans (day, text, done, createdAt) VALUES (20000, 'plan', 0, 1)")
             close()
         }
         seed() // live data that the restore replaces
-        val uri = zip("old.zip", mapOf("manifest.json" to manifest(4), "database.db" to app.getDatabasePath("old.db").readBytes()))
+        val uri = zip("old.zip", mapOf("manifest.json" to manifest(version), "database.db" to app.getDatabasePath("old.db").readBytes()))
 
         restoreBackup(app, uri)
 
@@ -119,7 +125,12 @@ class BackupTest {
         try {
             val s = db.snapshot()
             assertEquals(listOf("Dream log"), s.notes.map { it.title })
-            assertEquals(listOf(Task(1, "buy candles", null)), s.lit)
+            assertEquals(listOf(Triple(1L, "buy candles", null)), s.lit.map { Triple(it.id, it.text, it.snuffedAt) })
+            // deterministic uids, so restoring this backup again can never duplicate rows on sync
+            assertEquals(listOf("notes-1"), s.notes.map { it.uid })
+            assertEquals(listOf("tasks-1"), s.lit.map { it.uid })
+            assertEquals(listOf("lobes-1"), s.lobes.map { it.uid })
+            assertEquals(listOf("plans-1"), s.plans.map { it.uid })
             assertEquals(emptyList<Task>(), s.snuffed)
             assertEquals(listOf("Work"), s.lobes.map { it.name })
             assertEquals(listOf("plan"), s.plans.map { it.text })

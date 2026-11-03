@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.room.Room
 import app.vesper.data.AppDatabase
 import app.vesper.data.ALL_MIGRATIONS
+import app.vesper.data.SYNC_TRIGGERS_CALLBACK
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,6 +28,7 @@ class NotebookApp : Application() {
     val db: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, DB_NAME)
             .addMigrations(*ALL_MIGRATIONS)
+            .addCallback(SYNC_TRIGGERS_CALLBACK)
             .build()
     }
 
