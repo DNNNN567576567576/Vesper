@@ -1,6 +1,5 @@
 ﻿package app.vesper.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -325,7 +324,7 @@ fun AddTaskDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var clock by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) { while (true) clock = withFrameNanos { it } }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    Dialog(onDismissRequest = onDismiss, properties = edgeToEdgeDialog()) {
         Box(
             Modifier
                 .fillMaxSize()

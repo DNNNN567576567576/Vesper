@@ -21,13 +21,6 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import kotlin.math.PI
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.util.LruCache
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -89,14 +82,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -108,8 +100,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import app.vesper.ShrineMedia
 import app.vesper.data.Post
-import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -123,8 +115,6 @@ import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 // The Shrine tab: a private, chronological feed of burned-paper posts.
 
@@ -201,13 +191,14 @@ fun ShrineScreen(
     posts: List<Post>?,
     listState: LazyListState,
     draft: String,
-    draftPhoto: Uri?,
+    draftPhoto: String?,
     sending: Boolean,
     onDraft: (String) -> Unit,
-    onDraftPhoto: (Uri?) -> Unit,
+    onDraftPhoto: (String?) -> Unit,
     onSend: () -> Unit,
     onEdit: (Long, String) -> Unit,
     onDelete: (Long) -> Unit,
+    media: ShrineMedia,
 ) {
     val time = rememberRotTime()
     val pxSize = rememberRotPxSize()
@@ -254,6 +245,7 @@ fun ShrineScreen(
                                     imageWidthPx = innerWidthPx,
                                     onMenu = { menuFor = MenuTarget(item.post, it) },
                                     onPhoto = { viewing = item.post },
+                                    media = media,
                                 )
                             }
                         }
@@ -283,7 +275,7 @@ fun ShrineScreen(
     }
 
     if (writing) {
-        WritingPage(draft, draftPhoto, sending, onDraft, onDraftPhoto, onSend, onClose = { writing = false })
+        WritingPage(draft, draftPhoto, sending, onDraft, onDraftPhoto, onSend, media, onClose = { writing = false })
     }
 
     editing?.let { post ->
@@ -309,7 +301,7 @@ fun ShrineScreen(
         }
     }
 
-    viewing?.let { post -> if (post.videoPath != null) VideoViewer(post) { viewing = null } else PhotoViewer(post) { viewing = null } }
+    viewing?.let { post -> if (post.videoPath != null) VideoViewer(post, media) { viewing = null } else PhotoViewer(post, media) { viewing = null } }
 }
 
 @Composable
@@ -407,21 +399,21 @@ private fun ArcMenu(
 @Composable
 private fun WritingPage(
     draft: String,
-    photo: Uri?,
+    photo: String?,
     sending: Boolean,
     onDraft: (String) -> Unit,
-    onPhoto: (Uri?) -> Unit,
+    onPhoto: (String?) -> Unit,
     onSend: () -> Unit,
+    media: ShrineMedia,
     onClose: () -> Unit,
 ) {
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) onPhoto(uri) }
-    val ctx = LocalContext.current
+    val pick = media.rememberPicker { onPhoto(it) }
     val canSend = !sending && (draft.isNotBlank() || photo != null)
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
     Dialog(
         onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        properties = edgeToEdgeDialog(),
     ) {
         Column(Modifier.fillMaxSize().background(ShrineBase).statusBarsPadding().navigationBarsPadding().imePadding()) {
             Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 14.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -430,7 +422,7 @@ private fun WritingPage(
                 BarButton(
                     ATT, if (photo != null) Px.Magenta else ShrineIconDim,
                     fill = ShrineBtnBg, line = ShrineBtnLine, description = "Attach photo or video",
-                ) { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
+                ) { pick() }
                 Spacer(Modifier.width(8.dp))
                 BarButton(
                     SEND, Color(0xFFF0E8FA).copy(alpha = if (canSend) 1f else 0.45f),
@@ -438,7 +430,7 @@ private fun WritingPage(
                 ) { if (canSend) { onSend(); onClose() } }
             }
             if (photo != null) {
-                val thumb by produceState<Bitmap?>(null, photo) { value = ShrineBitmaps.thumb(ctx, photo, 48) }
+                val thumb by produceState<ImageBitmap?>(null, photo) { value = media.thumb(photo, 48) }
                 Row(
                     Modifier
                         .padding(start = 18.dp, top = 8.dp)
@@ -450,10 +442,10 @@ private fun WritingPage(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     thumb?.let {
-                        Image(it.asImageBitmap(), null, Modifier.size(22.dp).clip(RoundedCornerShape(4.dp)), contentScale = ContentScale.Crop)
+                        Image(it, null, Modifier.size(22.dp).clip(RoundedCornerShape(4.dp)), contentScale = ContentScale.Crop)
                         Spacer(Modifier.width(8.dp))
                     }
-                    Text(if (ctx.contentResolver.getType(photo)?.startsWith("video/") == true) "video attached" else "photo attached", style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = ShrineText))
+                    Text(if (media.isVideo(photo)) "video attached" else "photo attached", style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = ShrineText))
                     Spacer(Modifier.width(8.dp))
                     PixelIcon(CROSS, Px.Magenta, pixel = 2.dp)
                 }
@@ -489,6 +481,7 @@ private fun PostCard(
     imageWidthPx: Int,
     onMenu: (Rect) -> Unit,
     onPhoto: () -> Unit,
+    media: ShrineMedia,
 ) {
     val px = pxSize.toInt().coerceAtLeast(1)
     val shadowOffset = with(LocalDensity.current) { 3.dp.toPx() }
@@ -537,7 +530,7 @@ private fun PostCard(
         ) {
             if (img != null) {
                 Box(Modifier.fillMaxWidth()) {
-                    PostPhoto(img, post.videoPath != null, imageWidthPx, onPhoto, openMenu)
+                    PostPhoto(img, post.videoPath != null, imageWidthPx, media, onPhoto, openMenu)
                     if (!hasText) {
                         Text(
                             timeText,
@@ -577,10 +570,9 @@ private const val EMBER_HI = 0xFF7A2A5E.toInt()
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PostPhoto(name: String, video: Boolean, widthPx: Int, onTap: () -> Unit, onLong: () -> Unit) {
-    val dir = LocalContext.current.filesDir
-    val bmp by produceState(ShrineBitmaps.cached(name, widthPx), name, widthPx) {
-        if (value == null) value = ShrineBitmaps.load(File(File(dir, "shrine"), name), widthPx, cache = true, video = video)
+private fun PostPhoto(name: String, video: Boolean, widthPx: Int, media: ShrineMedia, onTap: () -> Unit, onLong: () -> Unit) {
+    val bmp by produceState(media.cached(name, widthPx), name, widthPx) {
+        if (value == null) value = media.load(name, widthPx, cache = true, video = video)
     }
     val b = bmp
     // Full card width at the photo's natural aspect; very tall photos stop at 1.4 x width and are fitted (never cropped).
@@ -592,7 +584,7 @@ private fun PostPhoto(name: String, video: Boolean, widthPx: Int, onTap: () -> U
         .combinedClickable(onClick = onTap, onDoubleClick = onLong)
     if (b != null) {
         Box(mod, contentAlignment = Alignment.Center) {
-            Image(b.asImageBitmap(), if (video) "video" else "photo", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            Image(b, if (video) "video" else "photo", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
             if (video) PlayMarker()
         }
     } else {
@@ -659,7 +651,9 @@ internal object BurnedPaper {
     private const val BURN = 0.87f
     private const val EMB = 1.0f
     private const val R = 7f
-    private val cache = LruCache<String, Paper>(160)
+    private val cache = object : LinkedHashMap<String, Paper>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Paper>) = size > 160
+    }
 
     private fun hash(x: Int, y: Int, s: Int): Float {
         var h = x * 374761393 + y * 668265263 + s * 982451653
@@ -669,8 +663,8 @@ internal object BurnedPaper {
 
     fun get(seed: Int, w: Int, h: Int): Paper {
         val key = "$seed:$w:$h"
-        cache.get(key)?.let { return it }
-        return render(seed, w, h).also { cache.put(key, it) }
+        synchronized(cache) { cache[key] }?.let { return it }
+        return render(seed, w, h).also { synchronized(cache) { cache[key] = it } }
     }
 
     fun render(seed: Int, w: Int, h: Int): Paper {
@@ -721,97 +715,23 @@ internal object BurnedPaper {
 // Photos
 // ---------------------------------------------------------------------------------------------
 
-private object ShrineBitmaps {
-    private val cache = object : LruCache<String, Bitmap>((Runtime.getRuntime().maxMemory() / 8).toInt()) {
-        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
-    }
-
-    fun cached(name: String, w: Int): Bitmap? = cache.get("$name@$w")
-
-    /** Decodes [file] downsampled to roughly [widthPx] wide. Returns null if it can't be read. */
-    suspend fun load(file: File, widthPx: Int, cache: Boolean, video: Boolean = false): Bitmap? = withContext(Dispatchers.IO) {
-        val key = "${file.name}@$widthPx"
-        if (cache) this@ShrineBitmaps.cache.get(key)?.let { return@withContext it }
-        try {
-            if (video) {
-                val f = frame { it.setDataSource(file.path) }
-                if (f != null && cache) this@ShrineBitmaps.cache.put(key, f)
-                return@withContext f
-            }
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(file.path, bounds)
-            if (bounds.outWidth <= 0) return@withContext null
-            var sample = 1
-            while (bounds.outWidth / (sample * 2) >= widthPx) sample *= 2
-            val bmp = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
-            if (bmp != null && cache) this@ShrineBitmaps.cache.put(key, bmp)
-            bmp
-        } catch (e: Throwable) {
-            null // OutOfMemory or a corrupt file must never take the app down
-        }
-    }
-
-    /** First frame of a video, or null if it can't be read. */
-    private fun frame(source: (android.media.MediaMetadataRetriever) -> Unit): Bitmap? {
-        val mmr = android.media.MediaMetadataRetriever()
-        return try { source(mmr); mmr.getFrameAtTime(0) } catch (e: Throwable) { null } finally { try { mmr.release() } catch (e: Throwable) {} }
-    }
-
-    /** Small thumbnail of a picked (content://) photo or video for the attachment chip. */
-    suspend fun thumb(context: android.content.Context, uri: Uri, edge: Int): Bitmap? = withContext(Dispatchers.IO) {
-        try {
-            val r = context.contentResolver
-            if (r.getType(uri)?.startsWith("video/") == true) return@withContext frame { it.setDataSource(context, uri) }
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            r.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            if (bounds.outWidth <= 0) return@withContext null
-            var sample = 1
-            while (min(bounds.outWidth, bounds.outHeight) / (sample * 2) >= edge) sample *= 2
-            r.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-            }
-        } catch (e: Throwable) {
-            null
-        }
-    }
+@Composable
+private fun VideoViewer(post: Post, media: ShrineMedia, onClose: () -> Unit) {
+    media.VideoPlayer(post.videoPath ?: run { onClose(); return }, onClose)
 }
 
 @Composable
-private fun VideoViewer(post: Post, onClose: () -> Unit) {
-    val file = File(File(LocalContext.current.filesDir, "shrine"), post.videoPath ?: run { onClose(); return })
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        Box(Modifier.fillMaxSize().background(Color(0xFF040206)), contentAlignment = Alignment.Center) {
-            androidx.compose.ui.viewinterop.AndroidView(
-                factory = { c ->
-                    android.widget.VideoView(c).apply {
-                        setMediaController(android.widget.MediaController(c).also { it.setAnchorView(this) })
-                        setOnErrorListener { _, _, _ -> onClose(); true }
-                        setVideoPath(file.path)
-                        start()
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-    }
-}
-
-@Composable
-private fun PhotoViewer(post: Post, onClose: () -> Unit) {
-    val ctx = LocalContext.current
-    val dm = ctx.resources.displayMetrics
+private fun PhotoViewer(post: Post, media: ShrineMedia, onClose: () -> Unit) {
+    val screenWidth = LocalWindowInfo.current.containerSize.width
     val name = post.imagePath ?: run { onClose(); return }
-    val bmp by produceState<Bitmap?>(null, name) {
-        value = ShrineBitmaps.load(File(File(ctx.filesDir, "shrine"), name), minOf(2048, dm.widthPixels * 2), cache = false)
+    val bmp by produceState<ImageBitmap?>(null, name) {
+        value = media.load(name, minOf(2048, screenWidth * 2), cache = false, video = false)
     }
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     Dialog(
         onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        properties = edgeToEdgeDialog(),
     ) {
         Box(
             Modifier
@@ -829,7 +749,7 @@ private fun PhotoViewer(post: Post, onClose: () -> Unit) {
             val b = bmp
             if (b != null) {
                 Image(
-                    b.asImageBitmap(), "photo",
+                    b, "photo",
                     Modifier
                         .padding(16.dp)
                         .clip(RoundedCornerShape(10.dp))

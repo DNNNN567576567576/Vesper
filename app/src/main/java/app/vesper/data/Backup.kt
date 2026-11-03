@@ -29,9 +29,6 @@ import java.util.zip.ZipOutputStream
  *   shrine/<name>   every file in filesDir/shrine (Grimoire photos)
  */
 
-/** [message] is short, lowercase and ready to show. [restartNeeded]: the live DB was already closed, call [restartApp]. */
-class BackupException(message: String, val restartNeeded: Boolean = false, cause: Throwable? = null) : Exception(message, cause)
-
 private const val FORMAT = 1
 private const val MANIFEST = "manifest.json"
 private const val DB_ENTRY = "database.db"

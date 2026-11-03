@@ -59,6 +59,8 @@ android {
 
 // Never build an installable APK (debug or the release that goes on the phone) unless the migration tests pass; protects user data.
 tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }.configureEach { dependsOn("testDebugUnitTest") }
+// The shared UI's pixel-hash tests live in :shared; they are part of the same gate.
+tasks.matching { it.name == "testDebugUnitTest" }.configureEach { dependsOn(":shared:testAndroidHostTest") }
 
 dependencies {
     implementation(project(":shared"))

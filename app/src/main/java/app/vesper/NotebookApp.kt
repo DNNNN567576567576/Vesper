@@ -16,7 +16,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-class NotebookApp : Application() {
+class NotebookApp : Application(), VesperHost {
     override fun onCreate() {
         super.onCreate()
         // One-time safety net before the v3 -> v4 migration: runs before the lazy [db] is ever opened.
@@ -25,7 +25,7 @@ class NotebookApp : Application() {
         appScope.launch { exportJsonOnce() }
     }
 
-    val db: AppDatabase by lazy {
+    override val db: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, DB_NAME)
             .addMigrations(*ALL_MIGRATIONS)
             .addCallback(SYNC_TRIGGERS_CALLBACK)
@@ -37,13 +37,21 @@ class NotebookApp : Application() {
         MutableStateFlow(getSharedPreferences(PREFS, MODE_PRIVATE).getLong(KEY_LAST_BACKUP, 0L).takeIf { it > 0 })
     }
 
-    /**
-     * Writes that must survive leaving a screen (saves, deletes) run here rather than in a
-     * ViewModel scope, so closing the editor can never cancel an in-flight write.
-     */
-    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    override val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    fun reportError(what: String, e: Throwable) {
+    override val settings: Settings by lazy {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        object : Settings {
+            override fun getString(key: String) = prefs.getString(key, null)
+            override fun putString(key: String, value: String) = prefs.edit().putString(key, value).apply()
+            override fun getBoolean(key: String, default: Boolean) = prefs.getBoolean(key, default)
+            override fun putBoolean(key: String, value: Boolean) = prefs.edit().putBoolean(key, value).apply()
+        }
+    }
+    override val shrineMedia: ShrineMedia by lazy { AndroidShrineMedia(this) }
+    override val vault: Vault by lazy { AndroidVault(this) }
+
+    override fun reportError(what: String, e: Throwable) {
         Log.e("Vesper", what, e)
         appScope.launch(Dispatchers.Main) {
             Toast.makeText(this@NotebookApp, "Could not $what", Toast.LENGTH_SHORT).show()

@@ -56,7 +56,6 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -112,9 +111,8 @@ import app.vesper.TasksViewModel
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.zIndex
-import androidx.lifecycle.viewmodel.compose.viewModel
-import app.vesper.R
 import app.vesper.res.Res
+import app.vesper.res.mascot_pixel
 import app.vesper.res.tab_brain
 import app.vesper.res.tab_flames
 import app.vesper.res.tab_grimoire
@@ -367,7 +365,7 @@ fun EmptyState(
                 )
             }
             Image(
-                bitmap = ImageBitmap.imageResource(R.drawable.mascot_pixel),
+                bitmap = imageResource(Res.drawable.mascot_pixel),
                 contentDescription = "Mascot Guardian",
                 modifier = Modifier.offset(y = (-7 * bob).dp).size(172.dp),
                 filterQuality = FilterQuality.None,
@@ -406,10 +404,10 @@ fun NotesScreen(
     onOpen: (Long) -> Unit,
     onNew: () -> Unit,
     onDelete: (Long) -> Unit,
+    vm: NotesViewModel,
 ) {
     var pendingDelete by remember { mutableStateOf<Long?>(null) }
     var burnId by remember { mutableStateOf<Long?>(null) }
-    val vm: NotesViewModel = viewModel()
     val sort by vm.sort.collectAsState()
     val pageCounts by vm.pageCounts.collectAsState()
     val manual = sort == NoteSort.MANUAL
@@ -829,6 +827,7 @@ fun TasksScreen(
     onComplete: (Long) -> Unit,
     onRelight: (Long) -> Unit,
     onAdd: () -> Unit,
+    vm: TasksViewModel,
 ) {
     val time = rememberRotTime()
     val pxSize = rememberRotPxSize()
@@ -841,7 +840,6 @@ fun TasksScreen(
     val relit = remember { HashSet<Long>() }
     val latestRelight by rememberUpdatedState(onRelight)
     var open by rememberSaveable { mutableStateOf(false) }
-    val vm: TasksViewModel = viewModel()
     val newestFirst by vm.newestFirst.collectAsState()
 
     // Leaving the tab mid-animation must not lose the completion.

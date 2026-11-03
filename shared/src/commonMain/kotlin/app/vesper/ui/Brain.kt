@@ -1,13 +1,9 @@
 package app.vesper.ui
 
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -69,11 +65,11 @@ import org.jetbrains.compose.resources.imageResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -88,14 +84,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import app.vesper.NotebookApp
+import app.vesper.Vault
 import app.vesper.data.BackupException
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import app.vesper.data.Note
-import app.vesper.data.restartApp
-import app.vesper.data.restoreBackup
-import app.vesper.data.writeBackup
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -789,6 +782,8 @@ fun BrainScreen(
     onSaveIdea: (Idea) -> Unit,
     onDeleteIdea: (Long) -> Unit,
     onOpenNote: (Long) -> Unit,
+    vault: Vault,
+    appScope: CoroutineScope,
 ) {
     val lobeList = lobes.orEmpty()
     val ideaList = ideas.orEmpty()
@@ -804,32 +799,30 @@ fun BrainScreen(
     var editing by remember { mutableStateOf<Idea?>(null) }
 
     // Vault sun: backup / restore. Work runs on appScope so leaving the tab can't cancel a write.
-    val context = LocalContext.current
-    val app = context.applicationContext as NotebookApp
-    val last by app.lastBackupAt.collectAsState()
+    val last by vault.lastBackupAt.collectAsState()
     val sv = staleness(last)
     var sunSel by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
-    var restoreUri by remember { mutableStateOf<Uri?>(null) }
+    var restoreUri by remember { mutableStateOf<String?>(null) }
     var waking by remember { mutableStateOf(false) }
-    val keepPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-        if (uri == null || working != null) return@rememberLauncherForActivityResult
+    val keepPicker = vault.rememberSavePicker { uri ->
+        if (working != null) return@rememberSavePicker
         working = "keeping..."; message = null
-        app.appScope.launch {
-            try { writeBackup(context, uri); message = "kept." } catch (e: BackupException) { message = e.message }
+        appScope.launch {
+            try { vault.write(uri); message = "kept." } catch (e: BackupException) { message = e.message }
             working = null
             if (message == "kept.") { delay(2500); if (message == "kept.") message = null }
         }
     }
-    val restorePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) restoreUri = uri }
-    fun restore(uri: Uri) {
+    val restorePicker = vault.rememberOpenPicker { uri -> restoreUri = uri }
+    fun restore(uri: String) {
         if (working != null) return
         working = "reading..."; message = null
-        app.appScope.launch {
-            try { restoreBackup(context, uri); waking = true } catch (e: BackupException) { if (e.restartNeeded) waking = true else message = e.message }
+        appScope.launch {
+            try { vault.restore(uri); waking = true } catch (e: BackupException) { if (e.restartNeeded) waking = true else message = e.message }
             working = null
-            if (waking) { delay(600); restartApp(context) }
+            if (waking) { delay(600); vault.restart() }
         }
     }
 
@@ -855,8 +848,8 @@ fun BrainScreen(
                     else -> "it has been a while. keep a new copy."
                 },
                 busy = working != null,
-                onKeep = { keepPicker.launch("vesper-backup-${java.time.LocalDate.now()}.zip") },
-                onRestore = { restorePicker.launch(arrayOf("application/zip", "application/octet-stream")) },
+                onKeep = { keepPicker("vesper-backup-${java.time.LocalDate.now()}.zip") },
+                onRestore = { restorePicker() },
             )
         }
     }
@@ -1134,7 +1127,7 @@ private fun BrainCanvas(
                 }
                 var lastAt = 0L; var lastPos = Offset.Zero; var lastHit: Any? = null
                 detectTapGestures(onTap = { tap ->
-                    val now = android.os.SystemClock.uptimeMillis()
+                    val now = System.nanoTime() / 1_000_000 // monotonic ms, like uptimeMillis
                     val hit = lastHit
                     if (hit != null && now - lastAt <= viewConfiguration.doubleTapTimeoutMillis && (tap - lastPos).getDistance() <= 48.dp.toPx()) {
                         // Second tap on the same target (the camera may be gliding toward a just-selected lobe).

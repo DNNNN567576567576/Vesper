@@ -237,7 +237,7 @@ fun Modifier.tapOrDoubleTap(role: androidx.compose.ui.semantics.Role? = null, on
         .pointerInput(Unit) {
             var lastAt = 0L; var lastPos = Offset.Zero
             detectTapGestures(onTap = { p ->
-                val now = android.os.SystemClock.uptimeMillis()
+                val now = System.nanoTime() / 1_000_000 // monotonic ms, like uptimeMillis
                 if (lastAt != 0L && now - lastAt <= vc.doubleTapTimeoutMillis && (p - lastPos).getDistance() <= 48.dp.toPx()) {
                     lastAt = 0L; dbl.value()
                 } else { lastAt = now; lastPos = p; tap.value() }
