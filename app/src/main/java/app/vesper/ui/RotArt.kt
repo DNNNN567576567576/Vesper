@@ -97,7 +97,7 @@ private val GLOW_SPRITE: ImageBitmap by lazy {
 
 private val DITHER: ImageBitmap by lazy { imageBitmapOf(intArrayOf(0xFF000000.toInt(), 0, 0, 0xFF000000.toInt()), 2, 2) }
 
-private fun pixPaint(fq: FilterQuality = FilterQuality.None) = hardPaint().apply { filterQuality = fq }
+internal fun pixPaint(fq: FilterQuality = FilterQuality.None) = hardPaint().apply { filterQuality = fq }
 
 /** A low-res ARGB bitmap with integer-pixel drawing helpers. Reused every frame; nothing here allocates per call. */
 internal class Pix(w: Int = 1, h: Int = 1) {
@@ -242,7 +242,7 @@ private fun WallLayer(notes: Boolean) {
 
 private fun wrapF(v: Float, m: Float): Float = v - floor(v / m) * m
 
-private fun makeDitherPaint(alpha: Float) = pixPaint().apply {
+internal fun makeDitherPaint(alpha: Float) = pixPaint().apply {
     shader = ImageShader(DITHER, TileMode.Repeated, TileMode.Repeated)
     this.alpha = (alpha * 255f).toInt() / 255f // same truncated 8-bit alpha the android Paint got
 }

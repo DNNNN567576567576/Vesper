@@ -1,17 +1,5 @@
 package app.vesper.ui
 
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.BitmapShader
-import android.graphics.Paint
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffColorFilter
-import android.graphics.PorterDuffXfermode
-import android.graphics.RadialGradient
-import android.graphics.Rect
-import android.graphics.RectF
-import android.graphics.Shader
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -70,10 +58,14 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.RadialGradientShader
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.res.imageResource
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Job
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -152,12 +144,12 @@ private fun lobeWorldPos(slot: Int): Offset {
     return Offset((cos(a) * 60.0 * k).toFloat(), (sin(a) * 90.0 * k).toFloat())
 }
 
-private class Placed(
+internal class Placed(
     val idea: Idea, val lobe: Lobe, val pos: Offset,
     val ph: Float, val bend: Float, val j: Int, val newest: Boolean,
 )
 
-private fun placeIdeas(lobes: List<Lobe>, ideas: List<Idea>): List<Placed> {
+internal fun placeIdeas(lobes: List<Lobe>, ideas: List<Idea>): List<Placed> {
     val byLobe = ideas.groupBy { it.lobeId }
     return lobes.flatMap { lobe ->
         val c = lobeWorldPos(lobe.slot)
@@ -190,7 +182,7 @@ private class SelRing(val tls: List<TextLayoutResult>, val target: List<Offset>)
  * A label whose blurred Shadow glow is rasterized once into a bitmap and then just blitted.
  * Android re-blurs a text shadow on every draw, which is costly when done for many labels every frame.
  */
-private class GlowText(val tl: TextLayoutResult) {
+internal class GlowText(val tl: TextLayoutResult) {
     private var img: ImageBitmap? = null
     // the shadow reaches ~3 sigma ≈ 1.73 * radius past the glyphs
     private val pad = ceil(1.8f * (tl.layoutInput.style.shadow?.blurRadius ?: 0f)).toInt() + 2
@@ -261,7 +253,7 @@ class BrainCamera {
 }
 
 /** Everything the renderer needs, derived from the real lobes/ideas plus the seeded rot decoration. */
-private class Layout(
+internal class Layout(
     val nL: Int, val lobeIds: LongArray, val lx: FloatArray, val ly: FloatArray, val lbend: FloatArray,
     val lcol: IntArray, val lslot: IntArray, val istart: IntArray,
     val nI: Int, val ix: FloatArray, val iy: FloatArray, val iph: FloatArray, val ibend: FloatArray,
@@ -275,7 +267,7 @@ private class Layout(
     val drips: FloatArray,     // x, y, n, len, owner lobe (-1 none)
 )
 
-private fun buildLayout(lobes: List<Lobe>, placedIn: List<Placed>): Layout {
+internal fun buildLayout(lobes: List<Lobe>, placedIn: List<Placed>): Layout {
     val nL = lobes.size
     val idxOf = HashMap<Long, Int>()
     lobes.forEachIndexed { i, l -> idxOf[l.id] = i }
@@ -428,14 +420,6 @@ private fun buildLayout(lobes: List<Lobe>, placedIn: List<Placed>): Layout {
 // Drawing
 // ---------------------------------------------------------------------------------------------
 
-private fun decode(context: Context, id: Int): Bitmap {
-    val opts = BitmapFactory.Options().apply {
-        inScaled = false
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-    }
-    return BitmapFactory.decodeResource(context.resources, id, opts)
-}
-
 private fun rnd(v: Float): Int = floor(v + 0.5f).toInt()
 
 private fun mixRgb(a: Int, b: Int, m: Float): Int {
@@ -450,54 +434,27 @@ private val BEADS = floatArrayOf(0.25f, 0.45f, 0.62f, 0.8f)
 private val SPECK_COLS = intArrayOf(0x1E0A24, 0x4A1650, 0x7A2A6A)
 
 /**
- * Renders the map into a low-res bitmap (one bitmap pixel = one "world unit" at zoom 1). All pixel
- * work is integer-coordinate drawRect with a shared Paint; glows reuse one pre-rendered bitmap.
+ * Renders the map into a low-res [Pix] (one pixel = one "world unit" at zoom 1). All pixel work is
+ * integer-coordinate rects; glows reuse Pix's pre-rendered sprite. Sprites arrive decoded (drawable-nodpi, unscaled).
  */
-private class BrainRenderer(context: Context) {
-    var bmp: Bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
-        private set
-    private var cv = android.graphics.Canvas(bmp)
-    var W = 1
-        private set
-    var H = 1
-        private set
+internal class BrainRenderer(
+    private val coreSprite: ImageBitmap,
+    private val lobeSprite: ImageBitmap,
+    private val skullSprite: ImageBitmap,
+    private val skullDeadSprite: ImageBitmap,
+) {
+    val pix = Pix()
+    val W get() = pix.w
+    val H get() = pix.h
 
     /** Animated idea positions (world) for the current frame, read by the label pass. */
     var ipx = FloatArray(0)
     var ipy = FloatArray(0)
 
-    private val coreSprite = decode(context, app.vesper.R.drawable.brain_main)
-    private val lobeSprite = decode(context, app.vesper.R.drawable.brain_lobe)
-    private val skullSprite = decode(context, app.vesper.R.drawable.vault_skull)
-    private val skullDeadSprite = decode(context, app.vesper.R.drawable.vault_skull_dead)
-
-    private val px = Paint().apply { isAntiAlias = false; isFilterBitmap = false; isDither = false }
-    private val spritePaint = Paint().apply { isAntiAlias = false; isFilterBitmap = false }
-    private val blitPaint = Paint().apply { isAntiAlias = false; isFilterBitmap = false }
-    private val glowBmp: Bitmap = Bitmap.createBitmap(
-        IntArray(64 * 64) { i ->
-            val dx = (i % 64 - 31.5f) / 32f
-            val dy = (i / 64 - 31.5f) / 32f
-            val a = (1f - hypot(dx, dy)).coerceIn(0f, 1f)
-            ((a * 255f).toInt() shl 24) or 0xFFFFFF
-        },
-        64, 64, Bitmap.Config.ARGB_8888,
-    )
-    private val glowAdd = Paint().apply { isAntiAlias = false; isFilterBitmap = true; xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD) }
-    private val glowOver = Paint().apply { isAntiAlias = false; isFilterBitmap = true }
-    private val filters = HashMap<Int, PorterDuffColorFilter>()
-    private val ditherPaint = Paint().apply {
-        isAntiAlias = false; isFilterBitmap = false
-        shader = BitmapShader(
-            Bitmap.createBitmap(intArrayOf(0xFF000000.toInt(), 0, 0, 0xFF000000.toInt()), 2, 2, Bitmap.Config.ARGB_8888),
-            Shader.TileMode.REPEAT, Shader.TileMode.REPEAT,
-        )
-        alpha = (0.26f * ROT * 255f).toInt()
-    }
-    private val vignette = Paint().apply { isAntiAlias = false }
-    private val rectF = RectF()
-    private val rectI = Rect()
-    private val dst = Rect()
+    private val cv get() = pix.canvas
+    private val spritePaint = pixPaint()
+    private val ditherPaint = makeDitherPaint(0.26f * ROT)
+    private val vignette = pixPaint()
 
     // per-frame state
     private var t = 0f
@@ -513,23 +470,16 @@ private class BrainRenderer(context: Context) {
     private var bzx = 0f; private var bzy = 0f
 
     fun resize(w: Int, h: Int) {
-        if (w == W && h == H && bmp.width == w) return
-        W = w; H = h
-        bmp.recycle()
-        bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        cv = android.graphics.Canvas(bmp)
-        val c0 = android.graphics.Color.argb(0, 4, 1, 8)
-        val c1 = android.graphics.Color.argb(((0.55f + 0.35f * ROT) * 255f).toInt(), 4, 1, 8)
-        vignette.shader = RadialGradient(
-            w / 2f, h / 2f, h * 0.62f, intArrayOf(c0, c0, c1), floatArrayOf(0f, 0.22f / 0.62f, 1f), Shader.TileMode.CLAMP,
+        if (!pix.resize(w, h) && vignette.shader != null) return
+        val c0 = Color(0x00040108)
+        val c1 = Color((((0.55f + 0.35f * ROT) * 255f).toInt() shl 24) or 0x040108)
+        vignette.shader = RadialGradientShader(
+            Offset(w / 2f, h / 2f), h * 0.62f, listOf(c0, c0, c1), listOf(0f, 0.22f / 0.62f, 1f), TileMode.Clamp,
         )
     }
 
     /** Scales the low-res frame up to [pxSize] device px per pixel with no filtering. */
-    fun blit(target: android.graphics.Canvas, pxSize: Int) {
-        dst.set(0, 0, W * pxSize, H * pxSize)
-        target.drawBitmap(bmp, null, dst, blitPaint)
-    }
+    fun blit(target: androidx.compose.ui.graphics.Canvas, pxSize: Int) = pix.blit(target, 0, 0, pxSize)
 
     // ---- helpers ----
     private fun sx(wx: Float) = (wx - camX) * z + W * 0.5f
@@ -537,42 +487,13 @@ private class BrainRenderer(context: Context) {
 
     private fun beat(s: Float): Float { val d = (s - beatPh) * 5f; return exp(-d * d) }
 
-    private fun dot(x: Int, y: Int, w: Int, h: Int, rgb: Int, a: Float) {
-        if (x + w <= 0 || y + h <= 0 || x >= W || y >= H) return
-        val al = (a * 255f).toInt().coerceIn(0, 255)
-        if (al == 0) return
-        px.color = (al shl 24) or (rgb and 0xFFFFFF)
-        cv.drawRect(x.toFloat(), y.toFloat(), (x + w).toFloat(), (y + h).toFloat(), px)
-    }
+    private fun dot(x: Int, y: Int, w: Int, h: Int, rgb: Int, a: Float) = pix.dot(x, y, w, h, rgb, a)
 
     /** Pixel "circle": two overlapping rects (plus shape). [x], [y], [r] are already low-res. */
-    private fun disc(x: Float, y: Float, r: Float, rgb: Int, a: Float) {
-        if (r < 0.8f) { dot(rnd(x), rnd(y), 1, 1, rgb, a); return }
-        val d = max(1, rnd(r * 2f))
-        val e = max(1, rnd(r * 1.3f))
-        val o = rnd((d - e) / 2f)
-        val ax = rnd(x - r)
-        val by = rnd(y - r)
-        dot(ax, by + o, d, e, rgb, a)
-        dot(ax + o, by, e, d, rgb, a)
-    }
+    private fun disc(x: Float, y: Float, r: Float, rgb: Int, a: Float) = pix.disc(x, y, r, rgb, a)
 
-    private fun filterFor(rgb: Int): PorterDuffColorFilter =
-        filters.getOrPut(rgb) { PorterDuffColorFilter(0xFF000000.toInt() or rgb, PorterDuff.Mode.SRC_IN) }
-
-    private fun glowAt(wx: Float, wy: Float, r: Float, rgb: Int, a: Float, over: Boolean = false) {
-        val rr = r * z
-        if (rr < 0.5f) return
-        val al = (a * 255f).toInt().coerceIn(0, 255)
-        if (al == 0) return
-        val cx = sx(wx); val cy = sy(wy)
-        if (cx + rr < 0 || cy + rr < 0 || cx - rr > W || cy - rr > H) return
-        val p = if (over) glowOver else glowAdd
-        p.colorFilter = filterFor(rgb)
-        p.alpha = al
-        rectF.set(cx - rr, cy - rr, cx + rr, cy + rr)
-        cv.drawBitmap(glowBmp, null, rectF, p)
-    }
+    private fun glowAt(wx: Float, wy: Float, r: Float, rgb: Int, a: Float, over: Boolean = false) =
+        pix.glow(sx(wx), sy(wy), r * z, rgb, a, add = !over)
 
     private fun ctrl(x1: Float, y1: Float, x2: Float, y2: Float, bend: Float) {
         val dx = x2 - x1; val dy = y2 - y1
@@ -606,18 +527,17 @@ private class BrainRenderer(context: Context) {
         }
     }
 
-    private fun sprite(bm: Bitmap, wx: Float, wy: Float, scale: Float, alpha: Float, flip: Boolean) {
+    private fun sprite(bm: ImageBitmap, wx: Float, wy: Float, scale: Float, alpha: Float, flip: Boolean) {
         val w = bm.width * scale * z
         val h = bm.height * scale * z
         val cx = sx(wx); val cy = sy(wy)
         if (cx + w < 0 || cy + h < 0 || cx - w > W || cy - h > H) return
-        rectI.set(rnd(cx - w / 2f), rnd(cy - h / 2f), rnd(cx + w / 2f), rnd(cy + h / 2f))
-        spritePaint.alpha = (alpha * 255f).toInt().coerceIn(0, 255)
-        if (flip) {
-            cv.save(); cv.scale(-1f, 1f, cx, cy)
-            cv.drawBitmap(bm, null, rectI, spritePaint)
-            cv.restore()
-        } else cv.drawBitmap(bm, null, rectI, spritePaint)
+        val l = rnd(cx - w / 2f); val t = rnd(cy - h / 2f)
+        val dstSize = IntSize(rnd(cx + w / 2f) - l, rnd(cy + h / 2f) - t)
+        spritePaint.alpha = (alpha * 255f).toInt().coerceIn(0, 255) / 255f
+        if (flip) { cv.save(); cv.translate(cx, cy); cv.scale(-1f, 1f); cv.translate(-cx, -cy) }
+        cv.drawImageRect(bm, IntOffset.Zero, IntSize(bm.width, bm.height), IntOffset(l, t), dstSize, spritePaint)
+        if (flip) cv.restore()
     }
 
     private fun vein(x2: Float, y2: Float, bend: Float, strands: Int, seed: Float, alpha: Float, hiRgb: Int = hi) {
@@ -687,7 +607,7 @@ private class BrainRenderer(context: Context) {
         fun dimOf(i: Int) = if ((sel < 0 && !sunSel) || sel == i) 1f else 0.45f
         val sunDim = if (sel < 0) 1f else 0.45f
 
-        bmp.eraseColor(0xFF07030B.toInt())
+        pix.fill(0x07030B)
 
         // fog
         for (i in 0 until 7) {
@@ -1055,8 +975,11 @@ private fun BrainCanvas(
 ) {
     val density = LocalDensity.current.density
     val pxSize = remember(density) { round(2.28f * density).coerceAtLeast(1f) }
-    val context = LocalContext.current
-    val renderer = remember { BrainRenderer(context) }
+    val core = ImageBitmap.imageResource(app.vesper.R.drawable.brain_main)
+    val lobeImg = ImageBitmap.imageResource(app.vesper.R.drawable.brain_lobe)
+    val skull = ImageBitmap.imageResource(app.vesper.R.drawable.vault_skull)
+    val skullDead = ImageBitmap.imageResource(app.vesper.R.drawable.vault_skull_dead)
+    val renderer = remember { BrainRenderer(core, lobeImg, skull, skullDead) }
     val layout = remember(lobes, placed) { buildLayout(lobes, placed) }
     val selIdx = layout.lobeIds.indexOf(selectedId)
     val measurer = rememberTextMeasurer(cacheSize = 200)
@@ -1237,7 +1160,7 @@ private fun BrainCanvas(
             }
         }
         renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel)
-        drawIntoCanvas { renderer.blit(it.nativeCanvas, px) }
+        drawIntoCanvas { renderer.blit(it, px) }
 
         // Labels at full resolution, same world -> device transform as the bitmap.
         val z = cam.scale
