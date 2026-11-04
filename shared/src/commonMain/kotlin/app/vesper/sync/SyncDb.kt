@@ -32,12 +32,12 @@ suspend fun AppDatabase.exportSnapshot(deviceId: String): Snapshot =
     useWriterConnection { c -> c.immediateTransaction { syncDao().read(deviceId) } }
 
 /** Merges [remote] in one transaction, so any failure leaves the DB untouched. Returns whether anything changed. */
-suspend fun AppDatabase.mergeIn(remote: Snapshot, deviceId: String, seen: Map<String, Long>): Boolean =
+suspend fun AppDatabase.mergeIn(remote: Snapshot, deviceId: String, seen: Map<String, Long>, pushedUpTo: Long = Long.MAX_VALUE): Boolean =
     useWriterConnection { c ->
         c.immediateTransaction {
             val dao = syncDao()
             val local = dao.read(deviceId)
-            val merged = merge(local, remote, seen)
+            val merged = merge(local, remote, seen, pushedUpTo)
             if (merged != local) dao.write(local, merged)
             merged != local
         }

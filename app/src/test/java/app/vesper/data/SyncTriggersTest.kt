@@ -113,13 +113,13 @@ class SyncTriggersTest {
             val edited = db.noteDao().get(noteId)!!
             assertEquals(note.uid, edited.uid); assertTrue(edited.syncAt > note.syncAt)
 
-            // MoonsDao.updatePlan writes the whole row from a possibly stale copy: uid survives, syncAt keeps rising
+            // A @Update writes the whole row from a possibly stale copy: uid survives, syncAt keeps rising
             val moons = db.moonsDao()
             moons.insertPlan(Plan(day = 20000, text = "p"))
             val plan = moons.observeAllPlans().first().single()
-            moons.updatePlan(plan.copy(done = true))
+            db.syncDao().update(plan.copy(done = true))
             val once = moons.observeAllPlans().first().single()
-            moons.updatePlan(plan.copy(text = "p2")) // same stale object again
+            db.syncDao().update(plan.copy(text = "p2")) // same stale object again
             val twice = moons.observeAllPlans().first().single()
             assertEquals(plan.uid, twice.uid)
             assertTrue(once.syncAt > plan.syncAt); assertTrue(twice.syncAt > once.syncAt)
@@ -127,7 +127,7 @@ class SyncTriggersTest {
             val lobe = db.brainDao().insertLobe(Lobe(name = "L", colorIndex = 0, slot = 0))
             db.brainDao().insertIdea(Idea(lobeId = lobe, title = "i", body = ""))
             val idea = db.brainDao().observeIdeas().first().single()
-            db.brainDao().updateIdea(idea.copy(title = "i2"))
+            db.syncDao().update(idea.copy(title = "i2"))
             assertEquals(idea.uid, db.brainDao().observeIdeas().first().single().uid)
             db.brainDao().deleteLobe(lobe) // through Room, which enables foreign keys
             val tombs = db.openHelper.writableDatabase.tombstones()

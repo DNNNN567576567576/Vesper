@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 @Serializable
 data class RemoteFile(val id: String, val name: String, val version: String = "", val createdTime: String = "")
@@ -24,12 +25,11 @@ const val DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata"
 private const val API = "https://www.googleapis.com"
 private const val FIELDS = "id,name,version,createdTime"
 
-@Serializable private data class FileList(val files: List<RemoteFile> = emptyList())
+@Serializable private data class FileList(val files: List<RemoteFile> = emptyList(), val nextPageToken: String? = null)
 private val json = Json { ignoreUnknownKeys = true }
 
 /**
  * Drive v3 over appDataFolder. Error bodies are never read into messages or logs.
- * shortcut: one page of 1000 files; the folder holds one vault plus one file per device.
  */
 class DriveTransport(private val token: String) : SyncTransport {
     private fun call(method: String, url: String, contentType: String? = null, body: ByteArray? = null, override: String? = null): ByteArray {
@@ -58,8 +58,17 @@ class DriveTransport(private val token: String) : SyncTransport {
         }
     }
 
-    override fun list(): List<RemoteFile> =
-        json.decodeFromString(FileList.serializer(), String(call("GET", "$API/drive/v3/files?spaces=appDataFolder&pageSize=1000&fields=files($FIELDS)"))).files
+    override fun list(): List<RemoteFile> {
+        val all = mutableListOf<RemoteFile>()
+        var page: String? = null
+        do {
+            val next = page?.let { "&pageToken=${URLEncoder.encode(it, "UTF-8")}" }.orEmpty()
+            val r = json.decodeFromString(FileList.serializer(), String(call("GET", "$API/drive/v3/files?spaces=appDataFolder&pageSize=1000&fields=nextPageToken,files($FIELDS)$next")))
+            all += r.files
+            page = r.nextPageToken
+        } while (page != null)
+        return all
+    }
 
     override fun download(id: String) = call("GET", "$API/drive/v3/files/$id?alt=media")
 

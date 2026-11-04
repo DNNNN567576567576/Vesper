@@ -54,8 +54,15 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE id = :id")
     suspend fun get(id: Long): Note?
 
+    @Query("SELECT * FROM notes WHERE id = :id")
+    fun observe(id: Long): Flow<Note?>
+
     @Insert
     suspend fun insert(note: Note): Long
+
+    /** A conflict copy; merge may already have built the same uid. */
+    @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
+    suspend fun insertCopy(note: Note)
 
     /** Edits text only, so the manual [Note.position] survives. */
     @Query("UPDATE notes SET title = :title, content = :content, updatedAt = :at WHERE id = :id")
@@ -140,11 +147,22 @@ interface BrainDao {
     @Query("DELETE FROM lobes WHERE id = :id")
     suspend fun deleteLobe(id: Long)
 
+    @Query("SELECT EXISTS(SELECT 1 FROM lobes WHERE id = :id)")
+    suspend fun lobeExists(id: Long): Boolean
+
+    @Query("SELECT * FROM ideas WHERE id = :id")
+    suspend fun getIdea(id: Long): Idea?
+
     @Insert
     suspend fun insertIdea(idea: Idea): Long
 
-    @Update
-    suspend fun updateIdea(idea: Idea)
+    /** A conflict copy; merge may already have built the same uid. */
+    @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
+    suspend fun insertIdeaCopy(idea: Idea)
+
+    /** The title alone: a whole-row write from a held copy would put back whatever sync changed since. */
+    @Query("UPDATE ideas SET title = :title, updatedAt = :at WHERE id = :id")
+    suspend fun setIdeaTitle(id: Long, title: String, at: Long)
 
     @Query("DELETE FROM ideas WHERE id = :id")
     suspend fun deleteIdea(id: Long)
@@ -213,11 +231,22 @@ interface MoonsDao {
     @Query("SELECT * FROM plans ORDER BY createdAt ASC, id ASC")
     fun observeAllPlans(): Flow<List<Plan>>
 
+    @Query("SELECT * FROM plans WHERE id = :id")
+    suspend fun getPlan(id: Long): Plan?
+
     @Insert
     suspend fun insertPlan(plan: Plan): Long
 
-    @Update
-    suspend fun updatePlan(plan: Plan)
+    /** A conflict copy; merge may already have built the same uid. */
+    @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
+    suspend fun insertPlanCopy(plan: Plan)
+
+    // Single columns: a whole-row write from a held copy would put back whatever sync changed since.
+    @Query("UPDATE plans SET done = :done WHERE id = :id")
+    suspend fun setPlanDone(id: Long, done: Boolean)
+
+    @Query("UPDATE plans SET text = :text WHERE id = :id")
+    suspend fun setPlanText(id: Long, text: String)
 
     @Query("DELETE FROM plans WHERE id = :id")
     suspend fun deletePlan(id: Long)
@@ -241,6 +270,13 @@ interface SyncDao {
     @Query("SELECT * FROM ideas") suspend fun ideas(): List<Idea>
     @Query("SELECT * FROM plans") suspend fun plans(): List<Plan>
     @Query("SELECT * FROM sync_tombstones") suspend fun tombstones(): List<SyncTombstone>
+
+    /** Rises on every change to a synced table, deletes included: the triggers keep each term moving. */
+    @Query(
+        "SELECT IFNULL((SELECT MAX(syncAt) FROM notes), 0) + IFNULL((SELECT MAX(syncAt) FROM tasks), 0) + IFNULL((SELECT MAX(syncAt) FROM lobes), 0) + " +
+            "IFNULL((SELECT MAX(syncAt) FROM ideas), 0) + IFNULL((SELECT MAX(syncAt) FROM plans), 0) + IFNULL((SELECT MAX(deletedAt) FROM sync_tombstones), 0)",
+    )
+    fun observeChanges(): Flow<Long>
 
     @Insert suspend fun insert(row: Note): Long
     @Insert suspend fun insert(row: Task): Long

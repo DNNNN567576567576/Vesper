@@ -121,6 +121,10 @@ class DesktopSyncPlatform(override val stateDir: File) : SyncPlatform {
         }
     }
 
+    // shortcut: forgets the token here without revoking it at Google; the user can revoke in their Google account.
+    @Synchronized
+    override fun signOut() { tokenFile.delete(); cached = null }
+
     override fun loadKey(): ByteArray? = keyFile.takeIf { it.exists() }?.readBytes()
 
     override fun storeKey(key: ByteArray?) {

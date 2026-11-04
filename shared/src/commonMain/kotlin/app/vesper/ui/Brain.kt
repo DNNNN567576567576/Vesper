@@ -785,7 +785,7 @@ fun BrainScreen(
     onSelectLobe: (Long) -> Unit,
     onAddLobe: (String) -> Unit,
     onDeleteLobe: (Long) -> Unit,
-    onSaveIdea: (Idea) -> Unit,
+    onSaveIdea: (Idea, String) -> Unit,
     onDeleteIdea: (Long) -> Unit,
     onOpenNote: (Long) -> Unit,
     vault: Vault,
@@ -826,6 +826,7 @@ fun BrainScreen(
     val syncUi by sync.ui.collectAsState()
     val signIn = sync.rememberSignIn()
     var askingPassphrase by remember { mutableStateOf(false) }
+    var resetStep by remember { mutableStateOf(0) } // two papers before Drive is emptied
     fun restore(uri: String) {
         if (working != null) return
         working = "reading..."; message = null
@@ -864,6 +865,8 @@ fun BrainScreen(
                 onSignIn = signIn,
                 onPassphrase = { askingPassphrase = true; sync.checkVault() },
                 onSyncNow = sync::syncNow,
+                onReset = { resetStep = 1 },
+                onSignOut = sync::signOut,
             )
         }
     }
@@ -871,6 +874,23 @@ fun BrainScreen(
     val vaultExists = syncUi.vaultExists
     if (askingPassphrase && vaultExists != null && syncUi.working == null) {
         PassphraseDialog(create = !vaultExists, onDismiss = { askingPassphrase = false }, onSubmit = { askingPassphrase = false; sync.unlock(it) })
+    }
+
+    if (resetStep == 1) {
+        TornNoteDialog(
+            title = "Reset sync?",
+            body = "This deletes Vesper's files from your Google Drive and lets you set a new passphrase. Everything on this device stays. Your other device will ask for the new passphrase.",
+            onKeep = { resetStep = 0 },
+            onBurn = { resetStep = 2 },
+        )
+    }
+    if (resetStep == 2) {
+        TornNoteDialog(
+            title = "Burn the Drive copy?",
+            body = "No undo. Only do this if you forgot the passphrase or want to start sync over.",
+            onKeep = { resetStep = 0 },
+            onBurn = { resetStep = 0; sync.reset() },
+        )
     }
 
     if (addingLobe) {
@@ -945,7 +965,7 @@ fun BrainScreen(
             Text("RESTORE THIS COPY?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
             Spacer(Modifier.height(10.dp))
             Text(
-                "everything in vesper now is replaced by this copy. a safety copy of today is kept.",
+                "everything in vesper now is replaced by this copy. a safety copy of today is kept. if you use sync, newer changes from your other device come back on the next sync.",
                 style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim),
             )
             Spacer(Modifier.height(18.dp))
@@ -967,7 +987,7 @@ fun BrainScreen(
         IdeaDialog(
             idea = idea,
             onDismiss = { editing = null },
-            onSave = { onSaveIdea(it); editing = null },
+            onSave = { onSaveIdea(idea, it); editing = null },
             onDelete = { onDeleteIdea(idea.id); editing = null },
         )
     }
@@ -1265,6 +1285,8 @@ private fun VaultSheet(
     onSignIn: () -> Unit,
     onPassphrase: () -> Unit,
     onSyncNow: () -> Unit,
+    onReset: () -> Unit,
+    onSignOut: () -> Unit,
 ) {
     Column(
         Modifier
@@ -1297,6 +1319,13 @@ private fun VaultSheet(
                 !sync.signedIn -> PixelButton("SIGN IN", { if (idle) onSignIn() }, primary = true, modifier = Modifier.fillMaxWidth())
                 !sync.unlocked -> PixelButton("PASSPHRASE", { if (idle) onPassphrase() }, primary = true, modifier = Modifier.fillMaxWidth())
                 else -> PixelButton("SYNC NOW", { if (idle) onSyncNow() }, primary = true, modifier = Modifier.fillMaxWidth())
+            }
+            if (sync.signedIn) {
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PixelButton("RESET SYNC", { if (idle) onReset() }, modifier = Modifier.weight(1f))
+                    PixelButton("SIGN OUT", { if (idle) onSignOut() }, modifier = Modifier.weight(1f))
+                }
             }
         }
     }
@@ -1397,7 +1426,7 @@ private fun NameDialog(title: String, hint: String, onDismiss: () -> Unit, onSub
 private fun IdeaDialog(
     idea: Idea,
     onDismiss: () -> Unit,
-    onSave: (Idea) -> Unit,
+    onSave: (String) -> Unit,
     onDelete: () -> Unit,
 ) {
     var title by remember { mutableStateOf(idea.title) }
@@ -1410,8 +1439,7 @@ private fun IdeaDialog(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
             if (idea.id != 0L) PixelButton("DELETE", onDelete)
             PixelButton("CANCEL", onDismiss)
-            // copy keeps body and noteId as they were
-            PixelButton("SAVE", { onSave(idea.copy(title = title)) }, primary = true)
+            PixelButton("SAVE", { onSave(title) }, primary = true)
         }
     }
 }

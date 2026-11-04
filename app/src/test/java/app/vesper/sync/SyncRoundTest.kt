@@ -26,7 +26,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /** Drive stand-in: stores what a device uploads and bumps a version per write, like the real folder. */
-private class MemoryDrive : SyncTransport {
+internal class MemoryDrive : SyncTransport {
     class F(var bytes: ByteArray, var version: Int, val created: Int)
     val files = linkedMapOf<RemoteFile, F>()
     var uploads = 0
@@ -186,6 +186,125 @@ class SyncRoundTest {
         assertEquals(5, b.db.syncDao().tombstones().size) // kept, with the deleter's own times
     }
 
+    @Test fun anOfflineEditOutlivesALaterDeleteThatNeverSawIt() = test {
+        val (a, b) = pair()
+        val id = a.db.noteDao().insert(Note(title = "t", content = "base"))
+        converge(a, b)
+        b.db.noteDao().updateText(b.notes().single().id, "t", "offline on B", 2); tick()
+        a.db.noteDao().delete(id); tick()
+        a.sync()
+        b.sync()
+        assertEquals("offline on B", b.notes().single().content)
+        converge(a, b)
+        assertEquals("offline on B", a.notes().single().content)
+        assertTrue(a.db.syncDao().tombstones().isEmpty())
+    }
+
+    @Test fun aRowThePeerSawAndThenDeletedStaysDeleted() = test {
+        val (a, b) = pair()
+        b.db.noteDao().insert(Note(title = "t", content = "made on B"))
+        b.sync(); a.sync(); tick()
+        a.db.noteDao().delete(a.notes().single().id); tick()
+        a.sync(); b.sync()
+        converge(a, b)
+        assertTrue(a.notes().isEmpty())
+        assertTrue(b.notes().isEmpty())
+    }
+
+    @Test fun bothEditedThePlanTextKeepsTheLoser() = test {
+        val (a, b) = pair()
+        val id = a.db.moonsDao().insertPlan(Plan(day = 20000, text = "base"))
+        converge(a, b)
+        a.db.moonsDao().setPlanText(id, "edit A"); tick()
+        b.db.moonsDao().setPlanText(b.db.syncDao().plans().single().id, "edit B")
+        converge(a, b)
+        assertEquals(setOf("edit B", "edit A (other copy)"), a.db.syncDao().plans().map { it.text }.toSet())
+    }
+
+    @Test fun onlyOneSideTickingAPlanMakesNoCopy() = test {
+        val (a, b) = pair()
+        a.db.moonsDao().insertPlan(Plan(day = 20000, text = "base"))
+        converge(a, b)
+        b.db.moonsDao().setPlanDone(b.db.syncDao().plans().single().id, true)
+        converge(a, b)
+        assertTrue(a.db.syncDao().plans().single().done)
+    }
+
+    /** A backup put in place: the rows it held, nothing else, then what duringRestore does to the sync state. */
+    private suspend fun Device.restore(rows: List<Note>) {
+        notes().forEach { db.noteDao().delete(it.id) }
+        db.syncDao().clearTombstones()
+        rows.forEach { db.syncDao().insert(it.copy(id = 0)) }
+        store.state = store.state.afterRestore()
+    }
+
+    @Test fun aRestoreKeepsTheNoteItBroughtBackAgainstAnOlderDelete() = test {
+        val (a, b) = pair()
+        a.db.noteDao().insert(Note(title = "wanted", content = "dear"))
+        converge(a, b)
+        val backup = a.notes(); tick()
+        a.db.noteDao().delete(a.notes().single().id)
+        converge(a, b)
+        assertTrue(b.notes().isEmpty())
+        a.restore(backup)
+        converge(a, b)
+        assertEquals("dear", a.notes().single().content)
+        assertEquals("dear", b.notes().single().content)
+    }
+
+    @Test fun aRestoredDeviceGetsThePeersNewerWorkBackAndLosesNoText() = test {
+        val (a, b) = pair()
+        a.db.noteDao().insert(Note(title = "t", content = "old"))
+        converge(a, b)
+        val backup = a.notes(); tick()
+        b.db.noteDao().updateText(b.notes().single().id, "t", "newer", 2)
+        b.db.noteDao().insert(Note(title = "made after the backup", content = ""))
+        converge(a, b)
+        a.restore(backup)
+        val state = a.store.state
+        assertTrue(state.peerVersions.isEmpty())
+        converge(a, b)
+        assertEquals(setOf("old", "newer", ""), a.notes().map { it.content }.toSet())
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun aNewVaultRewritesOurOwnFileEvenWhenNothingChanged() = test {
+        val (a, _) = pair()
+        a.db.noteDao().insert(Note(title = "t", content = "c"))
+        a.sync()
+        drive.delete(devicesVault) // the file under the old key is left, as when a device raced a reset
+        val joined = runCatching { a.sync() }
+        assertTrue(joined.exceptionOrNull() is VaultChanged)
+        val newVault = drive.create(VAULT_FILE, wrapKey(newDataKey(), "another good passphrase", 100_000))
+        val newKey = openOrCreateVault(a.store, drive, "another good passphrase")
+        assertEquals(newVault.id, a.store.state.vaultId)
+        syncRound(a.db, a.store, drive, newKey)
+        val own = drive.list().single { it.name == snapName(a.store.state.deviceId) }
+        open(newKey, own.name, drive.download(own.id)) // would throw on the old key's bytes
+    }
+
+    @Test fun aResetThatStoppedHalfwayIsCleanedUpByTheNextVault() = test {
+        val (a, _) = pair()
+        a.sync()
+        drive.delete(devicesVault) // vault gone, snapshot left behind
+        openOrCreateVault(a.store, drive, "another good passphrase")
+        assertEquals(listOf(VAULT_FILE), drive.list().map { it.name })
+    }
+
+    @Test fun resetVaultRemovesEverythingAndKeepsLocalRowsAndSeen() = test {
+        val (a, b) = pair()
+        a.db.noteDao().insert(Note(title = "t", content = "c"))
+        converge(a, b)
+        val seen = b.store.state.seen
+        val deviceId = b.store.state.deviceId
+        resetVault(b.store, drive)
+        assertTrue(drive.list().isEmpty())
+        assertEquals(1, b.notes().size)
+        assertEquals(seen, b.store.state.seen)
+        assertEquals(deviceId, b.store.state.deviceId)
+        assertEquals(null, b.store.state.vaultId)
+    }
+
     @Test fun lobesMadeSeparatelyEndUpOnTheirOwnSlots() = test {
         val (a, b) = pair()
         a.db.brainDao().insertLobe(Lobe(name = "Work", colorIndex = 0, slot = 0))
@@ -200,7 +319,7 @@ class SyncRoundTest {
         a.db.brainDao().insertIdea(Idea(lobeId = lobe, title = "i", body = "", uid = "idea"))
         converge(a, b)
         a.db.brainDao().deleteLobe(lobe); tick()
-        b.db.brainDao().updateIdea(b.db.syncDao().ideas().single().copy(title = "edited"))
+        b.db.brainDao().setIdeaTitle(b.db.syncDao().ideas().single().id, "edited", 2)
         converge(a, b)
         assertEquals("edited", a.db.syncDao().ideas().single().title)
         assertEquals("Work", a.db.syncDao().lobes().single().name)

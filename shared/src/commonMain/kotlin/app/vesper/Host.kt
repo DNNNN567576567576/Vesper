@@ -39,6 +39,9 @@ interface SyncPlatform {
     /** A fresh token for drive.appdata. Throws [app.vesper.sync.SignInNeeded] when the user must sign in again. */
     fun accessToken(): String
 
+    /** Forgets the Google sign-in on this device. */
+    fun signOut()
+
     /** The data key, unwrapped; null = not unlocked on this device. */
     fun loadKey(): ByteArray?
 

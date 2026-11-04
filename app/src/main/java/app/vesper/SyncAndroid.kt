@@ -44,6 +44,9 @@ class AndroidSyncPlatform(private val app: NotebookApp) : SyncPlatform {
 
     override fun isSignedIn() = signedInFile.exists()
 
+    // shortcut: only drops our marker, so signing in again is silent and stays on the same account; revoke via AuthorizationClient if accounts ever need switching.
+    override fun signOut() { signedInFile.delete() }
+
     private fun markSignedIn() { stateDir.mkdirs(); signedInFile.writeText("") }
 
     private fun authorize(): AuthorizationResult = try {

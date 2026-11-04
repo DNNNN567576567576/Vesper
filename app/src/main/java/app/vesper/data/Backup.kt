@@ -56,8 +56,9 @@ suspend fun writeBackup(context: Context, uri: Uri) = withContext(Dispatchers.IO
  * Replaces all data with the backup at [uri] (from ACTION_OPEN_DOCUMENT). Nothing changes until the backup is fully
  * validated (and migrated in a scratch copy); the current data is first saved to `noBackupFilesDir/before-restore.zip`.
  * On success the live DB is closed: the caller must call [restartApp] right away and touch nothing else.
+ * [beforeSwap] runs once the backup is proven good, right before the DB changes: a crash after it only costs a full re-merge.
  */
-suspend fun restoreBackup(context: Context, uri: Uri) = withContext(Dispatchers.IO) {
+suspend fun restoreBackup(context: Context, uri: Uri, beforeSwap: () -> Unit = {}) = withContext(Dispatchers.IO) {
     val app = context.applicationContext as NotebookApp
     val staging = File(app.noBackupFilesDir, "restore-staging")
     try {
@@ -72,6 +73,7 @@ suspend fun restoreBackup(context: Context, uri: Uri) = withContext(Dispatchers.
         move(safetyTmp, safety)
 
         withContext(NonCancellable) {
+            beforeSwap()
             app.db.close() // after this nothing may use the DB until the process restarts
             try {
                 install(app, staging)

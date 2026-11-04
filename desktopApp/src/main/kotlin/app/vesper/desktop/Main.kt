@@ -38,7 +38,8 @@ fun main() {
             PixelTheme { App(host, null, {}, null, {}) }
         }
     }
-    // The closing editor's last save runs on appScope; let it reach the DB before the JVM ends.
+    // The closing editor's last save and the last sync run on appScope; give them a moment before the JVM ends.
+    host.sync.shutdown()
     runBlocking { withTimeoutOrNull(5_000) { host.appScope.coroutineContext.job.children.forEach { it.join() } } }
     lock.release()
     exitProcess(0)

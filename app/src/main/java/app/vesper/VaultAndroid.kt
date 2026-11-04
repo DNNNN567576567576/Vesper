@@ -26,6 +26,6 @@ class AndroidVault(private val app: NotebookApp) : Vault {
     }
 
     override suspend fun write(target: String) = writeBackup(app, Uri.parse(target))
-    override suspend fun restore(source: String) = restoreBackup(app, Uri.parse(source))
+    override suspend fun restore(source: String) = app.sync.duringRestore { beforeSwap -> restoreBackup(app, Uri.parse(source), beforeSwap) }
     override fun restart() = restartApp(app)
 }

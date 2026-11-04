@@ -11,7 +11,8 @@ import java.security.MessageDigest
 
 /**
  * Sync bookkeeping, outside the DB and outside backups. [peerVersions] (file id -> Drive version) says which peer
- * snapshots are merged; [seen] is what tells a real conflict from a one-sided edit, see [merge].
+ * snapshots are merged; [seen] is what tells a real conflict from a one-sided edit, and [pushedUpTo] what tells an edit
+ * the peer never saw from one it deleted, see [merge].
  */
 @Serializable
 data class SyncState(
@@ -19,6 +20,7 @@ data class SyncState(
     val vaultId: String? = null,
     val lastSyncAt: Long = 0,
     val pushedHash: String? = null,
+    val pushedUpTo: Long = 0,
     val peerVersions: Map<String, String> = emptyMap(),
     val seen: Map<String, Long> = emptyMap(),
 )
@@ -56,7 +58,8 @@ class VaultChanged : SyncException("The passphrase changed on another device. En
 suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: ByteArray, now: () -> Long = System::currentTimeMillis) {
     val deviceId = store.state.deviceId
     val files = t.list()
-    if (files.vault()?.id != store.state.vaultId) throw VaultChanged()
+    val vault = files.vault()?.id
+    if (vault == null || vault != store.state.vaultId) throw VaultChanged()
 
     for (f in files) {
         val peer = SNAP.matchEntire(f.name)?.groupValues?.get(1) ?: continue
@@ -65,12 +68,13 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
         remote.validate()
         if (remote.deviceId != peer) throw SyncException("The copy on Drive is damaged. Nothing was changed.")
         val seen = store.state.seen
-        db.mergeIn(remote, deviceId, seen)
+        db.mergeIn(remote, deviceId, seen, store.state.pushedUpTo)
         // After the commit: a crash in between only merges the same file again, which is a no-op.
         store.state = store.state.copy(peerVersions = store.state.peerVersions + (f.id to f.version), seen = seenAfter(seen, remote))
     }
 
-    val plain = json.encodeToString(Snapshot.serializer(), db.exportSnapshot(deviceId)).toByteArray()
+    val snapshot = db.exportSnapshot(deviceId)
+    val plain = json.encodeToString(Snapshot.serializer(), snapshot).toByteArray()
     val hash = MessageDigest.getInstance("SHA-256").digest(plain).joinToString("") { "%02x".format(it) }
     val name = snapName(deviceId)
     val own = files.filter { it.name == name }.sortedBy { it.createdTime }
@@ -79,12 +83,26 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
         own.isEmpty() -> t.create(name, seal(key, name, plain))
         hash != store.state.pushedHash -> t.update(own[0].id, seal(key, name, plain))
     }
-    store.state = store.state.copy(pushedHash = hash, lastSyncAt = now())
+    store.state = store.state.copy(pushedHash = hash, pushedUpTo = snapshot.rows.maxOfOrNull { it.syncAt } ?: 0, lastSyncAt = now())
+}
+
+/**
+ * Sync state for a DB that was just replaced by a backup: nothing here is known to be merged or pushed any more, so the
+ * next round merges every peer in full, and with [SyncState.seen] empty any text that differs keeps both versions.
+ */
+fun SyncState.afterRestore() = copy(lastSyncAt = 0, pushedHash = null, pushedUpTo = 0, peerVersions = emptyMap(), seen = emptyMap())
+
+/** Forgot the passphrase, or starting over: empties the Drive folder. Local rows and [SyncState.seen] stay, they still hold. */
+fun resetVault(store: SyncStore, t: SyncTransport) {
+    // The vault goes first: every other device stops at its check, and if this fails halfway a new vault clears the rest.
+    t.list().sortedBy { it.name != VAULT_FILE }.forEach { t.delete(it.id) }
+    store.state = store.state.copy(vaultId = null, lastSyncAt = 0, pushedHash = null, peerVersions = emptyMap())
 }
 
 /** First device: makes the vault. Later devices: opens it. Returns the data key; nothing is stored here on a wrong passphrase. */
 fun openOrCreateVault(store: SyncStore, t: SyncTransport, passphrase: String): ByteArray {
-    val existing = t.list().vault()
+    val files = t.list()
+    val existing = files.vault()
     val key: ByteArray
     val id: String
     if (existing != null) {
@@ -92,9 +110,11 @@ fun openOrCreateVault(store: SyncStore, t: SyncTransport, passphrase: String): B
         id = existing.id
     } else {
         if (passphrase.length < MIN_PASSPHRASE) throw SyncException("Use at least $MIN_PASSPHRASE characters. Four or more words work well.")
+        files.forEach { t.delete(it.id) } // snapshots with no vault are unreadable leftovers of a reset that stopped halfway
         key = newDataKey()
         id = t.create(VAULT_FILE, wrapKey(key, passphrase)).id
     }
-    store.state = store.state.copy(vaultId = id)
+    // Another vault means another key: every cursor is void, and our own file on Drive must be rewritten even if unchanged.
+    if (id != store.state.vaultId) store.state = store.state.copy(vaultId = id, pushedHash = null, peerVersions = emptyMap())
     return key
 }

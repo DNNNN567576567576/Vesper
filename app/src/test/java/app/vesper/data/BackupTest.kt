@@ -87,7 +87,9 @@ class BackupTest {
         app.db.brainDao().deleteLobe(1)
         File(shrine, "p.jpg").delete(); File(shrine, "x.jpg").writeBytes(byteArrayOf(1, 2, 3))
 
-        restoreBackup(app, Uri.fromFile(file))
+        var swaps = 0
+        restoreBackup(app, Uri.fromFile(file)) { swaps++; assertTrue(app.db.isOpen) }
+        assertEquals(1, swaps)
 
         val db = reopen()
         try { assertEquals(before, db.snapshot()) } finally { db.close() }
@@ -140,7 +142,7 @@ class BackupTest {
 
     private suspend fun assertRejected(uri: Uri, message: String) {
         try {
-            restoreBackup(app, uri); fail("restore should have been refused")
+            restoreBackup(app, uri) { fail("a refused backup must never reach the swap") }; fail("restore should have been refused")
         } catch (e: BackupException) {
             assertEquals(message, e.message)
             assertFalse(e.restartNeeded)

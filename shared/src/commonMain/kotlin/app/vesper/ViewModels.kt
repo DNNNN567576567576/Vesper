@@ -11,6 +11,8 @@ import androidx.room.useWriterConnection
 import app.vesper.data.Note
 import app.vesper.data.Post
 import app.vesper.data.Task
+import app.vesper.sync.copyTitle
+import app.vesper.sync.copyUid
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -138,6 +140,9 @@ class NoteEditorViewModel(private val notebook: VesperHost, noteId: Long?, newPa
     private var savedContent = ""
     private var saveJob: Job? = null
 
+    // A sync round must carry what is on screen, so a conflict shows up as one instead of old text being merged around it.
+    private val stopFlushing = notebook.sync.beforeRound { flush().join() }
+
     /** Non-null = this note is a page of that main scroll. */
     var parentId: Long? by mutableStateOf(newParentId)
         private set
@@ -152,6 +157,9 @@ class NoteEditorViewModel(private val notebook: VesperHost, noteId: Long?, newPa
     val pages: StateFlow<List<Note>> = snapshotFlow { id }
         .flatMapLatest { if (it == null) emptyFlow() else dao.observePages(it) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val rowChanges = snapshotFlow { id }.flatMapLatest { if (it == null) emptyFlow() else dao.observe(it) }
 
     init {
         if (newParentId != null) loadParentTitle(newParentId)
@@ -172,6 +180,18 @@ class NoteEditorViewModel(private val notebook: VesperHost, noteId: Long?, newPa
                 }
                 loaded = true
             }
+        }
+        viewModelScope.launch { rowChanges.collect { refresh() } }
+    }
+
+    /** Takes in what sync wrote, unless there is typing on top of the old text: then [persist] keeps both. */
+    private suspend fun refresh() {
+        mutex.withLock {
+            val n = id?.let { dao.get(it) } ?: return // gone on another device: the text stays here, and typing brings it back
+            if (!loaded || deleted || title != savedTitle || content != savedContent) return
+            if (n.title == savedTitle && n.content == savedContent) return
+            title = n.title; content = n.content
+            savedTitle = n.title; savedContent = n.content
         }
     }
 
@@ -219,11 +239,24 @@ class NoteEditorViewModel(private val notebook: VesperHost, noteId: Long?, newPa
             if (t == savedTitle && c == savedContent && !(force && id == null)) return
             try {
                 val current = id
-                if (current == null) {
-                    if (t.isBlank() && c.isBlank() && !force) return // never store a note that was never written
-                    id = dao.insert(Note(title = t, content = c, position = (dao.minPosition() ?: 1) - 1, parentId = parentId))
-                } else {
-                    dao.updateText(current, t, c, System.currentTimeMillis())
+                if (current == null && t.isBlank() && c.isBlank() && !force) return // never store a note that was never written
+                // In one transaction, so sync can't slip in between the look and the write.
+                id = notebook.db.useWriterConnection { w ->
+                    w.immediateTransaction {
+                        val row = current?.let { dao.get(it) }
+                        if (row == null) {
+                            // New, or deleted on another device while it was open: the text gets a row either way.
+                            parentId = parentId?.takeIf { dao.get(it) != null }
+                            dao.insert(Note(title = t, content = c, position = (dao.minPosition() ?: 1) - 1, parentId = parentId))
+                        } else {
+                            val theirs = row.title to row.content
+                            if (theirs != (savedTitle to savedContent) && theirs != (t to c)) {
+                                dao.insertCopy(row.copy(id = 0, title = copyTitle(row.title), uid = copyUid(row.uid, row.syncAt)))
+                            }
+                            dao.updateText(row.id, t, c, System.currentTimeMillis())
+                            row.id
+                        }
+                    }
                 }
                 savedTitle = t; savedContent = c
             } catch (e: Exception) {
@@ -243,6 +276,7 @@ class NoteEditorViewModel(private val notebook: VesperHost, noteId: Long?, newPa
     }
 
     override fun onCleared() {
+        stopFlushing()
         // Last chance: anything typed but not yet written gets saved.
         if (!deleted) notebook.appScope.launch { persist() }
     }
@@ -277,15 +311,29 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         }
     }
 
-    /** [idea].id == 0 inserts a new idea, otherwise updates it. */
-    fun saveIdea(idea: app.vesper.data.Idea) {
-        val clean = idea.copy(title = idea.title.trim(), body = idea.body.trim(), updatedAt = System.currentTimeMillis())
-        if (clean.title.isEmpty() && clean.body.isEmpty()) return
-        notebook.appScope.launch {
-            try {
-                if (clean.id == 0L) dao.insertIdea(clean) else dao.updateIdea(clean)
-            } catch (e: Exception) { notebook.reportError("save idea", e) }
-        }
+    /**
+     * [base] is the idea as the dialog opened it, id 0 for a new one. Only the title is written. If sync changed the title
+     * meanwhile the other one stays as a copy; if the idea or even its lobe is gone, the words still get a row.
+     */
+    fun saveIdea(base: app.vesper.data.Idea, title: String): Job = notebook.appScope.launch {
+        val clean = title.trim()
+        if (clean.isEmpty() && base.body.isBlank()) return@launch
+        val now = System.currentTimeMillis()
+        try {
+            notebook.db.useWriterConnection { w ->
+                w.immediateTransaction {
+                    val row = if (base.id == 0L) null else dao.getIdea(base.id)
+                    when {
+                        row != null -> if (row.title != clean) {
+                            if (row.title != base.title) dao.insertIdeaCopy(row.copy(id = 0, title = copyTitle(row.title), uid = copyUid(row.uid, row.syncAt)))
+                            dao.setIdeaTitle(row.id, clean, now)
+                        }
+                        dao.lobeExists(base.lobeId) -> dao.insertIdea(base.copy(id = 0, title = clean, body = base.body.trim(), updatedAt = now, syncAt = 0))
+                        else -> notebook.db.noteDao().insert(Note(title = clean, content = base.body.trim()))
+                    }
+                }
+            }
+        } catch (e: Exception) { notebook.reportError("save idea", e) }
     }
 
     fun deleteIdea(id: Long) {
@@ -385,18 +433,28 @@ class MoonsViewModel(private val notebook: VesperHost) : ViewModel() {
         }
     }
 
-    fun setDone(plan: app.vesper.data.Plan, done: Boolean) {
-        notebook.appScope.launch {
-            try { dao.updatePlan(plan.copy(done = done)) } catch (e: Exception) { notebook.reportError("update plan", e) }
-        }
+    fun setDone(plan: app.vesper.data.Plan, done: Boolean): Job = notebook.appScope.launch {
+        try { dao.setPlanDone(plan.id, done) } catch (e: Exception) { notebook.reportError("update plan", e) }
     }
 
-    fun editPlan(plan: app.vesper.data.Plan, text: String) {
+    /** [plan] is the plan as the dialog opened it. Same rules as [BrainViewModel.saveIdea]. */
+    fun editPlan(plan: app.vesper.data.Plan, text: String): Job = notebook.appScope.launch {
         val clean = text.trim()
-        if (clean.isEmpty() || clean == plan.text) return
-        notebook.appScope.launch {
-            try { dao.updatePlan(plan.copy(text = clean)) } catch (e: Exception) { notebook.reportError("edit plan", e) }
-        }
+        if (clean.isEmpty() || clean == plan.text) return@launch
+        try {
+            notebook.db.useWriterConnection { w ->
+                w.immediateTransaction {
+                    val row = dao.getPlan(plan.id)
+                    when {
+                        row == null -> dao.insertPlan(plan.copy(id = 0, text = clean, syncAt = 0))
+                        row.text != clean -> {
+                            if (row.text != plan.text) dao.insertPlanCopy(row.copy(id = 0, text = copyTitle(row.text), uid = copyUid(row.uid, row.syncAt)))
+                            dao.setPlanText(row.id, clean)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) { notebook.reportError("edit plan", e) }
     }
 
     /** Permanent. The caller confirms first. */
