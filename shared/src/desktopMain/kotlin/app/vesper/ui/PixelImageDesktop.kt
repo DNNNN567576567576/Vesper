@@ -51,4 +51,6 @@ internal actual fun BackHandler(enabled: Boolean, onBack: () -> Unit) {
     }
 }
 
-internal actual fun edgeToEdgeDialog() = DialogProperties(usePlatformDefaultWidth = false)
+internal actual val saveOnDispose = true
+
+internal actual fun edgeToEdgeDialog() =DialogProperties(usePlatformDefaultWidth = false)

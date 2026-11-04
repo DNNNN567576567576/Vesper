@@ -37,6 +37,8 @@ interface Settings {
  * a `name` is a kept file in the Grimoire's own storage.
  */
 interface ShrineMedia {
+    val canAttach: Boolean get() = true
+
     fun isVideo(ref: String): Boolean
 
     /** Blocking: call off the main thread. Copies/scales [ref] into storage and returns the stored name. */

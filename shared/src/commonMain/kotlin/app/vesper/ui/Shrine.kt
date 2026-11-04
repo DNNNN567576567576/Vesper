@@ -431,11 +431,13 @@ private fun WritingPage(
             Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 14.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (!inline) SigilFab("Back", onClose, back = true)
                 Spacer(Modifier.weight(1f))
-                BarButton(
-                    ATT, if (photo != null) Px.Magenta else ShrineIconDim,
-                    fill = ShrineBtnBg, line = ShrineBtnLine, description = "Attach photo or video",
-                ) { pick() }
-                Spacer(Modifier.width(8.dp))
+                if (media.canAttach) {
+                    BarButton(
+                        ATT, if (photo != null) Px.Magenta else ShrineIconDim,
+                        fill = ShrineBtnBg, line = ShrineBtnLine, description = "Attach photo or video",
+                    ) { pick() }
+                    Spacer(Modifier.width(8.dp))
+                }
                 BarButton(
                     SEND, Color(0xFFF0E8FA).copy(alpha = if (canSend) 1f else 0.45f),
                     fill = Color(0xFF5A2F94), line = Color(0xFF8A6AD0), description = "Keep post",

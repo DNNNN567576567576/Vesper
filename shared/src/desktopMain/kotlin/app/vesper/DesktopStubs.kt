@@ -26,6 +26,7 @@ class PropertiesSettings(private val file: File) : Settings {
 
 // shortcut: desktop Grimoire is text only; photos/videos show an empty frame. Real media comes in M6.
 object DesktopShrineMedia : ShrineMedia {
+    override val canAttach = false
     override fun isVideo(ref: String) = false
     override fun import(ref: String, video: Boolean): String = throw UnsupportedOperationException("media is phone only for now")
     override fun delete(name: String) {}

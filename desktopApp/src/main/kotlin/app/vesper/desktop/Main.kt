@@ -12,6 +12,9 @@ import androidx.compose.ui.input.key.type
 import app.vesper.App
 import app.vesper.ui.handleDesktopBack
 import app.vesper.ui.PixelTheme
+import kotlinx.coroutines.job
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.awt.Dimension
 import java.io.File
 import java.io.RandomAccessFile
@@ -24,7 +27,7 @@ fun main() {
     // One writer per DB: the lock lives as long as the process; a second instance exits quietly.
     val lock = RandomAccessFile(File(dataDir, "app.lock"), "rw").channel.tryLock() ?: exitProcess(0)
     val host = DesktopHost(dataDir)
-    application {
+    application(exitProcessOnExit = false) {
         Window(
             onCloseRequest = ::exitApplication,
             title = "Vesper",
@@ -35,5 +38,8 @@ fun main() {
             PixelTheme { App(host, null, {}, null, {}) }
         }
     }
+    // The closing editor's last save runs on appScope; let it reach the DB before the JVM ends.
+    runBlocking { withTimeoutOrNull(5_000) { host.appScope.coroutineContext.job.children.forEach { it.join() } } }
     lock.release()
+    exitProcess(0)
 }

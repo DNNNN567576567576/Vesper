@@ -23,4 +23,6 @@ internal actual fun hardPaint(): Paint = Paint().also {
 @Composable
 internal actual fun BackHandler(enabled: Boolean, onBack: () -> Unit) = androidx.activity.compose.BackHandler(enabled, onBack)
 
-internal actual fun edgeToEdgeDialog() = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+internal actual val saveOnDispose = false
+
+internal actual fun edgeToEdgeDialog() =DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)

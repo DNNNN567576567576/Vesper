@@ -890,7 +890,7 @@ fun TasksScreen(
                 tasks == null -> ScreenTitle(if (snuffedOnly) "Snuffed" else "Flames")
                 tasks.isEmpty() && snuffed.isEmpty() -> {
                     ScreenTitle(if (snuffedOnly) "Snuffed" else "Flames")
-                    if (snuffedOnly) EmptyState("Nothing snuffed yet.") else EmptyState("No quests remain.", hint = "Tap the plus to add one.")
+                    if (!snuffedOnly) EmptyState("No quests remain.", hint = "Tap the plus to add one.")
                 }
                 else -> Box(Modifier.fillMaxSize()) {
                     // Pools of light, ledges and candles live in one layer behind the rows (text never overlaps them).

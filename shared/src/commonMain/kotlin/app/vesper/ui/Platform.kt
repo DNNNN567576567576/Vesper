@@ -18,5 +18,8 @@ internal expect fun hardPaint(): Paint
 @Composable
 internal expect fun BackHandler(enabled: Boolean = true, onBack: () -> Unit)
 
+/** No lifecycle ON_STOP on close here, so editors save when they leave composition instead. */
+internal expect val saveOnDispose: Boolean
+
 /** Full-screen dialog drawn under the system bars (Android: decorFitsSystemWindows = false). */
 internal expect fun edgeToEdgeDialog(): DialogProperties
