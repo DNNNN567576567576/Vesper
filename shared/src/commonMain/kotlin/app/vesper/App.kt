@@ -10,6 +10,17 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.key
+import androidx.compose.ui.unit.dp
+import app.vesper.data.Task
+import app.vesper.ui.LocalWide
+import app.vesper.ui.PixelNavRail
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -114,147 +125,201 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
         }
     }
 
-    Box(Modifier.fillMaxSize().background(if (editorTarget != NO_EDITOR) Px.Bg else if (tab == 3) Color(0xFF08040C) else if (tab == 4) Color(0xFF06030C) else Px.Bg)) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // Wide (desktop window): left rail + side-by-side panes. Narrower than 700dp, and always on phones, the bottom-bar layout.
+    val wide = maxWidth >= 700.dp
+    val fullEditor = editorTarget != NO_EDITOR && !wide
+
+    val onNav: (Int) -> Unit = { index ->
+        if (index == tab) {
+            // Re-tapping the active tab jumps back to the top.
+            scope.launch {
+                when (index) {
+                    0 -> notesListState.animateScrollToItem(0)
+                    1 -> tasksListState.animateScrollToItem(0)
+                    3 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
+                    4 -> moonsReset.intValue++ // jump back to today
+                    else -> { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
+                }
+            }
+        } else {
+            tab = index
+        }
+    }
+
+    val editor: @Composable (Long) -> Unit = { target ->
+        // Key has target too: the outgoing editor must not grab the incoming one's VM.
+        val editorVm = viewModel(key = "editor-$editorSession-$target") {
+            NoteEditorViewModel(
+                host,
+                if (target == NEW_NOTE) null else target,
+                if (target == NEW_NOTE && editorParent != NO_EDITOR) editorParent else null,
+            )
+        }
+        NoteEditorScreen(
+            editorVm,
+            onClose = {
+                // Closing a page returns to its main scroll's editor, not the list.
+                val parent = editorParent
+                editorParent = NO_EDITOR
+                if (parent != NO_EDITOR) editorSession++
+                editorTarget = parent
+            },
+            onOpenPage = { parent, page -> editorParent = parent; editorSession++; editorTarget = page ?: NEW_NOTE },
+        )
+    }
+
+    val notesScreen: @Composable () -> Unit = {
+        NotesScreen(
+            notes = notes,
+            listState = notesListState,
+            onOpen = { id -> editorSession++; editorParent = NO_EDITOR; editorTarget = id },
+            onNew = { editorSession++; editorParent = NO_EDITOR; editorTarget = NEW_NOTE },
+            // Wide: the open scroll sits beside the list, so burning it must close it.
+            onDelete = { id -> if (wide && editorTarget == id) editorTarget = NO_EDITOR; notesVm.delete(id) },
+            vm = notesVm,
+        )
+    }
+
+    val flames: @Composable (List<Task>?, List<Task>, LazyListState, Boolean) -> Unit = { lit, snuffed, state, snuffedOnly ->
+        TasksScreen(
+            tasks = lit,
+            snuffed = snuffed,
+            listState = state,
+            onComplete = tasksVm::complete,
+            onRelight = tasksVm::relight,
+            onAdd = { addingTask = true },
+            vm = tasksVm,
+            snuffedOnly = snuffedOnly,
+        )
+    }
+
+    val tabContent: @Composable () -> Unit = {
+        Crossfade(targetState = tab, animationSpec = tween(170), label = "tab") { current ->
+            if (current == 0) {
+                if (wide) {
+                    Row(Modifier.fillMaxSize()) {
+                        Box(Modifier.width(300.dp).fillMaxHeight()) { notesScreen() }
+                        Box(Modifier.weight(1f).fillMaxHeight()) {
+                            // Switching scrolls disposes the old editor, which flushes it (see NoteEditorScreen).
+                            if (editorTarget != NO_EDITOR) key(editorSession, editorTarget) { editor(editorTarget) }
+                        }
+                    }
+                } else {
+                    notesScreen()
+                }
+            } else if (current == 1) {
+                if (wide) {
+                    Row(Modifier.fillMaxSize()) {
+                        Box(Modifier.weight(1f).fillMaxHeight()) { flames(tasks, emptyList(), tasksListState, false) }
+                        Box(Modifier.width(2.dp).fillMaxHeight().background(Px.Border))
+                        Box(Modifier.weight(1f).fillMaxHeight()) {
+                            flames(if (tasks == null) null else emptyList(), snuffedTasks, rememberLazyListState(), true)
+                        }
+                    }
+                } else {
+                    flames(tasks, snuffedTasks, tasksListState, false)
+                }
+            } else if (current == 3) {
+                ShrineScreen(
+                    posts = posts,
+                    listState = shrineListState,
+                    draft = shrineVm.draft,
+                    draftPhoto = shrineVm.draftPhoto,
+                    sending = shrineVm.sending,
+                    onDraft = { shrineVm.draft = it },
+                    onDraftPhoto = { shrineVm.draftPhoto = it },
+                    onSend = shrineVm::send,
+                    onEdit = shrineVm::edit,
+                    onDelete = shrineVm::delete,
+                    media = host.shrineMedia,
+                )
+            } else if (current == 4) {
+                MoonsScreen(
+                    plans = plans,
+                    focus = focus,
+                    lobes = lobes,
+                    resetSignal = moonsReset.intValue,
+                    draft = moonsVm.draft,
+                    onDraft = { moonsVm.draft = it },
+                    onAddPlan = moonsVm::addPlan,
+                    onSetDone = moonsVm::setDone,
+                    onEditPlan = moonsVm::editPlan,
+                    onDeletePlan = moonsVm::deletePlan,
+                    onToggleFocus = moonsVm::toggleFocus,
+                )
+            } else {
+                BrainScreen(
+                    lobes = lobes,
+                    ideas = ideas,
+                    notes = notes,
+                    camera = brainCamera,
+                    selectedLobe = selectedLobe,
+                    onSelectLobe = { selectedLobe = it },
+                    onAddLobe = { name -> brainVm.addLobe(name) { selectedLobe = it } },
+                    onDeleteLobe = brainVm::deleteLobe,
+                    onSaveIdea = brainVm::saveIdea,
+                    onDeleteIdea = brainVm::deleteIdea,
+                    onOpenNote = { id -> if (wide) { tab = 0; editorParent = NO_EDITOR }; editorSession++; editorTarget = id },
+                    vault = host.vault,
+                    appScope = host.appScope,
+                )
+            }
+        }
+    }
+
+    CompositionLocalProvider(LocalWide provides wide) {
+    Box(Modifier.fillMaxSize().background(if (fullEditor) Px.Bg else if (tab == 3) Color(0xFF08040C) else if (tab == 4) Color(0xFF06030C) else Px.Bg)) {
         // Notes and the editor share the rotting wall, Tasks gets the candle crypt, Brain, Shrine and Moons draw their own opaque backdrops.
         WallBackdrop(
             when {
-                editorTarget != NO_EDITOR -> WallKind.Notes
+                fullEditor -> WallKind.Notes
                 tab == 0 -> WallKind.Notes
                 tab == 1 -> WallKind.Candle
                 else -> WallKind.None // Brain, Shrine and Moons draw their own backdrops
             }
         )
 
-        // The editor slides in over the list, like turning to a fresh page.
-        AnimatedContent(
-            targetState = editorTarget,
-            transitionSpec = {
-                if (targetState != NO_EDITOR) {
-                    (fadeIn(tween(190)) + slideInHorizontally(tween(300)) { it / 9 }) togetherWith
-                        fadeOut(tween(130))
-                } else {
-                    fadeIn(tween(200)) togetherWith
-                        (fadeOut(tween(150)) + slideOutHorizontally(tween(260)) { it / 9 })
-                }
-            },
-            label = "editor",
-        ) { target ->
-            if (target != NO_EDITOR) {
-                // Key has target too: the outgoing editor must not grab the incoming one's VM.
-                val editorVm = viewModel(key = "editor-$editorSession-$target") {
-                    NoteEditorViewModel(
-                        host,
-                        if (target == NEW_NOTE) null else target,
-                        if (target == NEW_NOTE && editorParent != NO_EDITOR) editorParent else null,
-                    )
-                }
-                NoteEditorScreen(
-                    editorVm,
-                    onClose = {
-                        // Closing a page returns to its main scroll's editor, not the list.
-                        val parent = editorParent
-                        editorParent = NO_EDITOR
-                        if (parent != NO_EDITOR) editorSession++
-                        editorTarget = parent
-                    },
-                    onOpenPage = { parent, page -> editorParent = parent; editorSession++; editorTarget = page ?: NEW_NOTE },
-                )
-            } else {
-                Scaffold(
-                    containerColor = Color.Transparent,
-                    contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                    bottomBar = {
-                        PixelNavBar(tab) { index ->
-                            if (index == tab) {
-                                // Re-tapping the active tab jumps back to the top.
-                                scope.launch {
-                                    when (index) {
-                                        0 -> notesListState.animateScrollToItem(0)
-                                        1 -> tasksListState.animateScrollToItem(0)
-                                        3 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
-                                        4 -> moonsReset.intValue++ // jump back to today
-                                        else -> { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
-                                    }
-                                }
-                            } else {
-                                tab = index
-                            }
-                        }
-                    },
-                ) { inner ->
-                    Box(Modifier.fillMaxSize().padding(inner).statusBarsPadding()) {
-                        Crossfade(targetState = tab, animationSpec = tween(170), label = "tab") { current ->
-                            if (current == 0) {
-                                NotesScreen(
-                                    notes = notes,
-                                    listState = notesListState,
-                                    onOpen = { id -> editorSession++; editorTarget = id },
-                                    onNew = { editorSession++; editorTarget = NEW_NOTE },
-                                    onDelete = notesVm::delete,
-                                    vm = notesVm,
-                                )
-                            } else if (current == 1) {
-                                TasksScreen(
-                                    tasks = tasks,
-                                    snuffed = snuffedTasks,
-                                    listState = tasksListState,
-                                    onComplete = tasksVm::complete,
-                                    onRelight = tasksVm::relight,
-                                    onAdd = { addingTask = true },
-                                    vm = tasksVm,
-                                )
-                            } else if (current == 3) {
-                                ShrineScreen(
-                                    posts = posts,
-                                    listState = shrineListState,
-                                    draft = shrineVm.draft,
-                                    draftPhoto = shrineVm.draftPhoto,
-                                    sending = shrineVm.sending,
-                                    onDraft = { shrineVm.draft = it },
-                                    onDraftPhoto = { shrineVm.draftPhoto = it },
-                                    onSend = shrineVm::send,
-                                    onEdit = shrineVm::edit,
-                                    onDelete = shrineVm::delete,
-                                    media = host.shrineMedia,
-                                )
-                            } else if (current == 4) {
-                                MoonsScreen(
-                                    plans = plans,
-                                    focus = focus,
-                                    lobes = lobes,
-                                    resetSignal = moonsReset.intValue,
-                                    draft = moonsVm.draft,
-                                    onDraft = { moonsVm.draft = it },
-                                    onAddPlan = moonsVm::addPlan,
-                                    onSetDone = moonsVm::setDone,
-                                    onEditPlan = moonsVm::editPlan,
-                                    onDeletePlan = moonsVm::deletePlan,
-                                    onToggleFocus = moonsVm::toggleFocus,
-                                )
-                            } else {
-                                BrainScreen(
-                                    lobes = lobes,
-                                    ideas = ideas,
-                                    notes = notes,
-                                    camera = brainCamera,
-                                    selectedLobe = selectedLobe,
-                                    onSelectLobe = { selectedLobe = it },
-                                    onAddLobe = { name -> brainVm.addLobe(name) { selectedLobe = it } },
-                                    onDeleteLobe = brainVm::deleteLobe,
-                                    onSaveIdea = brainVm::saveIdea,
-                                    onDeleteIdea = brainVm::deleteIdea,
-                                    onOpenNote = { id -> editorSession++; editorTarget = id },
-                                    vault = host.vault,
-                                    appScope = host.appScope,
-                                )
-                            }
-                        }
+        if (wide) {
+            Row(Modifier.fillMaxSize()) {
+                PixelNavRail(tab, onNav)
+                Box(Modifier.weight(1f).fillMaxHeight()) { tabContent() }
+            }
+            if (addingTask) {
+                AddTaskDialog(onDismiss = { addingTask = false }, onAdd = tasksVm::add)
+            }
+        } else {
+            // The editor slides in over the list, like turning to a fresh page.
+            AnimatedContent(
+                targetState = editorTarget,
+                transitionSpec = {
+                    if (targetState != NO_EDITOR) {
+                        (fadeIn(tween(190)) + slideInHorizontally(tween(300)) { it / 9 }) togetherWith
+                            fadeOut(tween(130))
+                    } else {
+                        fadeIn(tween(200)) togetherWith
+                            (fadeOut(tween(150)) + slideOutHorizontally(tween(260)) { it / 9 })
                     }
-                }
-                if (addingTask) {
-                    AddTaskDialog(onDismiss = { addingTask = false }, onAdd = tasksVm::add)
+                },
+                label = "editor",
+            ) { target ->
+                if (target != NO_EDITOR) {
+                    editor(target)
+                } else {
+                    Scaffold(
+                        containerColor = Color.Transparent,
+                        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                        bottomBar = { PixelNavBar(tab, onNav) },
+                    ) { inner ->
+                        Box(Modifier.fillMaxSize().padding(inner).statusBarsPadding()) { tabContent() }
+                    }
+                    if (addingTask) {
+                        AddTaskDialog(onDismiss = { addingTask = false }, onAdd = tasksVm::add)
+                    }
                 }
             }
         }
+    }
+    }
     }
 }

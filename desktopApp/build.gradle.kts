@@ -1,3 +1,5 @@
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+
 plugins {
     id("org.jetbrains.kotlin.jvm")
     id("org.jetbrains.compose")
@@ -18,5 +20,19 @@ dependencies {
 compose.desktop {
     application {
         mainClass = "app.vesper.desktop.MainKt"
+        nativeDistributions {
+            targetFormats(TargetFormat.Msi)
+            packageName = "Vesper"
+            packageVersion = "2.1.0"
+            vendor = "Vesper"
+            modules("java.sql", "java.instrument", "jdk.unsupported") // Room/sqlite and Skiko need these in the trimmed runtime
+            windows {
+                perUserInstall = true
+                menu = true
+                shortcut = true
+                upgradeUuid = "814ef292-9e72-4b69-bac4-05d939ed0929"
+                iconFile.set(project.file("packaging/vesper.ico"))
+            }
+        }
     }
 }

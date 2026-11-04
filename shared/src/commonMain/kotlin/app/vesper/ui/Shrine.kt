@@ -38,6 +38,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
@@ -200,6 +202,7 @@ fun ShrineScreen(
     onDelete: (Long) -> Unit,
     media: ShrineMedia,
 ) {
+    val wide = LocalWide.current
     val time = rememberRotTime()
     val pxSize = rememberRotPxSize()
     val density = LocalDensity.current
@@ -224,7 +227,10 @@ fun ShrineScreen(
 
     Box(Modifier.fillMaxSize()) {
         ShrineBackdrop(time, pxSize)
-        BoxWithConstraints(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxSize()) {
+        // Wide: the feed is a centred column and the writing page is an always-open panel on the right.
+        Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+        BoxWithConstraints(Modifier.then(if (wide) Modifier.widthIn(max = 520.dp) else Modifier).fillMaxSize()) {
             val innerWidthPx = with(density) { (maxWidth - 32.dp).roundToPx() }
             Column(Modifier.fillMaxSize()) {
                 ShrineHeader()
@@ -257,9 +263,17 @@ fun ShrineScreen(
                             style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = ShrineDim),
                         )
                     }
-                    SigilFab("Keep something", { writing = true }, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp), quill = true)
+                    if (!wide) SigilFab("Keep something", { writing = true }, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp), quill = true)
                 }
             }
+        }
+        }
+        if (wide) {
+            Box(Modifier.width(2.dp).fillMaxHeight().background(Px.Border))
+            Box(Modifier.width(340.dp).fillMaxHeight()) {
+                WritingPage(draft, draftPhoto, sending, onDraft, onDraftPhoto, onSend, media, onClose = {}, inline = true)
+            }
+        }
         }
     }
     menuFor?.let { t ->
@@ -274,7 +288,7 @@ fun ShrineScreen(
         )
     }
 
-    if (writing) {
+    if (writing && !wide) {
         WritingPage(draft, draftPhoto, sending, onDraft, onDraftPhoto, onSend, media, onClose = { writing = false })
     }
 
@@ -406,18 +420,16 @@ private fun WritingPage(
     onSend: () -> Unit,
     media: ShrineMedia,
     onClose: () -> Unit,
+    inline: Boolean = false, // wide layout: a plain panel instead of a dialog, no back sigil
 ) {
     val pick = media.rememberPicker { onPhoto(it) }
     val canSend = !sending && (draft.isNotBlank() || photo != null)
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
-    Dialog(
-        onDismissRequest = onClose,
-        properties = edgeToEdgeDialog(),
-    ) {
+    val body: @Composable () -> Unit = {
         Column(Modifier.fillMaxSize().background(ShrineBase).statusBarsPadding().navigationBarsPadding().imePadding()) {
             Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 14.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                SigilFab("Back", onClose, back = true)
+                if (!inline) SigilFab("Back", onClose, back = true)
                 Spacer(Modifier.weight(1f))
                 BarButton(
                     ATT, if (photo != null) Px.Magenta else ShrineIconDim,
@@ -466,6 +478,7 @@ private fun WritingPage(
             )
         }
     }
+    if (inline) body() else Dialog(onDismissRequest = onClose, properties = edgeToEdgeDialog()) { body() }
 }
 
 // ---------------------------------------------------------------------------------------------

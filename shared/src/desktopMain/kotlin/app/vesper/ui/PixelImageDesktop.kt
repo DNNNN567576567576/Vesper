@@ -1,6 +1,9 @@
 package app.vesper.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.skiaPaint
@@ -28,8 +31,24 @@ internal actual fun hardPaint(): Paint = Paint().also {
     it.skiaPaint.isDither = false
 }
 
-// shortcut: desktop has no system back; M3 can map Esc here if the desktop shell wants it.
+private val backHandlers = mutableListOf<() -> Unit>()
+
+/** Esc: runs the most recently composed enabled [BackHandler]; false when none is active (key passes through). */
+fun handleDesktopBack(): Boolean {
+    val h = backHandlers.lastOrNull() ?: return false
+    h()
+    return true
+}
+
+// shortcut: order = registration order, not strictly composition-tree order; fine while only one is enabled at a time.
 @Composable
-internal actual fun BackHandler(enabled: Boolean, onBack: () -> Unit) {}
+internal actual fun BackHandler(enabled: Boolean, onBack: () -> Unit) {
+    val latest by rememberUpdatedState(onBack)
+    DisposableEffect(enabled) {
+        val h: () -> Unit = { latest() }
+        if (enabled) backHandlers.add(h)
+        onDispose { backHandlers.remove(h) }
+    }
+}
 
 internal actual fun edgeToEdgeDialog() = DialogProperties(usePlatformDefaultWidth = false)

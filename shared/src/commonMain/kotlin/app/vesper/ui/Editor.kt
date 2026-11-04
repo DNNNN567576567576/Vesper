@@ -138,7 +138,11 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit, onOpenPage: (
         closeNow()
     }
 
-    BackHandler { leave() }
+    // Wide layout: the editor is a side pane; a top-level scroll has no back (only a page returns to its parent).
+    val wide = LocalWide.current
+    BackHandler(enabled = !wide || vm.parentId != null) { leave() }
+    // Wide: clicking another scroll replaces this editor without leave(), so flush when it goes away.
+    DisposableEffect(vm, wide) { onDispose { if (wide) vm.flush() } }
 
     // Persist whenever the app leaves the foreground (home button, app switch, screen off).
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -164,7 +168,7 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit, onOpenPage: (
             Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(58.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SigilFab("Back", ::leave, back = true)
+            if (!wide || vm.parentId != null) SigilFab("Back", ::leave, back = true)
             if (vm.parentId != null) {
                 Text(
                     "${vm.parentTitle.trim().ifEmpty { "untitled" }} / ${vm.title.trim().ifEmpty { "untitled" }}",

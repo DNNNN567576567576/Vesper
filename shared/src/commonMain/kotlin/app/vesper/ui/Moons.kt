@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -241,7 +243,7 @@ fun MoonsScreen(
         BoxWithConstraints(Modifier.fillMaxSize().padding(bottom = lift)) {
             Column(Modifier.fillMaxSize()) {
                 MoonsHeader(month, onPrev = { goMonth.value(-1) }, onNext = { goMonth.value(1) }, onPick = { picking = true })
-                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+                val gridPart: @Composable () -> Unit = {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                         for (d in listOf("M", "T", "W", "T", "F", "S", "S")) {
                             Text(
@@ -298,8 +300,8 @@ fun MoonsScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
-
+                }
+                val sheetPart: @Composable () -> Unit = {
                     val sheetShape = RoundedCornerShape(12.dp)
                     Column(
                         Modifier
@@ -361,7 +363,20 @@ fun MoonsScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(16.dp))
+                }
+                if (LocalWide.current) {
+                    // Wide: calendar left, selected-day sheet right.
+                    Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                        Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) { gridPart() }
+                        Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) { sheetPart() }
+                    }
+                } else {
+                    Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+                        gridPart()
+                        Spacer(Modifier.height(12.dp))
+                        sheetPart()
+                        Spacer(Modifier.height(16.dp))
+                    }
                 }
             }
         }

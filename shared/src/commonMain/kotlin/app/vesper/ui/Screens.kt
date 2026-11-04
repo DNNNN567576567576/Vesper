@@ -41,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -126,6 +127,9 @@ import kotlin.math.PI
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+
+/** True in the wide desktop layout (window >= 700dp): rail, two panes. Never true on phones. */
+val LocalWide = compositionLocalOf { false }
 
 @Composable
 fun ScreenTitle(text: String) {
@@ -828,6 +832,7 @@ fun TasksScreen(
     onRelight: (Long) -> Unit,
     onAdd: () -> Unit,
     vm: TasksViewModel,
+    snuffedOnly: Boolean = false, // wide layout's right pane: only the snuffed flames, always open
 ) {
     val time = rememberRotTime()
     val pxSize = rememberRotPxSize()
@@ -882,10 +887,10 @@ fun TasksScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             when {
-                tasks == null -> ScreenTitle("Flames")
+                tasks == null -> ScreenTitle(if (snuffedOnly) "Snuffed" else "Flames")
                 tasks.isEmpty() && snuffed.isEmpty() -> {
-                    ScreenTitle("Flames")
-                    EmptyState("No quests remain.", hint = "Tap the plus to add one.")
+                    ScreenTitle(if (snuffedOnly) "Snuffed" else "Flames")
+                    if (snuffedOnly) EmptyState("Nothing snuffed yet.") else EmptyState("No quests remain.", hint = "Tap the plus to add one.")
                 }
                 else -> Box(Modifier.fillMaxSize()) {
                     // Pools of light, ledges and candles live in one layer behind the rows (text never overlaps them).
@@ -923,10 +928,11 @@ fun TasksScreen(
                         // String key: the candle canvas only reads Long keys, so it skips the title.
                         item(key = "title") {
                             Box(Modifier.padding(bottom = 6.dp)) {
-                                TitleWithSort("Flames", if (newestFirst) "newest first" else "oldest first", vm::toggleOrder)
+                                if (snuffedOnly) ScreenTitle("Snuffed")
+                                else TitleWithSort("Flames", if (newestFirst) "newest first" else "oldest first", vm::toggleOrder)
                             }
                         }
-                        if (tasks.isEmpty()) item(key = Long.MIN_VALUE) {
+                        if (tasks.isEmpty() && !snuffedOnly) item(key = Long.MIN_VALUE) {
                             Box(Modifier.fillMaxWidth().height(380.dp)) { EmptyState("No quests remain.", hint = "Tap the plus to add one.") }
                         }
                         items(tasks, key = { it.id }) { task ->
@@ -939,8 +945,8 @@ fun TasksScreen(
                             )
                         }
                         if (snuffed.isNotEmpty()) {
-                            item(key = 0L) { SnuffedToggle(open, time, pxSize) { open = !open } }
-                            if (open) items(snuffed, key = { -it.id }) { task ->
+                            if (!snuffedOnly) item(key = 0L) { SnuffedToggle(open, time, pxSize) { open = !open } }
+                            if (open || snuffedOnly) items(snuffed, key = { -it.id }) { task ->
                                 SnuffedRow(
                                     task = task,
                                     relighting = relighting,
@@ -953,7 +959,7 @@ fun TasksScreen(
                 }
             }
         }
-        MatchFab("Add flame", onAdd, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
+        if (!snuffedOnly) MatchFab("Add flame", onAdd, Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp))
     }
 }
 
@@ -1072,49 +1078,38 @@ private fun SnuffedRow(
 // Bottom navigation
 // ---------------------------------------------------------------------------------------------
 
+private class NavItem(val icon: DrawableResource, val label: String, val zoom: Float = 1f)
+
+private val NAV_ITEMS = listOf(
+    NavItem(Res.drawable.tab_scrolls, "Scrolls"),
+    NavItem(Res.drawable.tab_flames, "Flames", 1.2f), // tall thin shape reads small next to the wider icons
+    NavItem(Res.drawable.tab_brain, "Brain"),
+    NavItem(Res.drawable.tab_grimoire, "Grimoire"),
+    NavItem(Res.drawable.tab_moons, "Moons", 1.35f), // the moon art sits on a coarser grid, so it reads smaller than the others
+)
+
 @Composable
 fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
     Column(Modifier.fillMaxWidth().background(Px.Surface)) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
         Row(Modifier.fillMaxWidth().navigationBarsPadding().height(72.dp)) {
-            NavTab(
-                icon = Res.drawable.tab_scrolls,
-                label = "Scrolls",
-                active = selected == 0,
-                onClick = { onSelect(0) },
-                modifier = Modifier.weight(1f),
-            )
-            NavTab(
-                icon = Res.drawable.tab_flames,
-                zoom = 1.2f, // tall thin shape reads small next to the wider icons
-                label = "Flames",
-                active = selected == 1,
-                onClick = { onSelect(1) },
-                modifier = Modifier.weight(1f),
-            )
-            NavTab(
-                icon = Res.drawable.tab_brain,
-                label = "Brain",
-                active = selected == 2,
-                onClick = { onSelect(2) },
-                modifier = Modifier.weight(1f),
-            )
-            NavTab(
-                icon = Res.drawable.tab_grimoire,
-                label = "Grimoire",
-                active = selected == 3,
-                onClick = { onSelect(3) },
-                modifier = Modifier.weight(1f),
-            )
-            NavTab(
-                icon = Res.drawable.tab_moons,
-                zoom = 1.35f, // the moon art sits on a coarser grid, so it reads smaller than the others
-                label = "Moons",
-                active = selected == 4,
-                onClick = { onSelect(4) },
-                modifier = Modifier.weight(1f),
-            )
+            NAV_ITEMS.forEachIndexed { i, n ->
+                NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.weight(1f), n.zoom)
+            }
         }
+    }
+}
+
+/** The wide layout's left rail: the same five tabs, stacked from the top. */
+@Composable
+fun PixelNavRail(selected: Int, onSelect: (Int) -> Unit) {
+    Row(Modifier.fillMaxHeight().width(88.dp)) {
+        Column(Modifier.weight(1f).fillMaxHeight().background(Px.Surface)) {
+            NAV_ITEMS.forEachIndexed { i, n ->
+                NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.fillMaxWidth().height(72.dp), n.zoom)
+            }
+        }
+        Box(Modifier.width(2.dp).fillMaxHeight().background(Px.Border))
     }
 }
 
