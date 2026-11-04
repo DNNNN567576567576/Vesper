@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Vesper"
-include(":app", ":shared")
+include(":app", ":shared", ":desktopApp")

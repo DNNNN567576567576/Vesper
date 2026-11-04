@@ -13,6 +13,8 @@ import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.RoomDatabaseConstructor
 import androidx.room.Update
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "notes", indices = [Index(value = ["uid"], unique = true)])
@@ -276,4 +278,11 @@ abstract class AppDatabase : RoomDatabase() {
 @Suppress("KotlinNoActualForExpect")
 expect object AppDatabaseConstructor : RoomDatabaseConstructor<AppDatabase> {
     override fun initialize(): AppDatabase
+}
+
+/** Room builds a fresh install from the entities, which carry no triggers; IF NOT EXISTS makes this a no-op afterwards. Driver API, so it runs on Android (compatibility mode) and desktop. */
+val SYNC_TRIGGERS_CALLBACK = object : RoomDatabase.Callback() {
+    override fun onOpen(connection: SQLiteConnection) {
+        SYNCED_TABLES.forEach { t -> syncTriggerSql(t).forEach { connection.execSQL(it) } }
+    }
 }

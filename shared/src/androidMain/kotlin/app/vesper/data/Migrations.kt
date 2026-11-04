@@ -1,10 +1,9 @@
 package app.vesper.data
 
-import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-// Android-only: migrations 1..9 and the trigger callback stay on SupportSQLiteDatabase, exactly as before the KMP split.
+// Android-only: migrations 1..9 stay on SupportSQLiteDatabase, exactly as before the KMP split.
 // Android opens the DB in Room compatibility mode (no driver), so these run unchanged on the phone's file.
 // The desktop never migrates: it starts at the current version (see the sync plan, section A).
 
@@ -64,11 +63,6 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
 }
 
 fun createSyncTriggers(db: SupportSQLiteDatabase) = SYNCED_TABLES.forEach { t -> syncTriggerSql(t).forEach(db::execSQL) }
-
-/** Room builds a fresh install from the entities, which carry no triggers; IF NOT EXISTS makes this a no-op afterwards. */
-val SYNC_TRIGGERS_CALLBACK = object : RoomDatabase.Callback() {
-    override fun onOpen(db: SupportSQLiteDatabase) = createSyncTriggers(db)
-}
 
 /**
  * v8 -> v9: sync ids and clocks. Existing rows get deterministic uids ('notes-12'), so an old backup restored later
