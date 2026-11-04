@@ -150,6 +150,14 @@ class SyncMergeTest {
         assertEquals(2, merge(a(listOf(note("n", 9, "mine"))), b(listOf(note("n", 12, "theirs"))), seen).notes.size)
     }
 
+    @Test fun lobesOnTheSameSlotSpreadOutTheSameWayOnBothDevices() {
+        val mine = a(lobes = listOf(lobe("x", 5), SyncLobe("w", 4, "L", 0, 1))); val theirs = b(lobes = listOf(lobe("y", 6), SyncLobe("z", 7, "L", 0, 1)))
+        val merged = merge(mine, theirs, emptyMap())
+        assertEquals(4, merged.lobes.map { it.slot }.toSet().size)
+        assertEquals(merged.lobes, merge(theirs.copy(deviceId = "a"), mine.copy(deviceId = "b"), emptyMap()).lobes)
+        assertEquals(merged, merge(merged, theirs, emptyMap())) // settled: nothing moves again
+    }
+
     @Test fun damagedSnapshotsAreRefused() {
         assertThrows(SyncException::class.java) { b(listOf(note("n", 0))).validate() }
         assertThrows(SyncException::class.java) { b(listOf(note("", 1))).validate() }

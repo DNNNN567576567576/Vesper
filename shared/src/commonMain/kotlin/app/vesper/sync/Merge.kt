@@ -124,6 +124,15 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>): Snapshot 
     // A parent nowhere to be found: keep the page reachable at the top level rather than invisible.
     notes.live.replaceAll { _, n -> if (n.parentUid != null && n.parentUid !in notes.live) n.copy(parentUid = null) else n }
 
+    // Each device fills its own first free slot, and two lobes on one slot would hide one on the map. Same result on both devices.
+    val taken = mutableSetOf<Int>()
+    for (l in lobes.live.values.sortedBy { it.uid }) {
+        if (taken.add(l.slot)) continue
+        val slot = generateSequence(l.slot + 1) { it + 1 }.first { s -> lobes.live.values.none { it.slot == s } }
+        taken += slot
+        lobes.live[l.uid] = l.copy(slot = slot, syncAt = l.syncAt + 1)
+    }
+
     val live = mapOf("notes" to notes.live.keys, "tasks" to tasks.live.keys, "lobes" to lobes.live.keys, "ideas" to ideas.live.keys, "plans" to plans.live.keys)
     return local.copy(
         notes = notes.rows(), tasks = tasks.rows(), lobes = lobes.rows(), ideas = ideas.rows(), plans = plans.rows(),

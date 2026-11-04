@@ -186,6 +186,14 @@ class SyncRoundTest {
         assertEquals(5, b.db.syncDao().tombstones().size) // kept, with the deleter's own times
     }
 
+    @Test fun lobesMadeSeparatelyEndUpOnTheirOwnSlots() = test {
+        val (a, b) = pair()
+        a.db.brainDao().insertLobe(Lobe(name = "Work", colorIndex = 0, slot = 0))
+        b.db.brainDao().insertLobe(Lobe(name = "Home", colorIndex = 0, slot = 0))
+        converge(a, b)
+        assertEquals(2, a.db.syncDao().lobes().map { it.slot }.toSet().size)
+    }
+
     @Test fun lobeDeletedHereWhileAnIdeaWasEditedThereKeepsTheIdea() = test {
         val (a, b) = pair()
         val lobe = a.db.brainDao().insertLobe(Lobe(name = "Work", colorIndex = 1, slot = 2))
