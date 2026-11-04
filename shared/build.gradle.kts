@@ -3,6 +3,7 @@ plugins {
     id("com.android.kotlin.multiplatform.library")
     id("org.jetbrains.compose")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
     id("androidx.room")
 }
@@ -30,6 +31,7 @@ kotlin {
             api("org.jetbrains.androidx.lifecycle:lifecycle-viewmodel-compose:2.9.6")
             api("org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose:2.9.6")
             api("androidx.room:room-runtime:2.8.5")
+            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0") // sync snapshots, Drive and OAuth responses
         }
         androidMain.dependencies {
             implementation("androidx.activity:activity-compose:1.9.3") // BackHandler actual

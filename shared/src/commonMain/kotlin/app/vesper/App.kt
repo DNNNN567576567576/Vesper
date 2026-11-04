@@ -262,6 +262,7 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
                     onDeleteIdea = brainVm::deleteIdea,
                     onOpenNote = { id -> if (wide) { tab = 0; editorParent = NO_EDITOR }; editorSession++; editorTarget = id },
                     vault = host.vault,
+                    sync = host.sync,
                     appScope = host.appScope,
                 )
             }

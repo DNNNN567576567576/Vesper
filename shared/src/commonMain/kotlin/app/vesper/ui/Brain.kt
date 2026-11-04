@@ -60,6 +60,12 @@ import app.vesper.res.Res
 import app.vesper.res.brain_lobe
 import app.vesper.res.brain_main
 import app.vesper.res.vault_skull
+import app.vesper.sync.MIN_PASSPHRASE
+import app.vesper.sync.SyncManager
+import app.vesper.sync.SyncUi
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import app.vesper.res.vault_skull_dead
 import org.jetbrains.compose.resources.imageResource
 import androidx.compose.ui.unit.IntOffset
@@ -783,6 +789,7 @@ fun BrainScreen(
     onDeleteIdea: (Long) -> Unit,
     onOpenNote: (Long) -> Unit,
     vault: Vault,
+    sync: SyncManager,
     appScope: CoroutineScope,
 ) {
     val lobeList = lobes.orEmpty()
@@ -816,6 +823,9 @@ fun BrainScreen(
         }
     }
     val restorePicker = vault.rememberOpenPicker { uri -> restoreUri = uri }
+    val syncUi by sync.ui.collectAsState()
+    val signIn = sync.rememberSignIn()
+    var askingPassphrase by remember { mutableStateOf(false) }
     fun restore(uri: String) {
         if (working != null) return
         working = "reading..."; message = null
@@ -850,8 +860,17 @@ fun BrainScreen(
                 busy = working != null,
                 onKeep = { keepPicker("vesper-backup-${java.time.LocalDate.now()}.zip") },
                 onRestore = { restorePicker() },
+                sync = syncUi,
+                onSignIn = signIn,
+                onPassphrase = { askingPassphrase = true; sync.checkVault() },
+                onSyncNow = sync::syncNow,
             )
         }
+    }
+
+    val vaultExists = syncUi.vaultExists
+    if (askingPassphrase && vaultExists != null && syncUi.working == null) {
+        PassphraseDialog(create = !vaultExists, onDismiss = { askingPassphrase = false }, onSubmit = { askingPassphrase = false; sync.unlock(it) })
     }
 
     if (addingLobe) {
@@ -1237,7 +1256,16 @@ private fun BrainCanvas(
 // ---------------------------------------------------------------------------------------------
 
 @Composable
-private fun VaultSheet(status: String, busy: Boolean, onKeep: () -> Unit, onRestore: () -> Unit) {
+private fun VaultSheet(
+    status: String,
+    busy: Boolean,
+    onKeep: () -> Unit,
+    onRestore: () -> Unit,
+    sync: SyncUi,
+    onSignIn: () -> Unit,
+    onPassphrase: () -> Unit,
+    onSyncNow: () -> Unit,
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -1250,6 +1278,54 @@ private fun VaultSheet(status: String, busy: Boolean, onKeep: () -> Unit, onRest
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             PixelButton("KEEP A COPY", { if (!busy) onKeep() }, primary = true, modifier = Modifier.weight(1f))
             PixelButton("RESTORE", { if (!busy) onRestore() }, modifier = Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("SYNC", Modifier.padding(vertical = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
+        val line = sync.working ?: when {
+            !sync.available -> "sync is not set up in this build."
+            !sync.signedIn -> "keep your devices in step through google drive."
+            !sync.unlocked -> "signed in. the passphrase comes next."
+            sync.lastSyncAt == 0L -> "ready. not synced yet."
+            else -> "last sync ${java.time.Instant.ofEpochMilli(sync.lastSyncAt).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("d MMM HH:mm"))}"
+        }
+        Text(line, Modifier.padding(top = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim))
+        sync.error?.let { Text(it, Modifier.padding(top = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Color(0xFFF596E1))) }
+        if (sync.available) {
+            Spacer(Modifier.height(12.dp))
+            val idle = sync.working == null
+            when {
+                !sync.signedIn -> PixelButton("SIGN IN", { if (idle) onSignIn() }, primary = true, modifier = Modifier.fillMaxWidth())
+                !sync.unlocked -> PixelButton("PASSPHRASE", { if (idle) onPassphrase() }, primary = true, modifier = Modifier.fillMaxWidth())
+                else -> PixelButton("SYNC NOW", { if (idle) onSyncNow() }, primary = true, modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+/** [create]: no vault on Drive yet, so this sets the passphrase and asks twice. It is held here only until submitted. */
+@Composable
+private fun PassphraseDialog(create: Boolean, onDismiss: () -> Unit, onSubmit: (String) -> Unit) {
+    var pass by remember { mutableStateOf("") }
+    var again by remember { mutableStateOf("") }
+    val ok = if (create) pass.length >= MIN_PASSPHRASE && pass == again else pass.isNotEmpty()
+    fun submit() { if (ok) onSubmit(pass) }
+    PixelDialog(onDismiss) {
+        Text(if (create) "SET PASSPHRASE" else "ENTER PASSPHRASE", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "If you forget it, the Drive copy can't be read. Your data on this device stays safe.",
+            style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim),
+        )
+        Spacer(Modifier.height(14.dp))
+        PixelField(pass, { pass = it }, if (create) "$MIN_PASSPHRASE+ characters, 4+ words" else "Passphrase", password = true, onDone = ::submit)
+        if (create) {
+            Spacer(Modifier.height(10.dp))
+            PixelField(again, { again = it }, "Same again", password = true, onDone = ::submit)
+        }
+        Spacer(Modifier.height(18.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+            PixelButton("CANCEL", onDismiss)
+            PixelButton("OK", ::submit, primary = true)
         }
     }
 }
@@ -1267,6 +1343,7 @@ private fun PixelField(
     singleLine: Boolean = true,
     minHeight: Dp = 0.dp,
     onDone: (() -> Unit)? = null,
+    password: Boolean = false,
 ) {
     BasicTextField(
         value = value,
@@ -1274,8 +1351,11 @@ private fun PixelField(
         singleLine = singleLine,
         textStyle = TextStyle(fontFamily = PixelFont, fontSize = 11.sp, lineHeight = 18.sp, color = Px.Text),
         cursorBrush = SolidColor(Px.Magenta),
+        visualTransformation = if (password) PasswordVisualTransformation('*') else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.Sentences,
+            capitalization = if (password) KeyboardCapitalization.None else KeyboardCapitalization.Sentences,
+            autoCorrectEnabled = if (password) false else null,
+            keyboardType = if (password) KeyboardType.Password else KeyboardType.Unspecified,
             imeAction = if (singleLine) ImeAction.Done else ImeAction.Default,
         ),
         keyboardActions = KeyboardActions(onDone = { onDone?.invoke() }),

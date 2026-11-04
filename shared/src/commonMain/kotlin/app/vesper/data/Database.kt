@@ -1,4 +1,4 @@
-﻿package app.vesper.data
+package app.vesper.data
 
 import androidx.room.ColumnInfo
 import androidx.room.ConstructedBy
@@ -232,6 +232,37 @@ interface MoonsDao {
     suspend fun deleteFocus(day: Long, lobeId: Long)
 }
 
+/** Raw row access for the sync code only (app.vesper.sync); everything else goes through the DAOs above. */
+@Dao
+interface SyncDao {
+    @Query("SELECT * FROM notes") suspend fun notes(): List<Note>
+    @Query("SELECT * FROM tasks") suspend fun tasks(): List<Task>
+    @Query("SELECT * FROM lobes") suspend fun lobes(): List<Lobe>
+    @Query("SELECT * FROM ideas") suspend fun ideas(): List<Idea>
+    @Query("SELECT * FROM plans") suspend fun plans(): List<Plan>
+    @Query("SELECT * FROM sync_tombstones") suspend fun tombstones(): List<SyncTombstone>
+
+    @Insert suspend fun insert(row: Note): Long
+    @Insert suspend fun insert(row: Task): Long
+    @Insert suspend fun insert(row: Lobe): Long
+    @Insert suspend fun insert(row: Idea): Long
+    @Insert suspend fun insert(row: Plan): Long
+    @Insert suspend fun insert(rows: List<SyncTombstone>)
+
+    @Update suspend fun update(row: Note)
+    @Update suspend fun update(row: Task)
+    @Update suspend fun update(row: Lobe)
+    @Update suspend fun update(row: Idea)
+    @Update suspend fun update(row: Plan)
+
+    @Query("DELETE FROM notes WHERE uid = :uid") suspend fun deleteNote(uid: String)
+    @Query("DELETE FROM tasks WHERE uid = :uid") suspend fun deleteTask(uid: String)
+    @Query("DELETE FROM lobes WHERE uid = :uid") suspend fun deleteLobe(uid: String)
+    @Query("DELETE FROM ideas WHERE uid = :uid") suspend fun deleteIdea(uid: String)
+    @Query("DELETE FROM plans WHERE uid = :uid") suspend fun deletePlan(uid: String)
+    @Query("DELETE FROM sync_tombstones") suspend fun clearTombstones()
+}
+
 /** A deleted synced row, written by the delete triggers (FK cascades included) so peers can delete it too. Kept forever. */
 @Entity(tableName = "sync_tombstones", primaryKeys = ["tbl", "uid"])
 data class SyncTombstone(val tbl: String, val uid: String, val deletedAt: Long)
@@ -272,6 +303,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun brainDao(): BrainDao
     abstract fun postDao(): PostDao
     abstract fun moonsDao(): MoonsDao
+    abstract fun syncDao(): SyncDao
 }
 
 /** Room KMP: KSP generates the actual for each target. Android still builds through Room.databaseBuilder(context, AppDatabase::class.java, name). */

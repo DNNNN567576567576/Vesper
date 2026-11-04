@@ -1,7 +1,7 @@
 # Vesper
 
 A pocket grimoire for notes and quests. Native Android, Kotlin + Jetpack Compose + Room.
-Fully offline: no accounts, no network, no analytics, no ads.
+Works fully offline: no analytics, no ads. Optional end-to-end encrypted sync between devices through your own Google Drive; nothing leaves the device until you sign in from the vault.
 
 ## Rules this app must never break
 

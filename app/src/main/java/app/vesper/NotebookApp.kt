@@ -1,4 +1,4 @@
-﻿package app.vesper
+package app.vesper
 
 import android.app.Application
 import android.util.Log
@@ -7,6 +7,7 @@ import androidx.room.Room
 import app.vesper.data.AppDatabase
 import app.vesper.data.ALL_MIGRATIONS
 import app.vesper.data.SYNC_TRIGGERS_CALLBACK
+import app.vesper.sync.SyncManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -50,6 +51,7 @@ class NotebookApp : Application(), VesperHost {
     }
     override val shrineMedia: ShrineMedia by lazy { AndroidShrineMedia(this) }
     override val vault: Vault by lazy { AndroidVault(this) }
+    override val sync by lazy { SyncManager(db, appScope, AndroidSyncPlatform(this), ::reportError) }
 
     override fun reportError(what: String, e: Throwable) {
         Log.e("Vesper", what, e)

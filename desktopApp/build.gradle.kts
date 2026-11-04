@@ -17,6 +17,9 @@ dependencies {
     implementation("androidx.sqlite:sqlite-bundled:2.7.1")
 }
 
+// The gitignored Google client goes into the jar at build time; a missing file is skipped, which leaves sync disabled.
+tasks.processResources { from("oauth-client.json") }
+
 compose.desktop {
     application {
         mainClass = "app.vesper.desktop.MainKt"

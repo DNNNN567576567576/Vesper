@@ -3,8 +3,10 @@ package app.vesper
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.ImageBitmap
 import app.vesper.data.AppDatabase
+import app.vesper.sync.SyncManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
+import java.io.File
 
 /** What the shared ViewModels and screens need from the platform app; :app implements it in NotebookApp. */
 interface VesperHost {
@@ -22,6 +24,30 @@ interface VesperHost {
     val settings: Settings
     val shrineMedia: ShrineMedia
     val vault: Vault
+    val sync: SyncManager
+}
+
+/** What Drive sync needs from the platform. Blocking calls run off the main thread. */
+interface SyncPlatform {
+    /** False when this build has no Google client (desktop built without oauth-client.json). */
+    val available: Boolean
+
+    /** Device id and Drive cursors. Outside backups, so a restored phone can never clone a device id. */
+    val stateDir: File
+    fun isSignedIn(): Boolean
+
+    /** A fresh token for drive.appdata. Throws [app.vesper.sync.SignInNeeded] when the user must sign in again. */
+    fun accessToken(): String
+
+    /** The data key, unwrapped; null = not unlocked on this device. */
+    fun loadKey(): ByteArray?
+
+    /** Stores the data key at rest; null forgets it. */
+    fun storeKey(key: ByteArray?)
+
+    /** Returns the action that starts the sign-in; [onDone] gets null on success. */
+    @Composable
+    fun rememberSignIn(onDone: (Throwable?) -> Unit): () -> Unit
 }
 
 /** Small persistent key/value store for UI preferences (Android: SharedPreferences "vesper"). */

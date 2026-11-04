@@ -13,3 +13,5 @@ keystore/
 # local design files and private data backups, never commit
 design/
 backup/
+
+desktopApp/oauth-client.json

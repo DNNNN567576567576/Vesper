@@ -3,6 +3,7 @@ package app.vesper.desktop
 import androidx.room.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import app.vesper.DesktopShrineMedia
+import app.vesper.DesktopSyncPlatform
 import app.vesper.DesktopVault
 import app.vesper.PropertiesSettings
 import app.vesper.Settings
@@ -11,6 +12,7 @@ import app.vesper.Vault
 import app.vesper.VesperHost
 import app.vesper.data.AppDatabase
 import app.vesper.data.SYNC_TRIGGERS_CALLBACK
+import app.vesper.sync.SyncManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,6 +30,7 @@ class DesktopHost(dir: File) : VesperHost {
     override val settings: Settings = PropertiesSettings(File(dir, "settings.properties"))
     override val shrineMedia: ShrineMedia = DesktopShrineMedia
     override val vault: Vault = DesktopVault
+    override val sync by lazy { SyncManager(db, appScope, DesktopSyncPlatform(File(dir, "sync")), ::reportError) }
 
     override fun reportError(what: String, e: Throwable) {
         System.err.println("Vesper: could not $what")
