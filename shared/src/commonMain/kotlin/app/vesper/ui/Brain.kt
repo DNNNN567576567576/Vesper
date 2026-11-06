@@ -807,7 +807,7 @@ fun BrainScreen(
 
     // Vault sun: backup / restore. Work runs on appScope so leaving the tab can't cancel a write.
     val last by vault.lastBackupAt.collectAsState()
-    val sv = staleness(last)
+    val sv = if (vault.canBackup) staleness(last) else 0f
     var sunSel by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -853,6 +853,7 @@ fun BrainScreen(
         }
         if (sunSel && selected == null) {
             VaultSheet(
+                canBackup = vault.canBackup,
                 status = working ?: message ?: when {
                     last == null -> "nothing kept yet. keep a copy."
                     sv == 0f -> "your memories are kept safe."
@@ -1277,6 +1278,7 @@ private fun BrainCanvas(
 
 @Composable
 private fun VaultSheet(
+    canBackup: Boolean,
     status: String,
     busy: Boolean,
     onKeep: () -> Unit,
@@ -1294,14 +1296,16 @@ private fun VaultSheet(
             .pixelCard(fill = Px.Surface, border = Color(0xFFF596E1), shadow = false, notch = 4.dp)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Text("VAULT", Modifier.padding(vertical = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
-        Text(status, Modifier.padding(top = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim))
-        Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PixelButton("KEEP A COPY", { if (!busy) onKeep() }, primary = true, modifier = Modifier.weight(1f))
-            PixelButton("RESTORE", { if (!busy) onRestore() }, modifier = Modifier.weight(1f))
+        if (canBackup) {
+            Text("VAULT", Modifier.padding(vertical = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
+            Text(status, Modifier.padding(top = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim))
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PixelButton("KEEP A COPY", { if (!busy) onKeep() }, primary = true, modifier = Modifier.weight(1f))
+                PixelButton("RESTORE", { if (!busy) onRestore() }, modifier = Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(12.dp))
         }
-        Spacer(Modifier.height(12.dp))
         Text("SYNC", Modifier.padding(vertical = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
         val line = sync.working ?: when {
             !sync.available -> "sync is not set up in this build."

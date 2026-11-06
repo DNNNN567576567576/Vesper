@@ -95,6 +95,9 @@ interface ShrineMedia {
 
 /** Backup ("vault") of all data to a user-chosen file. Failures throw [app.vesper.data.BackupException]. */
 interface Vault {
+    /** False where backups are not offered (desktop): the vault sheet then shows sync only. */
+    val canBackup: Boolean get() = true
+
     /** Epoch millis of the last successful backup; null = never. */
     val lastBackupAt: StateFlow<Long?>
 

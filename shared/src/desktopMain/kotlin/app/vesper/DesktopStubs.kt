@@ -41,8 +41,9 @@ object DesktopShrineMedia : ShrineMedia {
     override fun VideoPlayer(name: String, onClose: () -> Unit) = LaunchedEffect(Unit) { onClose() }
 }
 
-// shortcut: backups are phone only until the desktop vault lands (M6); the buttons do nothing here.
+// Backups are phone only: canBackup = false hides the buttons, so the rest is never called.
 object DesktopVault : Vault {
+    override val canBackup = false
     override val lastBackupAt: StateFlow<Long?> = MutableStateFlow(null)
 
     @Composable
