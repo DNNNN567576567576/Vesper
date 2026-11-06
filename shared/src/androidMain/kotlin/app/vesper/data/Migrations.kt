@@ -3,9 +3,9 @@ package app.vesper.data
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-// Android-only: migrations 1..9 stay on SupportSQLiteDatabase, exactly as before the KMP split.
+// Android-only: migrations stay on SupportSQLiteDatabase, exactly as before the KMP split.
 // Android opens the DB in Room compatibility mode (no driver), so these run unchanged on the phone's file.
-// The desktop never migrates: it starts at the current version (see the sync plan, section A).
+// The desktop started at v9 and has its own list: DESKTOP_MIGRATIONS in Database.kt.
 
 /** v1 -> v2: adds the Brain tables. Notes and tasks are not touched. */
 val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -62,7 +62,8 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
     }
 }
 
-fun createSyncTriggers(db: SupportSQLiteDatabase) = SYNCED_TABLES.forEach { t -> syncTriggerSql(t).forEach(db::execSQL) }
+/** The synced tables as they were at v9. Never follows [SYNCED_TABLES]: old backups must still pass through [MIGRATION_8_9]. */
+private val V9_TABLES = listOf("notes", "tasks", "lobes", "ideas", "plans")
 
 /**
  * v8 -> v9: sync ids and clocks. Existing rows get deterministic uids ('notes-12'), so an old backup restored later
@@ -72,15 +73,20 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `sync_tombstones` (`tbl` TEXT NOT NULL, `uid` TEXT NOT NULL, `deletedAt` INTEGER NOT NULL, PRIMARY KEY(`tbl`, `uid`))")
         val clock = mapOf("notes" to "updatedAt", "tasks" to "snuffedAt", "lobes" to "NULL", "ideas" to "updatedAt", "plans" to "createdAt")
-        for (t in SYNCED_TABLES) {
+        for (t in V9_TABLES) {
             db.execSQL("ALTER TABLE `$t` ADD COLUMN `uid` TEXT NOT NULL DEFAULT ''")
             db.execSQL("ALTER TABLE `$t` ADD COLUMN `syncAt` INTEGER NOT NULL DEFAULT 0")
             db.execSQL("UPDATE `$t` SET `uid` = '$t-' || `id`, `syncAt` = max(coalesce(${clock.getValue(t)}, $NOW_MS), 1)")
             db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_${t}_uid` ON `$t` (`uid`)")
         }
-        createSyncTriggers(db) // after the backfill, so it isn't tracked as edits
+        V9_TABLES.forEach { t -> syncTriggerSql(t).forEach(db::execSQL) } // after the backfill, so it isn't tracked as edits
     }
 }
 
+/** v9 -> v10: groups, links and done, see [MIGRATE_9_10_SQL]. */
+val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) = MIGRATE_9_10_SQL.forEach(db::execSQL)
+}
+
 /** The single migration list used by the app and the tests. */
-val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)

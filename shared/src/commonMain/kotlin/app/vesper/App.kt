@@ -92,6 +92,7 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
     val posts by shrineVm.posts.collectAsStateWithLifecycle()
     val lobes by brainVm.lobes.collectAsStateWithLifecycle()
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
+    val branches by brainVm.branches.collectAsStateWithLifecycle()
     val notes by notesVm.notes.collectAsStateWithLifecycle()
     val tasks by tasksVm.tasks.collectAsStateWithLifecycle()
     val snuffedTasks by tasksVm.snuffed.collectAsStateWithLifecycle()
@@ -267,6 +268,7 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
                 BrainScreen(
                     lobes = lobes,
                     ideas = ideas,
+                    branches = branches,
                     notes = notes,
                     camera = brainCamera,
                     selectedLobe = selectedLobe,
@@ -275,6 +277,10 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
                     onDeleteLobe = brainVm::deleteLobe,
                     onSaveIdea = brainVm::saveIdea,
                     onDeleteIdea = brainVm::deleteIdea,
+                    onSetIdeaDone = brainVm::setIdeaDone,
+                    onAddBranch = brainVm::addBranch,
+                    onRenameBranch = brainVm::renameBranch,
+                    onDeleteBranch = brainVm::deleteBranch,
                     onOpenNote = { id -> if (wide) { tab = 0; editorParent = NO_EDITOR }; editorSession++; editorTarget = id },
                     vault = host.vault,
                     sync = host.sync,

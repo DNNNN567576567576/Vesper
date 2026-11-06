@@ -13,6 +13,7 @@ import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.RoomDatabaseConstructor
 import androidx.room.Update
+import androidx.room.migration.Migration
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 import kotlinx.coroutines.flow.Flow
@@ -113,11 +114,30 @@ data class Lobe(
     @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
 )
 
+/** A user-named group of ideas inside a lobe. Deleting one leaves its ideas directly on the lobe (the FK sets [Idea.branchId] to null). */
+@Entity(
+    tableName = "branches",
+    foreignKeys = [ForeignKey(Lobe::class, ["id"], ["lobeId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("lobeId"), Index(value = ["uid"], unique = true)],
+)
+data class Branch(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val lobeId: Long,
+    val name: String,
+    /** Sync identity, the same on every device. */
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    /** Sync clock (epoch ms), kept current by the [syncTriggerSql] triggers; 0 = stamped on insert. Not shown in the UI. */
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+)
+
 /** One thought inside a lobe. [noteId] optionally points at a note; it is not a foreign key because notes are deleted permanently. */
 @Entity(
     tableName = "ideas",
-    foreignKeys = [ForeignKey(Lobe::class, ["id"], ["lobeId"], onDelete = ForeignKey.CASCADE)],
-    indices = [Index("lobeId"), Index(value = ["uid"], unique = true)],
+    foreignKeys = [
+        ForeignKey(Lobe::class, ["id"], ["lobeId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(Branch::class, ["id"], ["branchId"], onDelete = ForeignKey.SET_NULL),
+    ],
+    indices = [Index("lobeId"), Index("branchId"), Index(value = ["uid"], unique = true)],
 )
 data class Idea(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -131,6 +151,10 @@ data class Idea(
     @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
     /** Sync clock (epoch ms), kept current by the [syncTriggerSql] triggers; 0 = stamped on insert. Not shown in the UI. */
     @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+    /** The group it sits in; null = directly on the lobe. */
+    val branchId: Long? = null,
+    val link: String? = null,
+    @ColumnInfo(defaultValue = "0") val done: Boolean = false,
 )
 
 @Dao
@@ -140,6 +164,9 @@ interface BrainDao {
 
     @Query("SELECT * FROM ideas ORDER BY updatedAt DESC, id DESC")
     fun observeIdeas(): Flow<List<Idea>>
+
+    @Query("SELECT * FROM branches ORDER BY uid ASC")
+    fun observeBranches(): Flow<List<Branch>>
 
     @Insert
     suspend fun insertLobe(lobe: Lobe): Long
@@ -160,9 +187,25 @@ interface BrainDao {
     @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
     suspend fun insertIdeaCopy(idea: Idea)
 
-    /** The title alone: a whole-row write from a held copy would put back whatever sync changed since. */
-    @Query("UPDATE ideas SET title = :title, updatedAt = :at WHERE id = :id")
-    suspend fun setIdeaTitle(id: Long, title: String, at: Long)
+    /** Named columns only: a whole-row write from a held copy would put back whatever sync changed since. */
+    @Query("UPDATE ideas SET title = :title, body = :body, link = :link, branchId = :branchId, updatedAt = :at WHERE id = :id")
+    suspend fun setIdeaFields(id: Long, title: String, body: String, link: String?, branchId: Long?, at: Long)
+
+    @Query("UPDATE ideas SET done = :done WHERE id = :id")
+    suspend fun setIdeaDone(id: Long, done: Boolean)
+
+    @Insert
+    suspend fun insertBranch(branch: Branch): Long
+
+    @Query("UPDATE branches SET name = :name WHERE id = :id")
+    suspend fun renameBranch(id: Long, name: String)
+
+    @Query("SELECT EXISTS(SELECT 1 FROM branches WHERE id = :id)")
+    suspend fun branchExists(id: Long): Boolean
+
+    /** Its ideas stay, directly on the lobe. */
+    @Query("DELETE FROM branches WHERE id = :id")
+    suspend fun deleteBranch(id: Long)
 
     @Query("DELETE FROM ideas WHERE id = :id")
     suspend fun deleteIdea(id: Long)
@@ -267,6 +310,7 @@ interface SyncDao {
     @Query("SELECT * FROM notes") suspend fun notes(): List<Note>
     @Query("SELECT * FROM tasks") suspend fun tasks(): List<Task>
     @Query("SELECT * FROM lobes") suspend fun lobes(): List<Lobe>
+    @Query("SELECT * FROM branches") suspend fun branches(): List<Branch>
     @Query("SELECT * FROM ideas") suspend fun ideas(): List<Idea>
     @Query("SELECT * FROM plans") suspend fun plans(): List<Plan>
     @Query("SELECT * FROM sync_tombstones") suspend fun tombstones(): List<SyncTombstone>
@@ -274,13 +318,15 @@ interface SyncDao {
     /** Rises on every change to a synced table, deletes included: the triggers keep each term moving. */
     @Query(
         "SELECT IFNULL((SELECT MAX(syncAt) FROM notes), 0) + IFNULL((SELECT MAX(syncAt) FROM tasks), 0) + IFNULL((SELECT MAX(syncAt) FROM lobes), 0) + " +
-            "IFNULL((SELECT MAX(syncAt) FROM ideas), 0) + IFNULL((SELECT MAX(syncAt) FROM plans), 0) + IFNULL((SELECT MAX(deletedAt) FROM sync_tombstones), 0)",
+            "IFNULL((SELECT MAX(syncAt) FROM branches), 0) + IFNULL((SELECT MAX(syncAt) FROM ideas), 0) + IFNULL((SELECT MAX(syncAt) FROM plans), 0) + " +
+            "IFNULL((SELECT MAX(deletedAt) FROM sync_tombstones), 0)",
     )
     fun observeChanges(): Flow<Long>
 
     @Insert suspend fun insert(row: Note): Long
     @Insert suspend fun insert(row: Task): Long
     @Insert suspend fun insert(row: Lobe): Long
+    @Insert suspend fun insert(row: Branch): Long
     @Insert suspend fun insert(row: Idea): Long
     @Insert suspend fun insert(row: Plan): Long
     @Insert suspend fun insert(rows: List<SyncTombstone>)
@@ -288,12 +334,14 @@ interface SyncDao {
     @Update suspend fun update(row: Note)
     @Update suspend fun update(row: Task)
     @Update suspend fun update(row: Lobe)
+    @Update suspend fun update(row: Branch)
     @Update suspend fun update(row: Idea)
     @Update suspend fun update(row: Plan)
 
     @Query("DELETE FROM notes WHERE uid = :uid") suspend fun deleteNote(uid: String)
     @Query("DELETE FROM tasks WHERE uid = :uid") suspend fun deleteTask(uid: String)
     @Query("DELETE FROM lobes WHERE uid = :uid") suspend fun deleteLobe(uid: String)
+    @Query("DELETE FROM branches WHERE uid = :uid") suspend fun deleteBranch(uid: String)
     @Query("DELETE FROM ideas WHERE uid = :uid") suspend fun deleteIdea(uid: String)
     @Query("DELETE FROM plans WHERE uid = :uid") suspend fun deletePlan(uid: String)
     @Query("DELETE FROM sync_tombstones") suspend fun clearTombstones()
@@ -307,7 +355,7 @@ data class SyncTombstone(val tbl: String, val uid: String, val deletedAt: Long)
 fun newUid(): String = kotlin.uuid.Uuid.random().toHexString()
 
 /** The tables that carry uid + syncAt. day_focus and posts are not synced yet. */
-val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "ideas", "plans")
+val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "branches", "ideas", "plans")
 
 internal const val NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)"
 
@@ -329,9 +377,29 @@ fun syncTriggerSql(t: String) = listOf(
 )
 
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 9
+const val DB_VERSION = 10
 
-@Database(entities = [Note::class, Task::class, Lobe::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class], version = DB_VERSION, exportSchema = true)
+/**
+ * v9 -> v10, as plain SQL so Android and desktop run the very same statements. Groups come in with ALTER, not a table
+ * rebuild: no delete or update trigger fires, no syncAt moves, and every row keeps its lobe and noteId. No default group is
+ * made here: two devices migrating apart would each mint their own and sync would double it.
+ */
+val MIGRATE_9_10_SQL = listOf(
+    "CREATE TABLE IF NOT EXISTS `branches` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `lobeId` INTEGER NOT NULL, `name` TEXT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `syncAt` INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(`lobeId`) REFERENCES `lobes`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+    "CREATE INDEX IF NOT EXISTS `index_branches_lobeId` ON `branches` (`lobeId`)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_branches_uid` ON `branches` (`uid`)",
+    "ALTER TABLE `ideas` ADD COLUMN `branchId` INTEGER REFERENCES `branches`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL",
+    "ALTER TABLE `ideas` ADD COLUMN `link` TEXT",
+    "ALTER TABLE `ideas` ADD COLUMN `done` INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS `index_ideas_branchId` ON `ideas` (`branchId`)",
+) + syncTriggerSql("branches")
+
+/** The desktop's first release was v9, so this is its whole list. Its driver has no SupportSQLiteDatabase, hence the connection. */
+val DESKTOP_MIGRATIONS = arrayOf<Migration>(object : Migration(9, 10) {
+    override fun migrate(connection: SQLiteConnection) = MIGRATE_9_10_SQL.forEach { connection.execSQL(it) }
+})
+
+@Database(entities = [Note::class, Task::class, Lobe::class, Branch::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class], version = DB_VERSION, exportSchema = true)
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao

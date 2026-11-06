@@ -109,6 +109,27 @@ class BackupTest {
     @Test
     fun restoresAndMigratesV8Backup() = restoresAndMigratesOldVersionBackup(8)
 
+    @Test
+    fun restoresAndMigratesV9Backup(): Unit = runBlocking {
+        helper.createDatabase("old9.db", 9).apply {
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'x', 1700000000000, 0, 'notes-1', 1)")
+            execSQL("INSERT INTO lobes (id, name, colorIndex, slot, uid, syncAt) VALUES (1, 'Work', 2, 0, 'lobes-1', 2)")
+            execSQL("INSERT INTO ideas (id, lobeId, title, body, noteId, updatedAt, uid, syncAt) VALUES (1, 1, 'Idea', 'body', 1, 1700000001000, 'ideas-1', 3)")
+            close()
+        }
+        seed()
+        restoreBackup(app, zip("old9.zip", mapOf("manifest.json" to manifest(9), "database.db" to app.getDatabasePath("old9.db").readBytes())))
+        val db = reopen()
+        try {
+            val idea = db.brainDao().observeIdeas().first().single()
+            assertEquals(listOf("Idea", "body", "ideas-1"), listOf(idea.title, idea.body, idea.uid))
+            assertEquals(1L, idea.noteId)
+            assertEquals(null, idea.branchId)
+            assertEquals(false, idea.done)
+            assertEquals(emptyList<Branch>(), db.brainDao().observeBranches().first())
+        } finally { db.close() }
+    }
+
     private fun restoresAndMigratesOldVersionBackup(version: Int): Unit = runBlocking {
         helper.createDatabase("old.db", version).apply {
             if (version < 6) execSQL("INSERT INTO notes (id, title, content, updatedAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000)")

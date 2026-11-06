@@ -25,6 +25,7 @@ import org.jetbrains.compose.resources.decodeToImageBitmap
 import org.jetbrains.compose.resources.getDrawableResourceBytes
 import org.jetbrains.compose.resources.getSystemResourceEnvironment
 import org.jetbrains.compose.resources.setResourceReaderAndroidContext
+import app.vesper.data.Branch
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import org.junit.After
@@ -74,17 +75,18 @@ class BrainPixelTest {
     // ----
 
     private val lobes = listOf(
-        Lobe(id = 1, name = "Hollow", colorIndex = 0, slot = 0),
-        Lobe(id = 2, name = "Ash", colorIndex = 1, slot = 1),
-        Lobe(id = 5, name = "", colorIndex = 4, slot = 2),
-        Lobe(id = 9, name = "Marrow", colorIndex = 3, slot = 7),
+        Lobe(id = 1, name = "Hollow", colorIndex = 0, slot = 0, uid = "lobe-1"),
+        Lobe(id = 2, name = "Ash", colorIndex = 1, slot = 1, uid = "lobe-2"),
+        Lobe(id = 5, name = "", colorIndex = 4, slot = 2, uid = "lobe-5"),
+        Lobe(id = 9, name = "Marrow", colorIndex = 3, slot = 7, uid = "lobe-9"),
     )
+    private val branches = listOf(Branch(id = 1, lobeId = 2, name = "Read", uid = "read"), Branch(id = 2, lobeId = 2, name = "Empty", uid = "empty"))
     private val ideas = buildList {
-        for (k in 1..12) add(Idea(id = k.toLong(), lobeId = 1, title = "idea $k", body = "", updatedAt = 1000L + k * 37 % 11))
-        for (k in 20..22) add(Idea(id = k.toLong(), lobeId = 2, title = "", body = "b$k", updatedAt = 5000L - k))
-        add(Idea(id = 40, lobeId = 9, title = "lone", body = "", updatedAt = 1L))
+        for (k in 1..12) add(Idea(id = k.toLong(), lobeId = 1, title = "idea $k", body = "", updatedAt = 1000L + k * 37 % 11, uid = "idea-$k"))
+        for (k in 20..22) add(Idea(id = k.toLong(), lobeId = 2, title = "", body = "b$k", updatedAt = 5000L - k, uid = "idea-$k", branchId = 1, done = k == 21))
+        add(Idea(id = 40, lobeId = 9, title = "lone", body = "", updatedAt = 1L, uid = "idea-40"))
     }
-    private val layout = buildLayout(lobes, placeIdeas(lobes, ideas))
+    private val layout = buildLayout(lobes, placeIdeas(lobes, branches, ideas))
 
     @Test fun frames() {
         val r = newRenderer()
@@ -103,6 +105,10 @@ class BrainPixelTest {
         check("selectedZoom", pixels(r), E["selectedZoom"])
         r.draw(11.9f, -40f, 20f, 0.6f, layout, 3, 0.25f, false)
         check("selectedFar", pixels(r), E["selectedFar"])
+        // deep in a group: nodes stopped growing, a done item is dull
+        val g = placeIdeas(lobes, branches, ideas).branches.first { it.branch.uid == "read" }.pos
+        r.draw(5.2f, g.x, g.y, 6f, layout, 1, 0f, false)
+        check("groupDeep", pixels(r), E["groupDeep"])
         // idea positions handed to the label pass
         assertEquals(layout.nI, (0 until layout.nI).count { r.ipx[it] != 0f || r.ipy[it] != 0f })
     }
@@ -137,9 +143,9 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "overview" to 1157042727, "flareFresh" to -1817413383, "staleSun" to 561859433,
-            "selectedZoom" to 990412822, "selectedFar" to 580163640, "small" to 1302377833,
-            "blit3" to 2073209247, "glowLabel" to -66391980,
+            "overview" to 1733495740, "flareFresh" to 1477361297, "staleSun" to -477077436,
+            "selectedZoom" to 1674955127, "selectedFar" to -1152125229, "small" to -425604476,
+            "blit3" to 365364102, "glowLabel" to -66391980, "groupDeep" to -1266083703,
         )
     }
 }

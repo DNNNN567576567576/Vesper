@@ -61,10 +61,15 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
     val vault = files.vault()?.id
     if (vault == null || vault != store.state.vaultId) throw VaultChanged()
 
+    var olderPeer = false
     for (f in files) {
         val peer = SNAP.matchEntire(f.name)?.groupValues?.get(1) ?: continue
         if (peer == deviceId || store.state.peerVersions[f.id] == f.version) continue
         val remote = json.decodeFromString(Snapshot.serializer(), String(open(key, f.name, t.download(f.id))))
+        // Too old to merge: its rows lack fields we hold and would wipe them. Skipping loses nothing, that device keeps its rows
+        // and sends them once updated. We still push below: two freshly updated devices each see the other's old file, and
+        // if both stopped here neither would ever write a new one.
+        if (remote.v < SNAPSHOT_VERSION) { olderPeer = true; continue }
         remote.validate()
         if (remote.deviceId != peer) throw SyncException("The copy on Drive is damaged. Nothing was changed.")
         val seen = store.state.seen
@@ -84,6 +89,7 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
         hash != store.state.pushedHash -> t.update(own[0].id, seal(key, name, plain))
     }
     store.state = store.state.copy(pushedHash = hash, pushedUpTo = snapshot.rows.maxOfOrNull { it.syncAt } ?: 0, lastSyncAt = now())
+    if (olderPeer) throw SyncException("Your other device runs an older Vesper. Update it to sync again. Everything here is safe.")
 }
 
 /**

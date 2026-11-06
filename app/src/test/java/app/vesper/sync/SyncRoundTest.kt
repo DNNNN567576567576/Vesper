@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import app.vesper.data.AppDatabase
+import app.vesper.data.Branch
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import app.vesper.data.Note
@@ -16,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -319,7 +321,7 @@ class SyncRoundTest {
         a.db.brainDao().insertIdea(Idea(lobeId = lobe, title = "i", body = "", uid = "idea"))
         converge(a, b)
         a.db.brainDao().deleteLobe(lobe); tick()
-        b.db.brainDao().setIdeaTitle(b.db.syncDao().ideas().single().id, "edited", 2)
+        b.db.brainDao().setIdeaFields(b.db.syncDao().ideas().single().id, "edited", "", null, null, 2)
         converge(a, b)
         assertEquals("edited", a.db.syncDao().ideas().single().title)
         assertEquals("Work", a.db.syncDao().lobes().single().name)
@@ -421,10 +423,118 @@ class SyncRoundTest {
 
     @Test fun aSnapshotInAnotherDevicesFileIsRefused() = test {
         val (a, b) = pair()
-        val fake = Snapshot(deviceId = "someone-else")
+        val fake = Snapshot(v = SNAPSHOT_VERSION, deviceId = "someone-else")
         val name = snapName(a.store.state.deviceId)
         drive.create(name, seal(key, name, kotlinx.serialization.json.Json.encodeToString(Snapshot.serializer(), fake).toByteArray()))
         assertThrows(SyncException::class.java) { runBlocking { b.sync() } }
+    }
+
+    private fun upload(id: String, snap: Snapshot) {
+        val name = snapName(id)
+        drive.create(name, seal(key, name, kotlinx.serialization.json.Json.encodeToString(Snapshot.serializer(), snap).toByteArray()))
+    }
+
+    private fun Device.ownFile(): String {
+        val name = snapName(store.state.deviceId)
+        return String(open(key, name, drive.files.entries.first { it.key.name == name }.value.bytes))
+    }
+
+    private suspend fun Device.seedWeb(): Long {
+        val lobe = db.brainDao().insertLobe(Lobe(name = "Religion", colorIndex = 1, slot = 0, uid = "L"))
+        val read = db.brainDao().insertBranch(Branch(lobeId = lobe, name = "Read", uid = "read"))
+        db.brainDao().insertIdea(Idea(lobeId = lobe, title = "Gita", body = "chapter 2", uid = "gita", branchId = read, link = "example.org/gita", done = true))
+        db.brainDao().insertIdea(Idea(lobeId = lobe, title = "loose", body = "", uid = "loose"))
+        return read
+    }
+
+    @Test fun groupsLinksAndDoneTravel() = test {
+        val (a, b) = pair()
+        a.seedWeb()
+        converge(a, b)
+        val idea = b.db.syncDao().ideas().single { it.uid == "gita" }
+        assertEquals("Read", b.db.syncDao().branches().single { it.id == idea.branchId }.name)
+        assertEquals("example.org/gita" to true, idea.link to idea.done)
+        assertNull(b.db.syncDao().ideas().single { it.uid == "loose" }.branchId)
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun aDeletedGroupGoesEverywhereAndItsItemsLandOnTheLobe() = test {
+        val (a, b) = pair()
+        val read = a.seedWeb()
+        converge(a, b)
+        a.db.brainDao().deleteBranch(read)
+        converge(a, b)
+        assertTrue(b.db.syncDao().branches().isEmpty())
+        assertNull(b.db.syncDao().ideas().single { it.uid == "gita" }.branchId)
+        assertEquals("Gita", b.db.syncDao().ideas().single { it.uid == "gita" }.title)
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun anItemMovedIntoAGroupDeletedElsewhereLandsOnTheLobe() = test {
+        val (a, b) = pair()
+        val read = a.seedWeb()
+        converge(a, b)
+        a.db.brainDao().deleteBranch(read); tick()
+        val loose = b.db.syncDao().ideas().single { it.uid == "loose" }
+        b.db.brainDao().setIdeaFields(loose.id, "moved", "", null, b.db.syncDao().branches().single().id, 5)
+        converge(a, b)
+        assertTrue(a.db.syncDao().branches().isEmpty())
+        assertEquals("moved" to null, a.db.syncDao().ideas().single { it.uid == "loose" }.let { it.title to it.branchId })
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun deletingALobeTombstonesItsGroups() = test {
+        val (a, b) = pair()
+        a.seedWeb()
+        converge(a, b)
+        a.db.brainDao().deleteLobe(a.db.syncDao().lobes().single().id)
+        converge(a, b)
+        assertTrue(b.db.syncDao().branches().isEmpty() && b.db.syncDao().ideas().isEmpty() && b.db.syncDao().lobes().isEmpty())
+    }
+
+    @Test fun aSnapshotKeepsItsVersionOnTheWire() = test {
+        val (a, _) = pair()
+        a.sync()
+        assertTrue(a.ownFile().contains("\"v\":$SNAPSHOT_VERSION")) // what makes a version 1 build stop
+        // files from before the bump carry no version at all: they must read as old, not as ours
+        val old = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), """{"deviceId":"x"}""")
+        assertEquals(1, old.v)
+    }
+
+    @Test fun anOlderDevicesFileChangesNothingHereAndIsStillAnswered() = test {
+        val (a, _) = pair()
+        a.seedWeb()
+        val before = a.state()
+        // the old device edited the same idea later: merged, its row would wipe group, link and done
+        val l = SyncLobe("L", 1, "Religion", 1, 0)
+        upload("old-device", Snapshot(deviceId = "old-device", lobes = listOf(l), ideas = listOf(SyncIdea("gita", Long.MAX_VALUE / 2, "L", "Gita edited", "", null, 1))))
+        val e = assertThrows(SyncException::class.java) { runBlocking { a.sync() } }
+        assertTrue(e.message!!, e.message!!.contains("older Vesper"))
+        assertEquals(before, a.state())
+        assertTrue(a.ownFile().contains("example.org/gita")) // pushed anyway
+    }
+
+    /** Both updated, each holding the other's version 1 file: stopping at it would leave them stuck for good. */
+    @Test fun twoUpdatedDevicesGetPastEachOthersOldFiles() = test {
+        val (a, b) = pair()
+        a.seedWeb()
+        for (id in listOf(a.store.state.deviceId, b.store.state.deviceId)) upload(id, Snapshot(deviceId = id))
+        assertThrows(SyncException::class.java) { runBlocking { a.sync() } } // b's file is old, a pushes regardless
+        b.sync() // a's is new now, so b has nothing to complain about
+        a.sync()
+        assertEquals(a.state(), b.state())
+        assertEquals("example.org/gita", b.db.syncDao().ideas().single { it.uid == "gita" }.link)
+    }
+
+    @Test fun aNewerDevicesFileStopsTheRoundBeforeAnythingHappens() = test {
+        val (a, _) = pair()
+        a.seedWeb()
+        val before = a.state()
+        val uploads = drive.uploads
+        upload("future", Snapshot(v = SNAPSHOT_VERSION + 1, deviceId = "future", tombstones = listOf(SyncTomb("lobes", "L", Long.MAX_VALUE))))
+        assertThrows(SyncException::class.java) { runBlocking { a.sync() } }
+        assertEquals(before, a.state())
+        assertEquals(uploads + 1, drive.uploads) // only the test's own upload
     }
 
     @Test fun aRetriedCreateKeepsTheOldestOwnFile() = test {

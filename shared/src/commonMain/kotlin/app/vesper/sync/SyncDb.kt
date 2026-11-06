@@ -3,6 +3,7 @@ package app.vesper.sync
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
 import app.vesper.data.AppDatabase
+import app.vesper.data.Branch
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import app.vesper.data.Note
@@ -16,12 +17,16 @@ private suspend fun SyncDao.read(deviceId: String): Snapshot {
     val lobes = lobes()
     val noteUid = notes.associate { it.id to it.uid }
     val lobeUid = lobes.associate { it.id to it.uid }
+    val branches = branches()
+    val branchUid = branches.associate { it.id to it.uid }
     return Snapshot(
+        v = SNAPSHOT_VERSION,
         deviceId = deviceId,
         notes = notes.map { SyncNote(it.uid, it.syncAt, it.title, it.content, it.updatedAt, it.position, noteUid[it.parentId]) }.sortedBy { it.uid },
         tasks = tasks().map { SyncTask(it.uid, it.syncAt, it.text, it.snuffedAt) }.sortedBy { it.uid },
         lobes = lobes.map { SyncLobe(it.uid, it.syncAt, it.name, it.colorIndex, it.slot) }.sortedBy { it.uid },
-        ideas = ideas().map { SyncIdea(it.uid, it.syncAt, lobeUid.getValue(it.lobeId), it.title, it.body, noteUid[it.noteId], it.updatedAt) }.sortedBy { it.uid },
+        branches = branches.map { SyncBranch(it.uid, it.syncAt, lobeUid.getValue(it.lobeId), it.name) }.sortedBy { it.uid },
+        ideas = ideas().map { SyncIdea(it.uid, it.syncAt, lobeUid.getValue(it.lobeId), it.title, it.body, noteUid[it.noteId], it.updatedAt, branchUid[it.branchId], it.link, it.done) }.sortedBy { it.uid },
         plans = plans().map { SyncPlan(it.uid, it.syncAt, it.day, it.text, it.done, it.createdAt) }.sortedBy { it.uid },
         tombstones = tombstones().map { SyncTomb(it.tbl, it.uid, it.deletedAt) }.sortedWith(compareBy({ it.tbl }, { it.uid })),
     )
@@ -64,6 +69,12 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
         if (row.id == 0L) lobeIds[l.uid] = insert(row) else update(row)
     }
 
+    val branchIds = branches().associate { it.uid to it.id }.toMutableMap()
+    for (b in changed(local.branches, merged.branches)) {
+        val row = Branch(branchIds[b.uid] ?: 0, lobeIds.getValue(b.lobeUid), b.name, b.uid, b.syncAt)
+        if (row.id == 0L) branchIds[b.uid] = insert(row) else update(row)
+    }
+
     val noteIds = notes().associate { it.uid to it.id }.toMutableMap()
     var rest = changed(local.notes, merged.notes)
     while (rest.isNotEmpty()) {
@@ -78,9 +89,11 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
 
     val ideaIds = ideas().associate { it.uid to it.id }
     for (i in changed(local.ideas, merged.ideas)) {
-        val row = Idea(ideaIds[i.uid] ?: 0, lobeIds.getValue(i.lobeUid), i.title, i.body, noteIds[i.noteUid], i.updatedAt, i.uid, i.syncAt)
+        val row = Idea(ideaIds[i.uid] ?: 0, lobeIds.getValue(i.lobeUid), i.title, i.body, noteIds[i.noteUid], i.updatedAt, i.uid, i.syncAt, branchIds[i.branchUid], i.link, i.done)
         if (row.id == 0L) insert(row) else update(row)
     }
+    // After the ideas: they have already left these groups under their merged stamp, so the FK's SET NULL finds nothing to re-stamp.
+    gone(local.branches, merged.branches).forEach { deleteBranch(it) }
     val taskIds = tasks().associate { it.uid to it.id }
     for (t in changed(local.tasks, merged.tasks)) {
         val row = Task(taskIds[t.uid] ?: 0, t.text, t.snuffedAt, t.uid, t.syncAt)

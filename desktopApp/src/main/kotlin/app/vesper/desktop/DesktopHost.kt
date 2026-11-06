@@ -11,6 +11,7 @@ import app.vesper.ShrineMedia
 import app.vesper.Vault
 import app.vesper.VesperHost
 import app.vesper.data.AppDatabase
+import app.vesper.data.DESKTOP_MIGRATIONS
 import app.vesper.data.SYNC_TRIGGERS_CALLBACK
 import app.vesper.sync.SyncManager
 import kotlinx.coroutines.CoroutineScope
@@ -18,10 +19,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import java.io.File
 
-/** Desktop platform: a fresh DB at the current version (no migrations), settings and DB under [dir]. */
+/** Desktop platform: settings and DB under [dir]. */
 class DesktopHost(dir: File) : VesperHost {
     override val db: AppDatabase = Room.databaseBuilder<AppDatabase>(File(dir, "vesper.db").absolutePath)
         .setDriver(BundledSQLiteDriver())
+        .addMigrations(*DESKTOP_MIGRATIONS)
         .setQueryCoroutineContext(Dispatchers.IO)
         .addCallback(SYNC_TRIGGERS_CALLBACK)
         .build()

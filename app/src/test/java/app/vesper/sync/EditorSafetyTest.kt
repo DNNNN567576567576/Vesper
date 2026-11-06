@@ -12,6 +12,7 @@ import app.vesper.ShrineMedia
 import app.vesper.Vault
 import app.vesper.VesperHost
 import app.vesper.data.AppDatabase
+import app.vesper.data.Branch
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import app.vesper.data.Note
@@ -223,6 +224,48 @@ class EditorSafetyTest {
         assertEquals("held, edited", row.title)
         assertEquals("newer body", row.body)
         assertEquals(7L, row.noteId)
+    }
+
+    @Test fun theDialogSavesNoteLinkAndGroup() {
+        val vm = BrainViewModel(host)
+        val l = lobe()
+        val held = heldIdea(l)
+        val group = io { host.db.brainDao().insertBranch(Branch(lobeId = l, name = "Read")) }
+        vm.saveIdea(held, "held", " new note ", " example.org ", group).done()
+        val row = io { rows.ideas() }.single()
+        assertEquals(listOf("new note", "example.org"), listOf(row.body, row.link))
+        assertEquals(group, row.branchId)
+    }
+
+    @Test fun moveToAGroupDeletedMeanwhileLandsOnTheLobe() {
+        val vm = BrainViewModel(host)
+        val l = lobe()
+        val held = heldIdea(l)
+        val group = io { host.db.brainDao().insertBranch(Branch(lobeId = l, name = "Read")) }
+        io { host.db.brainDao().deleteBranch(group) }
+        vm.saveIdea(held, "held", held.body, "x", group).done()
+        val row = io { rows.ideas() }.single()
+        assertNull(row.branchId)
+        assertEquals("x", row.link)
+    }
+
+    @Test fun aHeldIdeaWhoseNoteChangedBySyncKeepsBothNotes() {
+        val vm = BrainViewModel(host)
+        val held = heldIdea(lobe())
+        io { rows.update(held.copy(body = "from the phone", syncAt = held.syncAt + 1000)) }
+        vm.saveIdea(held, "held", "mine").done()
+        assertEquals(setOf("mine", "from the phone"), io { rows.ideas() }.map { it.body }.toSet())
+    }
+
+    @Test fun deletingAGroupKeepsItsItems() {
+        val vm = BrainViewModel(host)
+        val l = lobe()
+        val held = heldIdea(l)
+        val group = io { host.db.brainDao().insertBranch(Branch(lobeId = l, name = "Read")) }
+        vm.saveIdea(held, "held", held.body, null, group).done()
+        io { host.db.brainDao().deleteBranch(group) }
+        val row = io { rows.ideas() }.single()
+        assertEquals("held" to null, row.title to row.branchId)
     }
 
     @Test fun anUnchangedIdeaDialogWritesNothing() {

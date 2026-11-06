@@ -11,8 +11,9 @@ class SyncMergeTest {
     private fun note(uid: String, at: Long, text: String = "t", parent: String? = null, pos: Int = 0) = SyncNote(uid, at, "title", text, at, pos, parent)
     private fun lobe(uid: String, at: Long) = SyncLobe(uid, at, "L", 0, 0)
     private fun idea(uid: String, at: Long, lobe: String = "L", title: String = "i") = SyncIdea(uid, at, lobe, title, "", null, at)
-    private fun a(notes: List<SyncNote> = emptyList(), lobes: List<SyncLobe> = emptyList(), ideas: List<SyncIdea> = emptyList(), tombs: List<SyncTomb> = emptyList()) = Snapshot(deviceId = "a", notes = notes, lobes = lobes, ideas = ideas, tombstones = tombs)
-    private fun b(notes: List<SyncNote> = emptyList(), lobes: List<SyncLobe> = emptyList(), ideas: List<SyncIdea> = emptyList(), tombs: List<SyncTomb> = emptyList()) = Snapshot(deviceId = "b", notes = notes, lobes = lobes, ideas = ideas, tombstones = tombs)
+    private fun branch(uid: String, at: Long, lobe: String = "L", name: String = "G") = SyncBranch(uid, at, lobe, name)
+    private fun a(notes: List<SyncNote> = emptyList(), lobes: List<SyncLobe> = emptyList(), ideas: List<SyncIdea> = emptyList(), tombs: List<SyncTomb> = emptyList(), branches: List<SyncBranch> = emptyList()) = Snapshot(deviceId = "a", notes = notes, lobes = lobes, branches = branches, ideas = ideas, tombstones = tombs)
+    private fun b(notes: List<SyncNote> = emptyList(), lobes: List<SyncLobe> = emptyList(), ideas: List<SyncIdea> = emptyList(), tombs: List<SyncTomb> = emptyList(), branches: List<SyncBranch> = emptyList()) = Snapshot(deviceId = "b", notes = notes, lobes = lobes, branches = branches, ideas = ideas, tombstones = tombs)
 
     @Test fun newestWins() {
         assertEquals(listOf(note("n", 2, "new")), merge(a(listOf(note("n", 1, "old"))), b(listOf(note("n", 2, "new"))), mapOf("notes:n" to 1)).notes)
@@ -156,6 +157,67 @@ class SyncMergeTest {
         assertEquals(4, merged.lobes.map { it.slot }.toSet().size)
         assertEquals(merged.lobes, merge(theirs.copy(deviceId = "a"), mine.copy(deviceId = "b"), emptyMap()).lobes)
         assertEquals(merged, merge(merged, theirs, emptyMap())) // settled: nothing moves again
+    }
+
+    @Test fun newestGroupNameWinsAndNeverMakesACopy() {
+        val l = lobe("L", 1)
+        val merged = merge(a(lobes = listOf(l), branches = listOf(branch("g", 10, name = "mine"))), b(lobes = listOf(l), branches = listOf(branch("g", 20, name = "theirs"))), emptyMap())
+        assertEquals(listOf("theirs"), merged.branches.map { it.name })
+    }
+
+    @Test fun aDeletedGroupStaysDeletedAndAnOlderCopyDoesNotReviveIt() {
+        val l = lobe("L", 1)
+        val merged = merge(a(lobes = listOf(l), tombs = listOf(SyncTomb("branches", "g", 10))), b(lobes = listOf(l), branches = listOf(branch("g", 5))), emptyMap())
+        assertTrue(merged.branches.isEmpty())
+        assertEquals(listOf(SyncTomb("branches", "g", 10)), merged.tombstones)
+    }
+
+    @Test fun aGroupRenamedAfterItsDeleteComesBack() {
+        val l = lobe("L", 1)
+        val merged = merge(a(lobes = listOf(l), tombs = listOf(SyncTomb("branches", "g", 10))), b(lobes = listOf(l), branches = listOf(branch("g", 11))), emptyMap())
+        assertEquals(listOf("g"), merged.branches.map { it.uid })
+        assertTrue(merged.tombstones.isEmpty())
+    }
+
+    @Test fun anIdeaInADeletedGroupLandsOnTheLobeTheSameOnBothDevices() {
+        val l = lobe("L", 1); val i = idea("i", 20).copy(branchUid = "g", link = "x", done = true)
+        val deleter = a(lobes = listOf(l), tombs = listOf(SyncTomb("branches", "g", 10)))
+        val mover = b(lobes = listOf(l), branches = listOf(branch("g", 5)), ideas = listOf(i))
+        val here = merge(deleter, mover, emptyMap())
+        val there = merge(mover.copy(deviceId = "a"), deleter.copy(deviceId = "b"), emptyMap())
+        val landed = i.copy(branchUid = null, syncAt = 21)
+        assertEquals(listOf(landed), here.ideas)
+        assertEquals(here.ideas, there.ideas)
+        assertEquals(here.branches, there.branches)
+        assertEquals(here.ideas, merge(here, mover, emptyMap()).ideas) // settled
+    }
+
+    @Test fun aLiveGroupBringsItsDeletedLobeBack() {
+        val l = lobe("L", 5); val g = branch("g", 20)
+        val tombs = listOf(SyncTomb("lobes", "L", 10), SyncTomb("branches", "g", 10))
+        val merged = merge(a(tombs = tombs), b(lobes = listOf(l), branches = listOf(g)), emptyMap())
+        assertEquals(listOf(l.copy(syncAt = 11)), merged.lobes)
+        assertEquals(listOf(g), merged.branches)
+    }
+
+    @Test fun aGroupWhoseLobeExistsNowhereIsRefused() {
+        assertThrows(SyncException::class.java) { merge(a(), b(branches = listOf(branch("g", 20, lobe = "ghost"))), emptyMap()) }
+    }
+
+    @Test fun aConflictCopyKeepsItsGroupAndLink() {
+        val l = lobe("L", 1); val g = branch("g", 1)
+        val mine = idea("i", 10, title = "mine").copy(branchUid = "g", link = "x", done = true)
+        val merged = merge(a(lobes = listOf(l), branches = listOf(g), ideas = listOf(mine)), b(lobes = listOf(l), branches = listOf(g), ideas = listOf(idea("i", 20, title = "theirs"))), mapOf("ideas:i" to 1))
+        assertEquals(mine.copy(uid = "i~10", title = "mine (other copy)"), merged.ideas.single { it.uid != "i" })
+    }
+
+    @Test fun onlyTheLinkDifferingIsAConflictButOnlyDoneOrGroupIsNot() {
+        val l = lobe("L", 1); val g = branch("g", 1)
+        val seen = mapOf("ideas:i" to 1L)
+        fun run(x: SyncIdea, y: SyncIdea) = merge(a(lobes = listOf(l), branches = listOf(g), ideas = listOf(x)), b(lobes = listOf(l), branches = listOf(g), ideas = listOf(y)), seen).ideas.size
+        assertEquals(2, run(idea("i", 10).copy(link = "x"), idea("i", 20).copy(link = "y")))
+        assertEquals(1, run(idea("i", 10).copy(done = true), idea("i", 20)))
+        assertEquals(1, run(idea("i", 10).copy(branchUid = "g"), idea("i", 20)))
     }
 
     @Test fun damagedSnapshotsAreRefused() {

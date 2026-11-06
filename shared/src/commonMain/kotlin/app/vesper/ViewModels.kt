@@ -290,6 +290,8 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val ideas: StateFlow<List<app.vesper.data.Idea>?> = dao.observeIdeas()
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val branches: StateFlow<List<app.vesper.data.Branch>?> = dao.observeBranches()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     fun addLobe(name: String, onAdded: (Long) -> Unit) {
         val clean = name.trim()
@@ -312,24 +314,42 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
     }
 
     /**
-     * [base] is the idea as the dialog opened it, id 0 for a new one. Only the title is written. If sync changed the title
-     * meanwhile the other one stays as a copy; if the idea or even its lobe is gone, the words still get a row.
+     * [base] is the idea as the dialog opened it, id 0 for a new one. Only fields the user changed are written. If sync
+     * changed one of those too the other version stays as a copy; if the idea or even its lobe is gone, the words still get
+     * a row. A group deleted meanwhile just leaves the idea directly on the lobe.
      */
-    fun saveIdea(base: app.vesper.data.Idea, title: String): Job = notebook.appScope.launch {
+    fun saveIdea(
+        base: app.vesper.data.Idea,
+        title: String,
+        body: String = base.body,
+        link: String? = base.link,
+        branchId: Long? = base.branchId,
+    ): Job = notebook.appScope.launch {
         val clean = title.trim()
-        if (clean.isEmpty() && base.body.isBlank()) return@launch
+        val note = body.trim()
+        val url = link?.trim()?.ifEmpty { null }
+        if (clean.isEmpty() && note.isEmpty()) return@launch
         val now = System.currentTimeMillis()
         try {
             notebook.db.useWriterConnection { w ->
                 w.immediateTransaction {
                     val row = if (base.id == 0L) null else dao.getIdea(base.id)
+                    val branch = branchId?.takeIf { dao.branchExists(it) }
                     when {
-                        row != null -> if (row.title != clean) {
-                            if (row.title != base.title) dao.insertIdeaCopy(row.copy(id = 0, title = copyTitle(row.title), uid = copyUid(row.uid, row.syncAt)))
-                            dao.setIdeaTitle(row.id, clean, now)
+                        row != null -> {
+                            val t = if (clean == base.title.trim()) row.title else clean
+                            val b = if (note == base.body.trim()) row.body else note
+                            val l = if (url == base.link) row.link else url
+                            val g = if (branchId == base.branchId) row.branchId else branch
+                            if (row.title != t || row.body != b || row.link != l || row.branchId != g) {
+                                if ((row.title != t && row.title != base.title) || (row.body != b && row.body != base.body) || (row.link != l && row.link != base.link)) {
+                                    dao.insertIdeaCopy(row.copy(id = 0, title = copyTitle(row.title), uid = copyUid(row.uid, row.syncAt)))
+                                }
+                                dao.setIdeaFields(row.id, t, b, l, g, now)
+                            }
                         }
-                        dao.lobeExists(base.lobeId) -> dao.insertIdea(base.copy(id = 0, title = clean, body = base.body.trim(), updatedAt = now, syncAt = 0))
-                        else -> notebook.db.noteDao().insert(Note(title = clean, content = base.body.trim()))
+                        dao.lobeExists(base.lobeId) -> dao.insertIdea(base.copy(id = 0, title = clean, body = note, link = url, branchId = branch, updatedAt = now, syncAt = 0))
+                        else -> notebook.db.noteDao().insert(Note(title = clean, content = note))
                     }
                 }
             }
@@ -339,6 +359,35 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
     fun deleteIdea(id: Long) {
         notebook.appScope.launch {
             try { dao.deleteIdea(id) } catch (e: Exception) { notebook.reportError("delete idea", e) }
+        }
+    }
+
+    fun setIdeaDone(id: Long, done: Boolean) {
+        notebook.appScope.launch {
+            try { dao.setIdeaDone(id, done) } catch (e: Exception) { notebook.reportError("tick idea", e) }
+        }
+    }
+
+    fun addBranch(lobeId: Long, name: String) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        notebook.appScope.launch {
+            try { if (dao.lobeExists(lobeId)) dao.insertBranch(app.vesper.data.Branch(lobeId = lobeId, name = clean)) } catch (e: Exception) { notebook.reportError("add group", e) }
+        }
+    }
+
+    fun renameBranch(id: Long, name: String) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        notebook.appScope.launch {
+            try { dao.renameBranch(id, clean) } catch (e: Exception) { notebook.reportError("rename group", e) }
+        }
+    }
+
+    /** Its ideas stay, directly on the lobe. The caller confirms first. */
+    fun deleteBranch(id: Long) {
+        notebook.appScope.launch {
+            try { dao.deleteBranch(id) } catch (e: Exception) { notebook.reportError("delete group", e) }
         }
     }
 }

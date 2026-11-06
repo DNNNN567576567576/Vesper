@@ -197,6 +197,47 @@ class MigrationTest {
         } catch (_: SQLiteConstraintException) {}
     }
 
+    /** Real v9 rows plus the triggers a v9 file has. Nothing may move: not a lobe, not an idea, not a sync clock. */
+    @Test
+    fun migrate9To10() {
+        helper.createDatabase(name, 9).apply {
+            listOf("notes", "tasks", "lobes", "ideas", "plans").forEach { t -> syncTriggerSql(t).forEach(::execSQL) }
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0, 'notes-1', 1700000000000)")
+            execSQL("INSERT INTO tasks (id, text, uid, syncAt) VALUES (1, 'buy candles', 'tasks-1', 5)")
+            execSQL("INSERT INTO lobes (id, name, colorIndex, slot, uid, syncAt) VALUES (1, 'Work', 2, 0, 'lobes-1', 6)")
+            execSQL("INSERT INTO ideas (id, lobeId, title, body, noteId, updatedAt, uid, syncAt) VALUES (1, 1, 'Idea', 'body text', 1, 1700000001000, 'ideas-1', 7)")
+            execSQL("INSERT INTO day_focus (day, lobeId) VALUES (20000, 1)")
+            insertPost(); close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 10, true, MIGRATION_9_10)
+        db.assertNoteAndTask(); db.assertBrain(); db.assertPost()
+        db.assertIndexes("index_branches_lobeId", "index_branches_uid", "index_ideas_branchId")
+        db.query("SELECT branchId, link, done, syncAt, uid FROM ideas WHERE id = 1").use {
+            it.moveToFirst()
+            assertTrue(it.isNull(0)); assertTrue(it.isNull(1))
+            assertEquals(0, it.getInt(2)); assertEquals(7, it.getLong(3)); assertEquals("ideas-1", it.getString(4))
+        }
+        fun count(sql: String) = db.query(sql).use { it.moveToFirst(); it.getInt(0) }
+        assertEquals(0, count("SELECT COUNT(*) FROM branches")) // no default group
+        assertEquals(0, count("SELECT COUNT(*) FROM sync_tombstones"))
+        assertEquals(1, count("SELECT COUNT(*) FROM day_focus"))
+
+        // groups are wired: triggers, the idea's FK, and items surviving their group
+        db.execSQL("PRAGMA foreign_keys = ON")
+        db.execSQL("INSERT INTO branches (id, lobeId, name) VALUES (1, 1, 'Read')")
+        val uid = db.query("SELECT uid FROM branches").use { it.moveToFirst(); it.getString(0) }
+        assertTrue(uid.matches(Regex("[0-9a-f]{32}")))
+        db.execSQL("UPDATE ideas SET branchId = 1 WHERE id = 1")
+        val moved = db.query("SELECT syncAt FROM ideas").use { it.moveToFirst(); it.getLong(0) }
+        assertTrue(moved > 7)
+        db.execSQL("DELETE FROM branches WHERE id = 1")
+        assertEquals(1, count("SELECT COUNT(*) FROM ideas WHERE branchId IS NULL"))
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'branches' AND uid = '$uid'"))
+        db.execSQL("INSERT INTO branches (id, lobeId, name, uid) VALUES (2, 1, 'Watch', 'watch')")
+        db.execSQL("DELETE FROM lobes WHERE id = 1")
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'branches' AND uid = 'watch'"))
+    }
+
     @Test
     fun migrateAllFrom1() {
         helper.createDatabase(name, 1).apply { insertNote(); close() }

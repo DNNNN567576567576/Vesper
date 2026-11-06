@@ -90,7 +90,7 @@ class SyncTriggersTest {
     @Test
     fun triggersWorkOnMigratedDb() {
         helper.createDatabase("m.db", 8).apply { execSQL("INSERT INTO notes (id, title, content, updatedAt, position) VALUES (1, 'old', 'x', 1700000000000, 0)"); close() }
-        val db = helper.runMigrationsAndValidate("m.db", 9, true, MIGRATION_8_9)
+        val db = helper.runMigrationsAndValidate("m.db", DB_VERSION, true, MIGRATION_8_9, MIGRATION_9_10)
         db.assertTriggersWork()
         assertEquals("notes-1", db.str("SELECT uid FROM notes WHERE id = 1")) // backfilled row untouched by the tests above
     }
