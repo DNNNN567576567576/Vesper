@@ -1,6 +1,7 @@
 package app.vesper
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -8,11 +9,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
+import app.vesper.data.Idea
 import app.vesper.data.Note
 import app.vesper.data.Post
 import app.vesper.data.Task
 import app.vesper.sync.copyTitle
 import app.vesper.sync.copyUid
+import app.vesper.ui.SharedText
+import app.vesper.ui.parseShare
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -313,11 +317,7 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         }
     }
 
-    /**
-     * [base] is the idea as the dialog opened it, id 0 for a new one. Only fields the user changed are written. If sync
-     * changed one of those too the other version stays as a copy; if the idea or even its lobe is gone, the words still get
-     * a row. A group deleted meanwhile just leaves the idea directly on the lobe.
-     */
+    /** Same rules as [writeIdea]; [base] is the idea as the caller last saw it, id 0 for a new one. */
     fun saveIdea(
         base: app.vesper.data.Idea,
         title: String,
@@ -325,46 +325,24 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         link: String? = base.link,
         branchId: Long? = base.branchId,
     ): Job = notebook.appScope.launch {
-        val clean = title.trim()
-        val note = body.trim()
-        val url = link?.trim()?.ifEmpty { null }
-        if (clean.isEmpty() && note.isEmpty()) return@launch
-        val now = System.currentTimeMillis()
-        try {
-            notebook.db.useWriterConnection { w ->
-                w.immediateTransaction {
-                    val row = if (base.id == 0L) null else dao.getIdea(base.id)
-                    val branch = branchId?.takeIf { dao.branchExists(it) }
-                    when {
-                        row != null -> {
-                            val t = if (clean == base.title.trim()) row.title else clean
-                            val b = if (note == base.body.trim()) row.body else note
-                            val l = if (url == base.link) row.link else url
-                            val g = if (branchId == base.branchId) row.branchId else branch
-                            if (row.title != t || row.body != b || row.link != l || row.branchId != g) {
-                                if ((row.title != t && row.title != base.title) || (row.body != b && row.body != base.body) || (row.link != l && row.link != base.link)) {
-                                    dao.insertIdeaCopy(row.copy(id = 0, title = copyTitle(row.title), uid = copyUid(row.uid, row.syncAt)))
-                                }
-                                dao.setIdeaFields(row.id, t, b, l, g, now)
-                            }
-                        }
-                        dao.lobeExists(base.lobeId) -> dao.insertIdea(base.copy(id = 0, title = clean, body = note, link = url, branchId = branch, updatedAt = now, syncAt = 0))
-                        else -> notebook.db.noteDao().insert(Note(title = clean, content = note))
-                    }
-                }
-            }
-        } catch (e: Exception) { notebook.reportError("save idea", e) }
+        try { writeIdea(notebook, base, title, body, link, branchId) } catch (e: Exception) { notebook.reportError("save idea", e) }
+    }
+
+    /** An item made from shared text, kept in [lobeId] (and [branchId] when that group still exists). */
+    fun addShared(share: SharedText, lobeId: Long, branchId: Long?) {
+        val parsed = parseShare(share.text, share.subject)
+        notebook.appScope.launch {
+            try {
+                if (dao.lobeExists(lobeId)) dao.insertIdea(
+                    app.vesper.data.Idea(lobeId = lobeId, title = parsed.title, body = parsed.body, link = parsed.link, branchId = branchId?.takeIf { dao.branchExists(it) }),
+                )
+            } catch (e: Exception) { notebook.reportError("save shared text", e) }
+        }
     }
 
     fun deleteIdea(id: Long) {
         notebook.appScope.launch {
             try { dao.deleteIdea(id) } catch (e: Exception) { notebook.reportError("delete idea", e) }
-        }
-    }
-
-    fun setIdeaDone(id: Long, done: Boolean) {
-        notebook.appScope.launch {
-            try { dao.setIdeaDone(id, done) } catch (e: Exception) { notebook.reportError("tick idea", e) }
         }
     }
 
@@ -389,6 +367,160 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         notebook.appScope.launch {
             try { dao.deleteBranch(id) } catch (e: Exception) { notebook.reportError("delete group", e) }
         }
+    }
+}
+
+/**
+ * [base] is the idea as the caller last saw it, id 0 for a new one. Only fields the caller changed are written. If sync
+ * changed one of those too the other version stays as a copy; if the idea or even its lobe is gone, the words still get
+ * a row. A group deleted meanwhile just leaves the idea directly on the lobe. Returns the idea's row id, null when nothing
+ * was stored as an idea (blank, or its lobe is gone and the words went to a note).
+ */
+internal suspend fun writeIdea(notebook: VesperHost, base: Idea, title: String, body: String, link: String?, branchId: Long?): Long? {
+    val dao = notebook.db.brainDao()
+    val clean = title.trim()
+    val note = body.trim()
+    val url = link?.trim()?.ifEmpty { null }
+    if (clean.isEmpty() && note.isEmpty()) return null
+    val now = System.currentTimeMillis()
+    return notebook.db.useWriterConnection { w ->
+        w.immediateTransaction {
+            val row = if (base.id == 0L) null else dao.getIdea(base.id)
+            val branch = branchId?.takeIf { dao.branchExists(it) }
+            when {
+                row != null -> {
+                    val t = if (clean == base.title.trim()) row.title else clean
+                    val b = if (note == base.body.trim()) row.body else note
+                    val l = if (url == base.link) row.link else url
+                    val g = if (branchId == base.branchId) row.branchId else branch
+                    if (row.title != t || row.body != b || row.link != l || row.branchId != g) {
+                        if ((row.title != t && row.title != base.title) || (row.body != b && row.body != base.body) || (row.link != l && row.link != base.link)) {
+                            dao.insertIdeaCopy(row.copy(id = 0, title = copyTitle(row.title), uid = copyUid(row.uid, row.syncAt)))
+                        }
+                        dao.setIdeaFields(row.id, t, b, l, g, now)
+                    }
+                    row.id
+                }
+                dao.lobeExists(base.lobeId) -> dao.insertIdea(base.copy(id = 0, title = clean, body = note, link = url, branchId = branch, updatedAt = now, syncAt = 0))
+                else -> { notebook.db.noteDao().insert(Note(title = clean, content = note)); null }
+            }
+        }
+    }
+}
+
+/**
+ * Editing session for one Brain item on its own page, like [NoteEditorViewModel]. [ideaId] null = a new item in [lobeId],
+ * which only gets a row once something is written. The page holds [base], the item as it was last saved or taken in; sync
+ * changes are taken in while nothing is typed, and typing on top of an older text is saved by [writeIdea], which keeps both.
+ */
+class IdeaEditorViewModel(private val notebook: VesperHost, ideaId: Long?, lobeId: Long, branchId: Long?) : ViewModel() {
+    private val dao get() = notebook.db.brainDao()
+    private val mutex = Mutex()
+
+    var title by mutableStateOf("")
+        private set
+    var body by mutableStateOf("")
+        private set
+    var link by mutableStateOf("")
+        private set
+    var loaded by mutableStateOf(ideaId == null)
+        private set
+
+    private var base = Idea(lobeId = lobeId, title = "", body = "", branchId = branchId)
+    private var id by mutableLongStateOf(ideaId ?: 0L)
+    private var deleted = false
+    private var saveJob: Job? = null
+
+    // A sync round must carry what is on screen, so a conflict shows up as one instead of old text being merged around it.
+    private val stopFlushing = notebook.sync.beforeRound { flush().join() }
+
+    val exists: Boolean get() = id != 0L
+    val lobeId: Long get() = base.lobeId
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val rowChanges = snapshotFlow { id }.flatMapLatest { if (it == 0L) emptyFlow() else dao.observeIdeas() }
+
+    init {
+        if (ideaId != null) {
+            viewModelScope.launch {
+                try {
+                    val row = dao.getIdea(ideaId)
+                    if (row != null) {
+                        base = row; title = row.title; body = row.body; link = row.link.orEmpty()
+                    } else {
+                        id = 0L // vanished before it opened; treat as new
+                    }
+                } catch (e: Exception) {
+                    notebook.reportError("open item", e)
+                }
+                loaded = true
+            }
+        }
+        viewModelScope.launch { rowChanges.collect { refresh() } }
+    }
+
+    private fun dirty() = title.trim() != base.title.trim() || body.trim() != base.body.trim() || link.trim().ifEmpty { null } != base.link
+
+    /** Takes in what sync wrote, unless there is typing on top of the old text: then [persist] keeps both. */
+    private suspend fun refresh() {
+        mutex.withLock {
+            val row = id.takeIf { it != 0L }?.let { dao.getIdea(it) } ?: return // gone on another device: the text stays here, and typing brings it back
+            if (!loaded || deleted || dirty()) return
+            if (row.title != base.title || row.body != base.body || row.link != base.link) {
+                title = row.title; body = row.body; link = row.link.orEmpty()
+            }
+            base = row
+        }
+    }
+
+    fun onTitle(v: String) { title = v; scheduleSave() }
+    fun onBody(v: String) { body = v; scheduleSave() }
+    fun onLink(v: String) { link = v; scheduleSave() }
+
+    private fun scheduleSave() {
+        saveJob?.cancel()
+        saveJob = viewModelScope.launch {
+            delay(500)
+            flush()
+        }
+    }
+
+    /** Persist the latest text now. Safe to call repeatedly; runs outside the UI lifecycle. */
+    fun flush(): Job {
+        saveJob?.cancel()
+        return notebook.appScope.launch { persist() }
+    }
+
+    private suspend fun persist() {
+        mutex.withLock {
+            if (!loaded || deleted || !dirty()) return
+            val t = title; val b = body; val l = link
+            try {
+                val saved = writeIdea(notebook, base, t, b, l, base.branchId) ?: return
+                val row = dao.getIdea(saved) ?: return
+                // What this page now stands for: its own text, not a field sync changed meanwhile (refresh takes that in).
+                base = row.copy(title = t.trim(), body = b.trim(), link = l.trim().ifEmpty { null })
+                id = row.id
+            } catch (e: Exception) {
+                notebook.reportError("save item", e)
+            }
+        }
+    }
+
+    fun delete() {
+        deleted = true
+        saveJob?.cancel()
+        notebook.appScope.launch {
+            mutex.withLock {
+                try { id.takeIf { it != 0L }?.let { dao.deleteIdea(it) } } catch (e: Exception) { notebook.reportError("delete item", e) }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        stopFlushing()
+        // Last chance: anything typed but not yet written gets saved.
+        if (!deleted) notebook.appScope.launch { persist() }
     }
 }
 

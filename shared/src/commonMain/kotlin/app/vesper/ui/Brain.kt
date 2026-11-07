@@ -102,7 +102,6 @@ import app.vesper.data.BackupException
 import app.vesper.data.Branch
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
-import app.vesper.data.Note
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -331,9 +330,7 @@ private val SKULL_EYES = arrayOf(floatArrayOf(-1f, 0f), floatArrayOf(7f, 0f))
 private fun staleness(last: Long?): Float =
     if (last == null) 1f else (((System.currentTimeMillis() - last) / 86_400_000f - 7f) / 14f).coerceIn(0f, 1f)
 
-private fun ideaLabel(i: Idea) = i.title.ifBlank { i.body.lineSequence().firstOrNull().orEmpty() }
-
-private fun noteName(n: Note) = n.title.ifBlank { n.content.lineSequence().firstOrNull().orEmpty().ifBlank { "Untitled" } }
+internal fun ideaLabel(i: Idea) = i.title.ifBlank { i.body.lineSequence().firstOrNull().orEmpty() }
 
 /** Pan/zoom state, kept above the tab switcher so the map is where you left it. [x]/[y] is the world point at screen centre. */
 @Stable
@@ -348,7 +345,7 @@ internal class Layout(
     val nL: Int, val lobeIds: LongArray, val lx: FloatArray, val ly: FloatArray, val lbend: FloatArray,
     val lcol: IntArray, val lslot: IntArray, val istart: IntArray,
     val nI: Int, val ix: FloatArray, val iy: FloatArray, val iph: FloatArray, val ibend: FloatArray,
-    val ij: IntArray, val inew: BooleanArray, val ipar: IntArray, val idone: BooleanArray,
+    val ij: IntArray, val inew: BooleanArray, val ipar: IntArray, val irings: IntArray, val irecent: BooleanArray,
     val bstart: IntArray, val bx: FloatArray, val by: FloatArray, val bph: FloatArray, val bbend: FloatArray,
     val dust: FloatArray,      // x, y, ph, b
     val blots: FloatArray,     // x, y, r, ph
@@ -359,7 +356,8 @@ internal class Layout(
     val drips: FloatArray,     // x, y, n, len, owner lobe (-1 none)
 )
 
-internal fun buildLayout(lobes: List<Lobe>, web: Web): Layout {
+/** [now] decides which items are recent (touched within a week). */
+internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.currentTimeMillis()): Layout {
     val placedIn = web.items
     val nL = lobes.size
     val idxOf = HashMap<Long, Int>()
@@ -388,7 +386,8 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web): Layout {
     val ij = IntArray(nI) { placed[it].j }
     val inew = BooleanArray(nI) { placed[it].newest }
     val ipar = IntArray(nI) { placed[it].parent }
-    val idone = BooleanArray(nI) { placed[it].idea.done }
+    val irings = IntArray(nI) { ringCount(placed[it].idea.title, placed[it].idea.body) }
+    val irecent = BooleanArray(nI) { now - placed[it].idea.updatedAt in 0..RECENT_MS }
 
     val bstart = IntArray(nL + 1)
     web.branches.forEach { b -> idxOf[b.lobe.id]?.let { bstart[it + 1]++ } }
@@ -408,11 +407,13 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web): Layout {
         dust[i * 4 + 3] = rd.next()
     }
 
-    // blots (rot spots): each kept with probability min(1, ROT * 1.2), decided by its own roll so it is stable
+    // blots (rot spots): each kept with probability min(1, ROT * 1.2), decided by its own roll so it is stable;
+    // then pushed clear of every lobe, group, item, label and the vault, or left out when there is no room
     val keep = min(1f, ROT * 1.2f)
     val bAll = ArrayList<FloatArray>()
+    val keepOut = keepOutBoxes(lx, ly, bx, by, ix, iy, SUN_X, SUN_Y)
     fun blot(x: Float, y: Float, r: Float, ph: Float, u: Float) {
-        if (u < keep) bAll.add(floatArrayOf(x, y, r, ph))
+        if (u < keep) clearHole(x, y, r + 1f, keepOut)?.let { bAll.add(floatArrayOf(it[0], it[1], r, ph)) }
     }
     val rc = Rng(202)
     repeat(12) {
@@ -514,7 +515,7 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web): Layout {
     for (i in 0 until bAll.size) if (i % 4 == 0) drip(bAll[i][0], bAll[i][1] + bAll[i][2], 2, 16f, -1)
 
     return Layout(
-        nL, ids, lx, ly, lbend, lcol, lslot, istart, nI, ix, iy, iph, ibend, ij, inew, ipar, idone,
+        nL, ids, lx, ly, lbend, lcol, lslot, istart, nI, ix, iy, iph, ibend, ij, inew, ipar, irings, irecent,
         bstart, bx, by, bph, bbend,
         dust, blots, stains, cracks, specks, spores, dl.toFloatArray(),
     )
@@ -686,6 +687,45 @@ internal class BrainRenderer(
         }
     }
 
+    /** Where a pulse is [p] (0..1) of the way from the core, through the lobe and group, to item [k]; leaves it in bzx/bzy. */
+    private fun sparkPos(L: Layout, k: Int, p: Float) {
+        var li = 0
+        while (L.istart[li + 1] <= k) li++
+        val g = L.ipar[k]
+        val px = if (g < 0) L.lx[li] else L.bx[g]; val py = if (g < 0) L.ly[li] else L.by[g]
+        val xs = floatArrayOf(0f, L.lx[li], px, ipx[k]); val ys = floatArrayOf(0f, L.ly[li], py, ipy[k])
+        val bends = floatArrayOf(L.lbend[li], if (g < 0) 0f else L.bbend[g], L.ibend[k])
+        // legs: core -> lobe, lobe -> group (only with one), parent -> item
+        val from = if (g < 0) intArrayOf(0, 2) else intArrayOf(0, 1, 2)
+        val to = if (g < 0) intArrayOf(1, 3) else intArrayOf(1, 2, 3)
+        val bd = if (g < 0) floatArrayOf(bends[0], bends[2]) else bends
+        var total = 0f
+        for (j in from.indices) total += hypot(xs[to[j]] - xs[from[j]], ys[to[j]] - ys[from[j]])
+        var at = p.coerceIn(0f, 1f) * total
+        for (j in from.indices) {
+            val len = hypot(xs[to[j]] - xs[from[j]], ys[to[j]] - ys[from[j]])
+            if (at <= len || j == from.lastIndex) {
+                val x1 = xs[from[j]]; val y1 = ys[from[j]]; val x2 = xs[to[j]]; val y2 = ys[to[j]]
+                ctrl(x1, y1, x2, y2, bd[j])
+                bz(x1, y1, ccx, ccy, x2, y2, if (len <= 0f) 1f else (at / len).coerceIn(0f, 1f))
+                return
+            }
+            at -= len
+        }
+    }
+
+    /** The bright pulse running the veins to item [k], with a short tail; flares the neuron as it lands. */
+    private fun sparkPulse(L: Layout, k: Int, p: Float) {
+        for (j in 4 downTo 0) {
+            sparkPos(L, k, max(0f, p - j * 0.045f))
+            val f = 1f - j * 0.2f
+            glowAt(bzx, bzy, (6f - j) , 0xF0C8F0, 0.9f * f)
+            val w = if (z > 2f) 2 else 1
+            dot(rnd(sx(bzx)), rnd(sy(bzy)), w, w, 0xFFFFFF, f)
+        }
+        if (p > 0.8f) glowAt(ipx[k], ipy[k], 12f, 0xF596E1, 0.8f * (p - 0.8f) * 5f)
+    }
+
     /** Skull at the vault node; [sv] 0 = alive, 1 = dead. Eyes flare when the pulse arrives. */
     private fun sun(sv: Float, selected: Boolean, d: Float) {
         val l = 1f - sv
@@ -710,7 +750,7 @@ internal class BrainRenderer(
     }
 
     /** One frame, in the mockup's draw order. [sel] is the selected lobe index or -1. */
-    fun draw(time: Float, camX: Float, camY: Float, zoom: Float, L: Layout, sel: Int, sv: Float, sunSel: Boolean) {
+    fun draw(time: Float, camX: Float, camY: Float, zoom: Float, L: Layout, sel: Int, sv: Float, sunSel: Boolean, spark: Int = -1, sparkP: Float = 0f) {
         t = time; this.camX = camX; this.camY = camY; z = zoom
         beatPh = (t * 0.45f) % 1.7f
         val ns = nodeScale(z)
@@ -787,7 +827,7 @@ internal class BrainRenderer(
                 val ny = L.iy[k] + cos(t * 0.4f + L.iph[k]) * 1.5f * ns
                 ipx[k] = nx; ipy[k] = ny
                 val g = L.ipar[k]
-                thread(if (g < 0) L.lx[i] else L.bx[g], if (g < 0) L.ly[i] else L.by[g], nx, ny, L.ibend[k], L.iph[k], L.lcol[i], if (L.idone[k]) d * 0.45f else d)
+                thread(if (g < 0) L.lx[i] else L.bx[g], if (g < 0) L.ly[i] else L.by[g], nx, ny, L.ibend[k], L.iph[k], L.lcol[i], d)
             }
         }
         vein(SUN_X, SUN_Y, SUN_BEND, 2, 9f, sunDim, 0xF5B0E8)
@@ -808,7 +848,7 @@ internal class BrainRenderer(
             }
         }
 
-        // ideas
+        // ideas: a core dot, ringed by how much is written; a magenta core when touched this week
         for (i in 0 until L.nL) {
             val d = dimOf(i)
             val col = L.lcol[i]
@@ -817,19 +857,25 @@ internal class BrainRenderer(
                 val a = 0.55f + 0.25f * sin(t * 1.7f + ph) + 0.5f * beat(1.5f)
                 val s = max(2, rnd(2f * min(z, 2.8f) / 1.4f))
                 val cx = sx(ipx[k]); val cy = sy(ipy[k])
-                if (L.idone[k]) { // done: a dull ember, no glow
-                    disc(cx, cy, s * 0.9f + 1f, 0x2A0C30, d)
-                    dot(rnd(cx - s / 2f), rnd(cy - s / 2f), s, s, 0x6F6080, d * 0.7f)
-                    continue
-                }
-                glowAt(ipx[k], ipy[k], max(3f, 7f - L.ij[k] * 0.5f) * ns, col, a * d)
+                val rings = L.irings[k]
+                val reach = s * 0.9f + 3f + rings * 2.2f + 8f * ns * z
+                if (cx + reach < 0 || cy + reach < 0 || cx - reach > W || cy - reach > H) continue
+                val recent = L.irecent[k]
+                if (rings > 0) glowAt(ipx[k], ipy[k], max(3f, 7f - L.ij[k] * 0.5f) * ns, if (recent) 0xD45AAB else col, a * d)
                 if (L.inew[k]) glowAt(ipx[k], ipy[k], 11f * ns, 0xD45AAB, 0.5f * d)
+                for (r in 0 until rings) {
+                    ring(
+                        ipx[k], ipy[k], (s * 0.9f + 3f + r * 2.2f) / z, 8 + 4 * r, t * (if (r % 2 == 0) 1.2f else -1.2f) + ph,
+                        if (r == 2) 0xD45AAB else 0xB69AFF, 0.8f * d,
+                    )
+                }
                 disc(cx, cy, s * 0.9f + 1f, 0x2A0C30, d)
                 val ds = max(1, s shr 1)
                 dot(rnd(cx + s * 0.6f), rnd(cy - s * 0.2f), ds, ds, 0x06020A, d)
-                dot(rnd(cx - s / 2f), rnd(cy - s / 2f), s, s, 0xF6EEFF, d)
+                dot(rnd(cx - s / 2f), rnd(cy - s / 2f), s, s, if (recent) 0xD45AAB else if (rings == 0) 0x6F6080 else 0xF6EEFF, d)
             }
         }
+        if (spark in 0 until L.nI) sparkPulse(L, spark, sparkP)
 
         // drips
         if (ROT > 0.2f) {
@@ -902,19 +948,16 @@ fun BrainScreen(
     lobes: List<Lobe>?,
     ideas: List<Idea>?,
     branches: List<Branch>?,
-    notes: List<Note>?,
     camera: BrainCamera,
     selectedLobe: Long,
     onSelectLobe: (Long) -> Unit,
     onAddLobe: (String) -> Unit,
     onDeleteLobe: (Long) -> Unit,
-    onSaveIdea: (Idea, String, String, String?, Long?) -> Unit,
-    onDeleteIdea: (Long) -> Unit,
-    onSetIdeaDone: (Long, Boolean) -> Unit,
+    /** Opens an item's page: [id] 0 starts a new one in [lobeId] (and [branchId], a group). */
+    onOpenIdea: (id: Long, lobeId: Long, branchId: Long?) -> Unit,
     onAddBranch: (Long, String) -> Unit,
     onRenameBranch: (Long, String) -> Unit,
     onDeleteBranch: (Long) -> Unit,
-    onOpenNote: (Long) -> Unit,
     vault: Vault,
     sync: SyncManager,
     appScope: CoroutineScope,
@@ -925,16 +968,10 @@ fun BrainScreen(
     val web = remember(lobeList, branchList, ideaList) { placeIdeas(lobeList, branchList, ideaList) }
     val selected = lobeList.firstOrNull { it.id == selectedLobe }
     val selectedNow by rememberUpdatedState(selected?.id ?: -1L)
-    // The group the camera is in, inside the selected lobe; -1 = none.
-    var focusBranch by remember { mutableStateOf(-1L) }
     var homeTick by remember { mutableStateOf(0) }
-    /** One level out: group -> lobe -> whole map. */
+    /** One level out: sub brain -> whole map. */
     val stepOut: () -> Unit = {
-        when {
-            focusBranch >= 0 -> focusBranch = -1L
-            selectedNow >= 0 -> onSelectLobe(-1L)
-            else -> homeTick++
-        }
+        if (selectedNow >= 0) onSelectLobe(-1L) else homeTick++
     }
 
     var addingLobe by remember { mutableStateOf(false) }
@@ -945,10 +982,9 @@ fun BrainScreen(
     var editingBranch by remember { mutableStateOf<Branch?>(null) }
     var deletingBranch by remember { mutableStateOf<Branch?>(null) }
     var deleting by remember { mutableStateOf<Lobe?>(null) }
-    var deletingIdea by remember { mutableStateOf<Idea?>(null) }
     var managing by remember { mutableStateOf(false) }
-    // null = no dialog; an Idea with id 0 is a brand-new idea in its lobe.
-    var editing by remember { mutableStateOf<Idea?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var goTo by remember { mutableStateOf<GoTo?>(null) }
 
     // Vault sun: backup / restore. Work runs on appScope so leaving the tab can't cancel a write.
     val last by vault.lastBackupAt.collectAsState()
@@ -985,19 +1021,23 @@ fun BrainScreen(
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             BrainCanvas(
-                lobeList, web, selected?.id ?: -1L, focusBranch, homeTick, camera, sv, sunSel,
-                onTapSun = { onSelectLobe(-1L); focusBranch = -1L; sunSel = true },
-                onTapLobe = { id -> sunSel = false; focusBranch = -1L; onSelectLobe(id) },
-                onDoubleTapLobe = { id -> editing = Idea(lobeId = id, title = "", body = "") },
+                lobeList, web, selected?.id ?: -1L, homeTick, camera, sv, sunSel, goTo,
+                topInset = if (selected != null) HEADER_H else 0.dp,
+                onTapSun = { onSelectLobe(-1L); sunSel = true },
+                onTapLobe = { id -> sunSel = false; onSelectLobe(id) },
+                onDoubleTapLobe = { id -> onOpenIdea(0L, id, null) },
                 onTapBrain = { managing = true },
-                onTapIdea = { editing = it },
-                onDoubleTapIdea = { deletingIdea = it },
+                onOpenIdea = { onOpenIdea(it.id, it.lobeId, it.branchId) },
                 onTapBranch = { editingBranch = it },
-                onFocusBranch = { sunSel = false; onSelectLobe(it.lobeId); focusBranch = it.id },
                 onTapEmpty = { sunSel = false; stepOut() },
             )
-            ScreenTitle("Brain")
-            if (selected != null) PixelButton("+", { adding = true }, primary = true, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp))
+            if (selected == null) {
+                ScreenTitle("Brain")
+                if (!searching) PixelButton("SEARCH", { searching = true }, modifier = Modifier.align(Alignment.TopEnd).padding(top = 16.dp, end = 16.dp))
+            } else {
+                SubBrainHeader(selected, ideaList.count { it.lobeId == selected.id }, Modifier.align(Alignment.TopStart)) { adding = true }
+            }
+            if (searching) SearchPanel(ideaList, lobeList, onPick = { searching = false; goTo = GoTo(it.id) }, onClose = { searching = false })
         }
         if (sunSel && selected == null) {
             VaultSheet(
@@ -1048,7 +1088,7 @@ fun BrainScreen(
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
                 PixelButton("GROUP", { adding = false; addingBranch = true })
-                PixelButton("ITEM", { adding = false; editing = Idea(lobeId = selected.id, title = "", body = "", branchId = focusBranch.takeIf { it >= 0 }) }, primary = true)
+                PixelButton("ITEM", { adding = false; onOpenIdea(0L, selected.id, null) }, primary = true)
             }
         }
     }
@@ -1059,6 +1099,7 @@ fun BrainScreen(
         NameDialog(
             "GROUP", "Name", initial = b.name, submit = "SAVE", onDismiss = { editingBranch = null }, onSubmit = { onRenameBranch(b.id, it) },
             onDelete = { editingBranch = null; deletingBranch = b },
+            onAddItem = { onOpenIdea(0L, b.lobeId, b.id) },
         )
     }
     deletingBranch?.let { b ->
@@ -1074,7 +1115,6 @@ fun BrainScreen(
                 PixelButton("KEEP", { deletingBranch = null })
                 PixelButton("DELETE", {
                     deletingBranch = null
-                    if (focusBranch == b.id) focusBranch = -1L
                     onDeleteBranch(b.id)
                 }, primary = true)
             }
@@ -1131,22 +1171,6 @@ fun BrainScreen(
             }
         }
     }
-    deletingIdea?.let { di ->
-        PixelDialog({ deletingIdea = null }) {
-            Text("DELETE THIS THOUGHT?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
-            Spacer(Modifier.height(10.dp))
-            Text(
-                ideaLabel(di),
-                maxLines = 2, overflow = TextOverflow.Ellipsis,
-                style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim),
-            )
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("KEEP", { deletingIdea = null })
-                PixelButton("DELETE", { deletingIdea = null; onDeleteIdea(di.id) }, primary = true)
-            }
-        }
-    }
     restoreUri?.let { uri ->
         PixelDialog({ restoreUri = null }) {
             Text("RESTORE THIS COPY?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
@@ -1170,38 +1194,59 @@ fun BrainScreen(
             }
         }
     }
-    editing?.let { idea ->
-        IdeaDialog(
-            idea = idea,
-            lobeName = lobeList.firstOrNull { it.id == idea.lobeId }?.name.orEmpty(),
-            groups = branchList.filter { it.lobeId == idea.lobeId },
-            onDismiss = { editing = null },
-            onSave = { base, title, body, link, branch -> onSaveIdea(base, title, body, link, branch); editing = null },
-            onDelete = { onDeleteIdea(idea.id); editing = null },
-            onSetDone = { onSetIdeaDone(idea.id, it) },
-        )
-    }
 }
 
+
+/** A request from the search list: glide to this item and open it. A new instance each time, so picking the same one again works. */
+internal class GoTo(val ideaId: Long)
+
+private val HEADER_H = 60.dp
+
+/** The pulse that runs to a neuron as it opens: [k] is the item, [t0] when it started and [dur] how long (map seconds). */
+private class SparkRun(val k: Int, val t0: Float, val dur: Float)
+
+/** A label and the size it was measured for (so a zoom change rebuilds it). */
+private class ItemLabel(val g: GlowText, val key: Int)
+
+/** Top strip of a focused sub brain: its name in its own colour, how many items, and the + menu. */
+@Composable
+private fun SubBrainHeader(lobe: Lobe, count: Int, modifier: Modifier, onAdd: () -> Unit) {
+    val c = lobeColor(lobe)
+    Column(modifier.fillMaxWidth().background(Px.Bg.copy(alpha = 0.86f))) {
+        Row(Modifier.fillMaxWidth().height(HEADER_H - 2.dp).padding(start = 18.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    lobe.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(fontFamily = TitleFont, fontSize = 22.sp, color = c, shadow = Shadow(c.copy(alpha = 0.6f), blurRadius = 10f)),
+                )
+                Text(
+                    if (count == 1) "1 note" else "$count notes",
+                    style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim),
+                )
+            }
+            PixelButton("+", onAdd, primary = true)
+        }
+        Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
+    }
+}
 
 @Composable
 private fun BrainCanvas(
     lobes: List<Lobe>,
     web: Web,
     selectedId: Long,
-    focusBranch: Long,
     homeTick: Int,
     cam: BrainCamera,
     sunSv: Float,
     sunSel: Boolean,
+    goTo: GoTo?,
+    topInset: Dp,
     onTapSun: () -> Unit,
     onTapLobe: (Long) -> Unit,
     onDoubleTapLobe: (Long) -> Unit,
     onTapBrain: () -> Unit,
-    onTapIdea: (Idea) -> Unit,
-    onDoubleTapIdea: (Idea) -> Unit,
+    onOpenIdea: (Idea) -> Unit,
     onTapBranch: (Branch) -> Unit,
-    onFocusBranch: (Branch) -> Unit,
     onTapEmpty: () -> Unit,
 ) {
     val density = LocalDensity.current.density
@@ -1220,22 +1265,16 @@ private fun BrainCanvas(
     var view by remember { mutableStateOf(IntSize.Zero) }
     var aim by remember { mutableStateOf<FloatArray?>(null) } // x, y, zoom; a new array glides there
     var firstRun by remember { mutableStateOf(true) }
-    LaunchedEffect(selectedId, focusBranch, homeTick) {
+    LaunchedEffect(selectedId, homeTick) {
         if (firstRun) { firstRun = false; return@LaunchedEffect }
-        val w = view.width / pxSize; val h = view.height / pxSize
-        val group = web.branches.firstOrNull { it.branch.id == focusBranch }
         val lobe = lobes.firstOrNull { it.id == selectedId }
-        aim = when {
-            group != null -> {
-                val g = web.branches.indexOf(group)
-                frame(web.items.filter { it.parent == g }.map { it.pos } + group.pos, w, h, itemZ + 0.1f, itemZ * 1.6f)
-            }
-            lobe != null -> frame(
+        aim = if (lobe != null) {
+            // the whole cloud: lobe, groups and items, centred below the header
+            fitCloud(
                 web.items.filter { it.lobe.id == lobe.id }.map { it.pos } + web.branches.filter { it.lobe.id == lobe.id }.map { it.pos } + lobeWorldPos(lobe.slot),
-                w, h, LOBE_MIN_ZOOM, itemZ + 0.1f,
+                view.width / pxSize, view.height / pxSize, topInset.value * density / pxSize, 0.8f, 3f,
             )
-            else -> floatArrayOf(0f, 0f, HOME_ZOOM)
-        }
+        } else floatArrayOf(0f, 0f, HOME_ZOOM)
     }
     LaunchedEffect(aim) {
         val a = aim ?: return@LaunchedEffect
@@ -1273,12 +1312,8 @@ private fun BrainCanvas(
         GlowText(measurer.measure("vault", labelStyle(c, if (sunSv > 0.5f) Color.Transparent else c), maxLines = 1))
     }
     val tapScope = rememberCoroutineScope()
-    val itemStyle = remember(density) {
-        TextStyle(fontFamily = pageFont, fontSize = 15.sp, lineHeight = 15.sp, color = Color(0xFFE6DCFF), textAlign = TextAlign.Center, shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.85f), blurRadius = 8f * density))
-    }
-    val doneStyle = remember { TextStyle(fontFamily = pageFont, fontSize = 15.sp, lineHeight = 15.sp, color = Color(0xFF7D7090), textAlign = TextAlign.Center) }
     // Built only when first seen, a few per frame, so a big cloud coming into view can't stall a frame.
-    val itemLabels = remember(web, density) { arrayOfNulls<GlowText>(web.items.size) }
+    val itemLabels = remember(web, density) { arrayOfNulls<ItemLabel>(web.items.size) }
     val hintStyle = remember { TextStyle(fontFamily = pixelFont, fontSize = 9.sp, color = Px.TextDim) }
 
     var time by remember { mutableFloatStateOf(0f) }
@@ -1289,6 +1324,38 @@ private fun BrainCanvas(
                 if (t0 == 0L) t0 = n
                 time = (n - t0) / 1_000_000_000f
             }
+        }
+    }
+
+    // Opening a neuron: a pulse runs the veins to it (about a third of a second), then the page slides up. A newer tap replaces it.
+    var spark by remember { mutableStateOf<SparkRun?>(null) }
+    val pending = remember { arrayOfNulls<Job>(1) }
+    val openNow by rememberUpdatedState(onOpenIdea)
+    fun onScreen(w: Offset): Boolean {
+        val sx = (w.x - cam.x) * pxSize * cam.scale + view.width / 2f
+        val sy = (w.y - cam.y) * pxSize * cam.scale + view.height / 2f
+        return sx >= 0f && sx <= view.width && sy >= topInset.value * density && sy <= view.height
+    }
+    fun openItem(k: Int, ms: Long = 340L) {
+        val idea = web.items[k].idea
+        pending[0]?.cancel()
+        // off the screen there is nothing to watch: open at once rather than make anyone wait
+        val wait = if (onScreen(web.items[k].pos)) ms else 0L
+        spark = if (wait > 0) SparkRun(k, time, wait * 0.95f / 1000f) else null
+        pending[0] = tapScope.launch { delay(wait); spark = null; openNow(idea) }
+    }
+    LaunchedEffect(goTo) {
+        val g = goTo ?: return@LaunchedEffect
+        val k = web.items.indexOfFirst { it.idea.id == g.ideaId }
+        if (k < 0) return@LaunchedEffect
+        val p = web.items[k].pos
+        val z = max(cam.scale, 2.4f)
+        if (onScreen(p)) {
+            aim = floatArrayOf(p.x, p.y, z) // the camera glides while the pulse runs
+            openItem(k, 400L)
+        } else {
+            cam.x = p.x; cam.y = p.y; cam.scale = z
+            openItem(k)
         }
     }
 
@@ -1327,11 +1394,11 @@ private fun BrainCanvas(
                     }
                 }
             }
-            .pointerInput(lobes, web, layout, itemZ, onTapSun) {
+            .pointerInput(lobes, web, layout, itemZ, selectedId, onTapSun) {
                 // Single taps act at once (waiting for a possible double tap felt laggy). Returns what a
-                // second tap may turn into a double tap: a labelled Idea (open is delayed) or a Lobe.
-                var pendingOpen: Job? = null
+                // second tap may turn into a double tap: a Lobe.
                 fun handle(tap: Offset): Any? {
+                    pending[0]?.cancel(); spark = null // a new tap beats a neuron still opening
                     val z = cam.scale
                     val u = pxSize * z
                     val ox = ceil(size.width / pxSize) * pxSize / 2f
@@ -1339,26 +1406,15 @@ private fun BrainCanvas(
                     fun screen(w: Offset) = Offset((w.x - cam.x) * u + ox, (w.y - cam.y) * u + oy)
                     // Drawn (wobbling) dot position when the renderer has one, else the layout position.
                     fun ipos(k: Int) = if (renderer.ipx.size > k) Offset(renderer.ipx[k], renderer.ipy[k]) else web.items[k].pos
-                    if (z >= GROUP_ZOOM) {
-                        val labelled = z >= itemZ - 0.5f
-                        val reach = 26.dp.toPx()
-                        val g = web.branches.minByOrNull { (screen(it.pos) - tap).getDistance() }
-                        if (g != null && (screen(g.pos) - tap).getDistance() <= reach) {
-                            if (labelled) onTapBranch(g.branch) else onFocusBranch(g.branch)
-                            return null
-                        }
-                        val ik = web.items.indices.minByOrNull { (screen(ipos(it)) - tap).getDistance() }
-                        if (ik != null && (screen(ipos(ik)) - tap).getDistance() <= reach) {
-                            if (!labelled) { // too small to read yet: go there first
-                                aim = floatArrayOf(ipos(ik).x, ipos(ik).y, itemZ + 0.1f)
-                                return null
-                            }
-                            // opening covers the canvas, so wait out the double-tap window before opening
-                            val idea = web.items[ik].idea
-                            pendingOpen = tapScope.launch { delay(viewConfiguration.doubleTapTimeoutMillis); onTapIdea(idea) }
-                            return idea
-                        }
-                    }
+                    // In a focused sub brain its groups and items answer at any zoom; otherwise once zoomed in.
+                    fun live(lobeId: Long) = z >= GROUP_ZOOM || lobeId == selectedId
+                    val reach = 26.dp.toPx()
+                    val g = web.branches.filter { live(it.lobe.id) }.minByOrNull { (screen(it.pos) - tap).getDistance() }
+                    val dg = if (g == null) Float.MAX_VALUE else (screen(g.pos) - tap).getDistance()
+                    val ik = web.items.indices.filter { live(web.items[it].lobe.id) }.minByOrNull { (screen(ipos(it)) - tap).getDistance() }
+                    val di = if (ik == null) Float.MAX_VALUE else (screen(ipos(ik)) - tap).getDistance()
+                    if (g != null && dg <= reach && dg <= di) { onTapBranch(g.branch); return null }
+                    if (ik != null && di <= reach) { openItem(ik); return null }
                     if ((screen(Offset(SUN_X, SUN_Y)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u)) {
                         onTapSun()
                         return null
@@ -1383,10 +1439,7 @@ private fun BrainCanvas(
                     if (hit != null && now - lastAt <= viewConfiguration.doubleTapTimeoutMillis && (tap - lastPos).getDistance() <= 48.dp.toPx()) {
                         // Second tap on the same target (the camera may be gliding toward a just-selected lobe).
                         lastHit = null
-                        when (hit) {
-                            is Idea -> { pendingOpen?.cancel(); onDoubleTapIdea(hit) }
-                            is Lobe -> onDoubleTapLobe(hit.id)
-                        }
+                        if (hit is Lobe) onDoubleTapLobe(hit.id)
                     } else {
                         lastAt = now; lastPos = tap; lastHit = handle(tap)
                     }
@@ -1398,7 +1451,8 @@ private fun BrainCanvas(
         if (vw <= 0 || vh <= 0) return@Canvas
         val px = pxSize.toInt()
         renderer.resize(ceil(vw / pxSize).toInt(), ceil(vh / pxSize).toInt())
-        renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel)
+        val sp = spark
+        renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel, sp?.k ?: -1, if (sp == null) 0f else ((time - sp.t0) / sp.dur).coerceIn(0f, 1f))
         drawIntoCanvas { renderer.blit(it, px) }
 
         // Labels at full resolution, same world -> device transform as the bitmap.
@@ -1419,14 +1473,20 @@ private fun BrainCanvas(
             taken.add(floatArrayOf(left, top, left + w, top + h))
             return true
         }
+        // The skull and its glow: names keep off it.
+        val skL = dx(SUN_X - 14f); val skR = dx(SUN_X + 14f); val skT = dy(SUN_Y - 14f); val skB = dy(SUN_Y + 14f)
+        taken.add(floatArrayOf(skL, skT, skR, skB))
 
         for (i in 0 until layout.nL) {
             val g = lobeLabels[i] ?: continue
             val tl = g.tl
-            val left = dx(layout.lx[i]) - tl.size.width / 2f
-            val top = dy(layout.ly[i] + 12f * ns)
-            if (off(left, top, tl.size.width.toFloat(), tl.size.height.toFloat())) continue
-            taken.add(floatArrayOf(left, top, left + tl.size.width, top + tl.size.height))
+            val w = tl.size.width.toFloat(); val h = tl.size.height.toFloat()
+            val left = dx(layout.lx[i]) - w / 2f
+            var top = dy(layout.ly[i] + 12f * ns)
+            // under the lobe it would run into the skull: put it above the lobe instead
+            if (left < skR && left + w > skL && top < skB && top + h > skT) top = dy(layout.ly[i] - 12f * ns) - h
+            if (off(left, top, w, h)) continue
+            taken.add(floatArrayOf(left, top, left + w, top + h))
             g.draw(this, left, top, dimOf(i))
         }
 
@@ -1435,39 +1495,50 @@ private fun BrainCanvas(
             vaultLabel.draw(this, dx(SUN_X) - vaultLabel.tl.size.width / 2f, dy(SUN_Y + 24f), dim)
         }
 
+        // The focused sub brain shows every group and item name at once; the others when zoomed in far enough.
         val groupAlpha = ((z - GROUP_ZOOM) / 0.3f).coerceIn(0f, 1f)
-        if (groupAlpha > 0f) {
-            for (i in 0 until layout.nL) {
-                for (g in layout.bstart[i] until layout.bstart[i + 1]) {
-                    val tl = groupLabels[g].tl
-                    val left = dx(layout.bx[g]) - tl.size.width / 2f
-                    val top = dy(layout.by[g]) + 9f * ns * u
-                    if (off(left, top, tl.size.width.toFloat(), tl.size.height.toFloat()) || !fits(left, top, tl.size.width.toFloat(), tl.size.height.toFloat())) continue
-                    groupLabels[g].draw(this, left, top, groupAlpha * dimOf(i))
-                }
+        for (i in 0 until layout.nL) {
+            val a = if (i == selIdx) 1f else groupAlpha
+            if (a <= 0f) continue
+            for (g in layout.bstart[i] until layout.bstart[i + 1]) {
+                val tl = groupLabels[g].tl
+                val left = dx(layout.bx[g]) - tl.size.width / 2f
+                val top = dy(layout.by[g]) + 9f * ns * u
+                if (off(left, top, tl.size.width.toFloat(), tl.size.height.toFloat()) || !fits(left, top, tl.size.width.toFloat(), tl.size.height.toFloat())) continue
+                groupLabels[g].draw(this, left, top, a * dimOf(i))
             }
         }
 
         val itemAlpha = ((z - (itemZ - 0.5f)) / 0.5f).coerceIn(0f, 1f)
-        if (itemAlpha > 0f && renderer.ipx.size >= layout.nI) {
-            val boxW = LABEL_WIDTH.toPx(); val boxH = 34.dp.toPx()
+        if (renderer.ipx.size >= layout.nI) {
+            // A name is as wide as the cell it hangs in (cells are where items sit), one line unless the rows are far enough apart for two.
+            val boxDp = (CELL_X * u / density - 5f).coerceIn(34f, LABEL_WIDTH.value)
+            val lines = if (CELL_Y * u / density >= 34f) 2 else 1
+            val key = (boxDp / 6f).toInt() * 2 + (lines - 1)
+            val boxW = boxDp * density; val boxH = (if (lines == 2) 34f else 19f) * density
+            val style = TextStyle(
+                fontFamily = pageFont, fontSize = if (boxDp >= 56f) 15.sp else 12.sp, lineHeight = if (boxDp >= 56f) 15.sp else 12.sp,
+                color = Color(0xFFE6DCFF), textAlign = TextAlign.Center, shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.85f), blurRadius = 8f * density),
+            )
             var built = 0
             for (i in 0 until layout.nL) {
+                val a = if (i == selIdx) 1f else itemAlpha
+                if (a <= 0f) continue
                 for (k in layout.istart[i] until layout.istart[i + 1]) {
                     // cull before measuring: a label is at most boxW wide and boxH tall, centred under its dot
                     val cx = dx(renderer.ipx[k]); val top = dy(renderer.ipy[k]) + 7.dp.toPx()
                     if (off(cx - boxW / 2f, top, boxW, boxH)) continue
-                    val p = web.items[k]
-                    val label = itemLabels[k] ?: if (built >= 6) continue else run {
+                    val cached = itemLabels[k]
+                    val label = if (cached != null && (cached.key == key || built >= 6)) cached else if (built >= 6) continue else run {
                         built++
-                        GlowText(measurer.measure(
-                            ideaLabel(p.idea).ifBlank { "..." }, if (p.idea.done) doneStyle else itemStyle, overflow = TextOverflow.Ellipsis, maxLines = 2,
-                            constraints = Constraints(maxWidth = boxW.toInt().coerceAtLeast(50)),
-                        )).also { itemLabels[k] = it }
+                        ItemLabel(GlowText(measurer.measure(
+                            ideaLabel(web.items[k].idea).ifBlank { "..." }, style, overflow = TextOverflow.Ellipsis, maxLines = lines,
+                            constraints = Constraints(maxWidth = boxW.toInt().coerceAtLeast(40)),
+                        )), key).also { itemLabels[k] = it }
                     }
-                    val tl = label.tl
+                    val tl = label.g.tl
                     if (!fits(cx - tl.size.width / 2f, top, tl.size.width.toFloat(), tl.size.height.toFloat())) continue
-                    label.draw(this, cx - tl.size.width / 2f, top, itemAlpha * dimOf(i))
+                    label.g.draw(this, cx - tl.size.width / 2f, top, a * dimOf(i))
                 }
             }
         }
@@ -1575,7 +1646,7 @@ private fun PassphraseDialog(create: Boolean, onDismiss: () -> Unit, onSubmit: (
 // ---------------------------------------------------------------------------------------------
 
 @Composable
-private fun PixelField(
+internal fun PixelField(
     value: String,
     onChange: (String) -> Unit,
     hint: String,
@@ -1615,6 +1686,7 @@ private fun PixelField(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NameDialog(
     title: String,
@@ -1624,6 +1696,7 @@ private fun NameDialog(
     initial: String = "",
     submit: String = "GROW",
     onDelete: (() -> Unit)? = null,
+    onAddItem: (() -> Unit)? = null,
 ) {
     var text by remember { mutableStateOf(initial) }
     fun submit() {
@@ -1635,76 +1708,11 @@ private fun NameDialog(
         Spacer(Modifier.height(16.dp))
         PixelField(text, { text = it.take(24) }, hint, onDone = ::submit)
         Spacer(Modifier.height(18.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             onDelete?.let { PixelButton("DELETE", it) }
+            onAddItem?.let { PixelButton("ITEM", { it(); onDismiss() }) }
             PixelButton("CANCEL", onDismiss)
             PixelButton(submit, ::submit, primary = true)
-        }
-    }
-}
-
-/** [onSetDone] writes at once, the rest waits for SAVE. A new idea has no row yet, so its tick travels in the base handed to [onSave]. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun IdeaDialog(
-    idea: Idea,
-    lobeName: String,
-    groups: List<Branch>,
-    onDismiss: () -> Unit,
-    onSave: (Idea, String, String, String?, Long?) -> Unit,
-    onDelete: () -> Unit,
-    onSetDone: (Boolean) -> Unit,
-) {
-    var title by remember { mutableStateOf(idea.title) }
-    var body by remember { mutableStateOf(idea.body) }
-    var link by remember { mutableStateOf(idea.link.orEmpty()) }
-    var done by remember { mutableStateOf(idea.done) }
-    var branch by remember { mutableStateOf(idea.branchId) }
-    var openFailed by remember { mutableStateOf(false) }
-    val uri = LocalUriHandler.current
-
-    PixelDialog(onDismiss) {
-        Column(Modifier.verticalScroll(rememberScrollState())) {
-            Text(if (idea.id == 0L) "NEW ITEM" else "ITEM", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
-            Spacer(Modifier.height(14.dp))
-            PixelField(title, { title = it }, "Title")
-            Spacer(Modifier.height(10.dp))
-            PixelField(body, { body = it }, "Note", singleLine = false, minHeight = 76.dp)
-            Spacer(Modifier.height(10.dp))
-            PixelField(link, { link = it; openFailed = false }, "Link", plain = true)
-            if (link.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
-                PixelButton("OPEN LINK", {
-                    val l = link.trim()
-                    openFailed = runCatching { uri.openUri(if (':' in l) l else "https://$l") }.isFailure
-                })
-            }
-            if (openFailed) Text("This link can't be opened.", Modifier.padding(top = 6.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.Magenta))
-            Spacer(Modifier.height(6.dp))
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Checkbox) {
-                    done = !done
-                    if (idea.id != 0L) onSetDone(done)
-                },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(if (done) "[X] DONE" else "[ ] DONE", style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = if (done) Px.Lavender else Px.TextDim))
-            }
-            if (groups.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Text("LIVES IN", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim))
-                Spacer(Modifier.height(8.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PixelButton(lobeName.uppercase(), { branch = null }, primary = branch == null)
-                    groups.forEach { g -> PixelButton(g.name.uppercase(), { branch = g.id }, primary = branch == g.id) }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                if (idea.id != 0L) PixelButton("DELETE", onDelete)
-                PixelButton("CANCEL", onDismiss)
-                PixelButton("SAVE", { onSave(idea.copy(done = done), title, body, link, branch) }, primary = true)
-            }
         }
     }
 }

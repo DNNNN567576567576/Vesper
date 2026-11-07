@@ -35,7 +35,7 @@ fun main() {
             onPreviewKeyEvent = { it.key == Key.Escape && it.type == KeyEventType.KeyDown && handleDesktopBack() },
         ) {
             window.minimumSize = Dimension(800, 600)
-            PixelTheme { App(host, null, {}, null, {}) }
+            PixelTheme { App(host, null, {}) }
         }
     }
     // The closing editor's last save and the last sync run on appScope; give them a moment before the JVM ends.

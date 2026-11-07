@@ -5,6 +5,7 @@ import android.os.Looper
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import app.vesper.BrainViewModel
+import app.vesper.IdeaEditorViewModel
 import app.vesper.MoonsViewModel
 import app.vesper.NoteEditorViewModel
 import app.vesper.Settings
@@ -330,5 +331,100 @@ class EditorSafetyTest {
         io { host.db.moonsDao().deletePlan(held.id) }
         vm.editPlan(held, "still wanted").done()
         assertNotNull(io { rows.plans() }.singleOrNull { it.text == "still wanted" })
+    }
+
+    // ---- an item's own page (IdeaEditorViewModel) ----
+    private fun openIdea(): Pair<IdeaEditorViewModel, Long> {
+        val l = lobe()
+        val id = io { host.db.brainDao().insertIdea(Idea(lobeId = l, title = "held", body = "old body")) }
+        val vm = IdeaEditorViewModel(host, id, l, null)
+        until("loaded") { vm.loaded }
+        return vm to id
+    }
+
+    private fun remoteIdea(id: Long, body: String) = io {
+        val n = rows.ideas().single { it.id == id }
+        rows.update(n.copy(body = body, syncAt = n.syncAt + 1000))
+    }
+
+    @Test fun anIdlePageShowsTheRemoteChange() {
+        val (vm, id) = openIdea()
+        remoteIdea(id, "from the phone")
+        until("refresh") { vm.body == "from the phone" }
+        vm.flush().done()
+        assertEquals("from the phone", io { rows.ideas() }.single().body) // no copy, no conflict
+    }
+
+    @Test fun typingOnAnOpenPageSurvivesARemoteChangeAndTheOtherSideBecomesACopy() {
+        val (vm, id) = openIdea()
+        vm.onBody("my typing")
+        remoteIdea(id, "from the phone")
+        repeat(20) { idle(); Thread.sleep(5) }
+        assertEquals("my typing", vm.body)
+        vm.flush().done()
+        assertEquals("my typing", vm.body)
+        val all = io { rows.ideas() }
+        assertEquals("my typing", all.single { it.id == id }.body)
+        val copy = all.single { it.id != id }
+        assertEquals("from the phone", copy.body)
+        assertEquals("held (other copy)", copy.title)
+    }
+
+    @Test fun aPageThatTypesAfterARefreshBuildsOnTheNewText() {
+        val (vm, id) = openIdea()
+        remoteIdea(id, "from the phone")
+        until("refresh") { vm.body == "from the phone" }
+        vm.onBody("from the phone, and more")
+        vm.flush().done()
+        assertEquals(listOf("from the phone, and more"), io { rows.ideas() }.map { it.body })
+    }
+
+    @Test fun anIdeaDeletedElsewhereWhileTypingGetsARowBackAndWithoutTypingStaysDeleted() {
+        val (vm, id) = openIdea()
+        io { host.db.brainDao().deleteIdea(id) }
+        vm.flush().done() // nothing typed
+        assertEquals(0, io { rows.ideas() }.size)
+        vm.onBody("typed anyway")
+        vm.flush().done()
+        assertEquals(listOf("typed anyway"), io { rows.ideas() }.map { it.body })
+    }
+
+    @Test fun aNewPageStaysUnwrittenWhileBlankAndLandsInItsGroupOnceWritten() {
+        val l = lobe()
+        val group = io { host.db.brainDao().insertBranch(Branch(lobeId = l, name = "Read")) }
+        val vm = IdeaEditorViewModel(host, null, l, group)
+        vm.flush().done()
+        assertEquals(0, io { rows.ideas() }.size)
+        vm.onBody("   ")
+        vm.flush().done()
+        assertEquals(0, io { rows.ideas() }.size)
+        vm.onTitle("first")
+        vm.flush().done()
+        val row = io { rows.ideas() }.single()
+        assertEquals(listOf<Any?>("first", l, group), listOf(row.title, row.lobeId, row.branchId))
+        vm.onBody("then more")
+        vm.flush().done()
+        assertEquals(listOf("then more"), io { rows.ideas() }.map { it.body }) // the same row, not a second
+    }
+
+    @Test fun aRoundSavesTextTypedOnAnOpenPage() {
+        platform.key = null
+        val (vm, id) = openIdea()
+        until("signed in") { host.sync.ui.value.signedIn }
+        host.sync.unlock("correct horse battery")
+        until("unlocked") { host.sync.ui.value.unlocked }
+        vm.onBody("typed, not saved yet")
+        val before = SyncStore(platform.stateDir).state.lastSyncAt
+        host.sync.syncNow()
+        until("round") { SyncStore(platform.stateDir).state.lastSyncAt != before }
+        assertEquals("typed, not saved yet", io { rows.ideas() }.single { it.id == id }.body)
+    }
+
+    @Test fun burningAPageDeletesTheItem() {
+        val (vm, _) = openIdea()
+        vm.delete()
+        until("gone") { io { rows.ideas() }.isEmpty() }
+        vm.flush().done()
+        assertEquals(0, io { rows.ideas() }.size)
     }
 }

@@ -91,6 +91,11 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import app.vesper.NoteEditorViewModel
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.input.KeyboardType
+import app.vesper.IdeaEditorViewModel
 
 private val ListGapStyle = ParagraphStyle(
     lineHeight = 38.sp, // 26sp body line + ~12dp; Bottom puts the extra above the text
@@ -184,51 +189,13 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit, onOpenPage: (
             }
         }
 
-        BasicTextField(
-            value = vm.title,
-            onValueChange = vm::onTitle,
-            enabled = vm.loaded,
-            singleLine = true,
-            textStyle = TextStyle(fontFamily = PageFont, fontSize = 26.sp, lineHeight = 28.sp, color = Px.Text),
-            cursorBrush = SolidColor(Px.Lavender),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Next),
-            keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).focusRequester(titleFocus),
-            decorationBox = { inner ->
-                Box {
-                    if (vm.title.isEmpty()) {
-                        Text("Title", style = TextStyle(fontFamily = PageFont, fontSize = 26.sp, lineHeight = 28.sp, color = Px.TextDim.copy(alpha = 0.5f)))
-                    }
-                    inner()
-                }
-            },
-        )
-        // Pixel divider: a dashed line of 4dp blocks.
-        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            repeat(40) { Box(Modifier.weight(1f).height(2.dp).background(Px.Border)) }
-        }
+        PageTitleField(vm.title, vm::onTitle, vm.loaded, Modifier.focusRequester(titleFocus)) { focusManager.moveFocus(FocusDirection.Down) }
+        PageDivider()
 
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             val minH = maxHeight
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                BasicTextField(
-                    value = vm.content,
-                    visualTransformation = ListGap,
-                    onValueChange = vm::onContent,
-                    enabled = vm.loaded,
-                    textStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.Text),
-                    cursorBrush = SolidColor(Px.Lavender),
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = if (pages.isNotEmpty()) 52.dp else minH).padding(horizontal = 20.dp, vertical = 14.dp),
-                    decorationBox = { inner ->
-                        Box {
-                            if (vm.content.isEmpty()) {
-                                Text("Write something…", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.TextDim.copy(alpha = 0.5f)))
-                            }
-                            inner()
-                        }
-                    },
-                )
+                PageBodyField(vm.content, vm::onContent, vm.loaded, Modifier.heightIn(min = if (pages.isNotEmpty()) 52.dp else minH))
                 if (pages.isNotEmpty()) {
                     Text(
                         "pages",
@@ -260,6 +227,169 @@ fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit, onOpenPage: (
             onKeep = { burnPage = null },
             onBurn = { burnPage = null; vm.deletePage(pid) },
         )
+    }
+}
+
+/** The title line of a page: PageFont 26sp, one line, Next moves on. Shared by the scroll editor and the Brain item page. */
+@Composable
+internal fun PageTitleField(value: String, onChange: (String) -> Unit, enabled: Boolean, modifier: Modifier = Modifier, onNext: () -> Unit) {
+    BasicTextField(
+        value = value,
+        onValueChange = onChange,
+        enabled = enabled,
+        singleLine = true,
+        textStyle = TextStyle(fontFamily = PageFont, fontSize = 26.sp, lineHeight = 28.sp, color = Px.Text),
+        cursorBrush = SolidColor(Px.Lavender),
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Next),
+        keyboardActions = KeyboardActions(onNext = { onNext() }),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+        decorationBox = { inner ->
+            Box {
+                if (value.isEmpty()) {
+                    Text("Title", style = TextStyle(fontFamily = PageFont, fontSize = 26.sp, lineHeight = 28.sp, color = Px.TextDim.copy(alpha = 0.5f)))
+                }
+                inner()
+            }
+        },
+    )
+}
+
+/** Pixel divider: a dashed line of 4dp blocks. */
+@Composable
+internal fun PageDivider() {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        repeat(40) { Box(Modifier.weight(1f).height(2.dp).background(Px.Border)) }
+    }
+}
+
+/** The writing area of a page: PageFont 22sp on 26sp lines, Lavender cursor. [modifier] sets the height. */
+@Composable
+internal fun PageBodyField(value: String, onChange: (String) -> Unit, enabled: Boolean, modifier: Modifier = Modifier) {
+    BasicTextField(
+        value = value,
+        visualTransformation = ListGap,
+        onValueChange = onChange,
+        enabled = enabled,
+        textStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.Text),
+        cursorBrush = SolidColor(Px.Lavender),
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+        decorationBox = { inner ->
+            Box {
+                if (value.isEmpty()) {
+                    Text("Write something\u2026", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.TextDim.copy(alpha = 0.5f)))
+                }
+                inner()
+            }
+        },
+    )
+}
+
+/**
+ * One Brain item on a full page, laid out like [NoteEditorScreen] (same wall, header, title, divider and body) with an
+ * optional link line under the body and a burn word top right. Saves like a scroll does: 500 ms after typing stops, when
+ * the app stops, when the page leaves composition (desktop) and on back.
+ */
+@Composable
+fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit) {
+    val focusManager = LocalFocusManager.current
+    val titleFocus = remember { FocusRequester() }
+    val closeNow by rememberUpdatedState(onClose)
+    var burning by remember { mutableStateOf(false) }
+
+    fun leave() {
+        vm.flush()
+        focusManager.clearFocus()
+        closeNow()
+    }
+
+    BackHandler(enabled = true) { leave() }
+    DisposableEffect(vm) { onDispose { if (saveOnDispose) vm.flush() } }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) vm.flush() }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    // A brand-new item starts with the cursor in the title and the keyboard up.
+    LaunchedEffect(Unit) { if (!vm.exists) titleFocus.requestFocus() }
+
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(58.dp), verticalAlignment = Alignment.CenterVertically) {
+            SigilFab("Back", ::leave, back = true)
+            Spacer(Modifier.weight(1f))
+            if (vm.exists) {
+                Box(
+                    Modifier.defaultMinSize(48.dp, 48.dp).clickable(role = Role.Button, onClickLabel = "Burn", onClick = { burning = true }).padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("burn", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = Px.Magenta, textDecoration = TextDecoration.Underline))
+                }
+            }
+        }
+        PageTitleField(vm.title, vm::onTitle, vm.loaded, Modifier.focusRequester(titleFocus)) { focusManager.moveFocus(FocusDirection.Down) }
+        PageDivider()
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val minH = maxHeight
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                PageBodyField(vm.body, vm::onBody, vm.loaded, Modifier.heightIn(min = (minH - 56.dp).coerceAtLeast(52.dp)))
+                IdeaLinkLine(vm.link, vm::onLink, vm.loaded)
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+
+    if (burning) {
+        TornNoteDialog(
+            title = "Burn \"${vm.title.trim().ifEmpty { "Untitled" }}\"?",
+            body = "No undo.",
+            onKeep = { burning = false },
+            onBurn = { burning = false; vm.delete(); focusManager.clearFocus(); closeNow() },
+        )
+    }
+}
+
+/** Under the body: "+ add a link" when empty; a link opens in the browser, "edit" changes it. */
+@Composable
+private fun IdeaLinkLine(link: String, onChange: (String) -> Unit, enabled: Boolean) {
+    var editing by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    val uri = LocalUriHandler.current
+    val focus = remember { FocusRequester() }
+    var wasFocused by remember { mutableStateOf(false) }
+    val style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, lineHeight = 24.sp, color = Px.Lavender)
+    LaunchedEffect(editing) { if (editing) focus.requestFocus() }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        when {
+            editing -> BasicTextField(
+                value = link,
+                onValueChange = { onChange(it); failed = false },
+                enabled = enabled,
+                singleLine = true,
+                textStyle = style,
+                cursorBrush = SolidColor(Px.Lavender),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { editing = false }),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).wrapContentHeight(Alignment.CenterVertically).focusRequester(focus)
+                    .onFocusChanged { if (it.isFocused) wasFocused = true else if (wasFocused) { wasFocused = false; editing = false } },
+            )
+            link.isBlank() -> Text(
+                "+ add a link",
+                Modifier.heightIn(min = 48.dp).wrapContentHeight(Alignment.CenterVertically).clickable(enabled = enabled, role = Role.Button) { editing = true },
+                style = style.copy(color = Px.TextDim.copy(alpha = 0.6f)),
+            )
+            else -> Row(Modifier.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    link.trim(), Modifier.weight(1f, fill = false).clickable(role = Role.Button, onClickLabel = "Open link") {
+                        val l = link.trim()
+                        failed = runCatching { uri.openUri(if (':' in l) l else "https://$l") }.isFailure
+                    },
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, style = style.copy(textDecoration = TextDecoration.Underline),
+                )
+                Text("edit", Modifier.clickable(role = Role.Button) { editing = true }.padding(start = 16.dp, top = 12.dp, bottom = 12.dp), style = style.copy(color = Px.TextDim))
+            }
+        }
+        if (failed) Text("This link can't be opened.", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.Magenta))
     }
 }
 

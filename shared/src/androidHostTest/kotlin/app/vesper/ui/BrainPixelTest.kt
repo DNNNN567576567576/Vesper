@@ -40,6 +40,9 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * Golden hashes of the Brain map renderer and the cached label glow.
  * Expected values were captured from the pre-port android.graphics BrainRenderer (M2 part 3).
+ * Alt version (Brain as the whole app): every map frame was re-captured on purpose, because neurons are now a core dot with
+ * rings by length of text (no done ember any more), and rot holes are pushed clear of nodes and labels. glowLabel is untouched.
+ * recentSpark is new: magenta recent cores and the open pulse.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -105,10 +108,14 @@ class BrainPixelTest {
         check("selectedZoom", pixels(r), E["selectedZoom"])
         r.draw(11.9f, -40f, 20f, 0.6f, layout, 3, 0.25f, false)
         check("selectedFar", pixels(r), E["selectedFar"])
-        // deep in a group: nodes stopped growing, a done item is dull
+        // deep in a group: nodes stopped growing, neurons ringed by how much is written (the empty ones have a dim core, no rings)
         val g = placeIdeas(lobes, branches, ideas).branches.first { it.branch.uid == "read" }.pos
         r.draw(5.2f, g.x, g.y, 6f, layout, 1, 0f, false)
         check("groupDeep", pixels(r), E["groupDeep"])
+        // now = 5100 makes the lobe-2 ideas "touched this week": magenta cores, and a pulse half way along the veins to the first of them
+        val recent = buildLayout(lobes, placeIdeas(lobes, branches, ideas), now = 5100L)
+        r.draw(5.2f, g.x, g.y, 6f, recent, 1, 0f, false, spark = recent.istart[1], sparkP = 0.5f)
+        check("recentSpark", pixels(r), E["recentSpark"])
         // idea positions handed to the label pass
         assertEquals(layout.nI, (0 until layout.nI).count { r.ipx[it] != 0f || r.ipy[it] != 0f })
     }
@@ -143,9 +150,9 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "overview" to 1733495740, "flareFresh" to 1477361297, "staleSun" to -477077436,
-            "selectedZoom" to 1674955127, "selectedFar" to -1152125229, "small" to -425604476,
-            "blit3" to 365364102, "glowLabel" to -66391980, "groupDeep" to -1266083703,
+            "overview" to 1418645582, "flareFresh" to 212345404, "staleSun" to -300477141,
+            "selectedZoom" to -507051428, "selectedFar" to 1771203545, "small" to -165067672,
+            "blit3" to 117785384, "recentSpark" to 1686787863, "glowLabel" to -66391980, "groupDeep" to 828068503,
         )
     }
 }

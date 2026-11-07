@@ -10,16 +10,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import app.vesper.data.Note
 import app.vesper.ui.PixelTheme
-import kotlinx.coroutines.launch
+import app.vesper.ui.SharedText
 
 class MainActivity : ComponentActivity() {
-    /** Pending launcher-shortcut action, consumed by the composition. */
-    private var request by mutableStateOf<String?>(null)
-
-    /** Id of a note just created from a share; the composition opens it in the editor. */
-    private var sharedNote by mutableStateOf<Long?>(null)
+    /** Text just shared to Vesper; the composition asks where to keep it and clears this. */
+    private var shared by mutableStateOf<SharedText?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -27,12 +23,12 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
         )
-        // Only a fresh launch acts on the intent; a rotation must not reopen the editor.
+        // Only a fresh launch acts on the intent; a rotation must not ask again.
         if (savedInstanceState == null) intent?.let(::handle)
         val host = application as NotebookApp
         setContent {
             PixelTheme {
-                App(host, request = request, onRequestHandled = { request = null }, sharedNote = sharedNote, onSharedHandled = { sharedNote = null })
+                App(host, shared = shared, onSharedHandled = { shared = null })
             }
         }
     }
@@ -44,17 +40,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handle(intent: Intent) {
-        if (intent.action != Intent.ACTION_SEND) { request = intent.action; return }
+        if (intent.action != Intent.ACTION_SEND) return
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
         if (text.isNullOrBlank()) return
-        val title = intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty()
-        val app = application as NotebookApp
-        app.appScope.launch {
-            try {
-                val dao = app.db.noteDao()
-                val id = dao.insert(Note(title = title, content = text, position = (dao.minPosition() ?: 1) - 1))
-                sharedNote = id
-            } catch (e: Exception) { app.reportError("save shared text", e) }
-        }
+        shared = SharedText(text, intent.getStringExtra(Intent.EXTRA_SUBJECT))
     }
 }

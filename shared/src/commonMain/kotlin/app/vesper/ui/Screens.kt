@@ -1081,8 +1081,6 @@ private fun SnuffedRow(
 private class NavItem(val icon: DrawableResource, val label: String, val zoom: Float = 1f)
 
 private val NAV_ITEMS = listOf(
-    NavItem(Res.drawable.tab_scrolls, "Scrolls"),
-    NavItem(Res.drawable.tab_flames, "Flames", 1.2f), // tall thin shape reads small next to the wider icons
     NavItem(Res.drawable.tab_brain, "Brain"),
     NavItem(Res.drawable.tab_grimoire, "Grimoire"),
     NavItem(Res.drawable.tab_moons, "Moons", 1.35f), // the moon art sits on a coarser grid, so it reads smaller than the others
@@ -1100,7 +1098,7 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
     }
 }
 
-/** The wide layout's left rail: the same five tabs, stacked from the top. */
+/** The wide layout's left rail: the same three tabs, stacked from the top. */
 @Composable
 fun PixelNavRail(selected: Int, onSelect: (Int) -> Unit) {
     Row(Modifier.fillMaxHeight().width(88.dp)) {

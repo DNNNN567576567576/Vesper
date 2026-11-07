@@ -13,12 +13,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.key
 import androidx.compose.ui.unit.dp
-import app.vesper.data.Task
 import app.vesper.ui.LocalWide
 import app.vesper.ui.PixelNavRail
 import androidx.compose.foundation.layout.WindowInsets
@@ -29,11 +25,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -45,44 +39,36 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import app.vesper.ui.AddTaskDialog
 import app.vesper.ui.BrainCamera
 import app.vesper.ui.BrainScreen
+import app.vesper.ui.IdeaPageScreen
 import app.vesper.ui.MoonsScreen
-import app.vesper.ui.NoteEditorScreen
-import app.vesper.ui.NotesScreen
 import app.vesper.ui.PixelNavBar
 import app.vesper.ui.Px
+import app.vesper.ui.SharePicker
+import app.vesper.ui.SharedText
 import app.vesper.ui.ShrineScreen
-import app.vesper.ui.TasksScreen
 import app.vesper.ui.WallBackdrop
 import app.vesper.ui.WallKind
 import kotlinx.coroutines.launch
 
-/** Launcher shortcut actions (see res/xml/shortcuts.xml in :app). */
-const val ACTION_NEW_NOTE = "app.vesper.NEW_NOTE"
-const val ACTION_NEW_TASK = "app.vesper.NEW_TASK"
-
-private const val NO_EDITOR = -2L
-private const val NEW_NOTE = -1L
+private const val NO_PAGE = -2L
 
 /**
- * The whole app below the platform shell: five tabs and the editor. [request] is a launcher-shortcut action
- * ([ACTION_NEW_NOTE], [ACTION_NEW_TASK]); [sharedNote] is a note just created from a share, opened in the editor.
+ * The whole app below the platform shell: three tabs (Brain, Grimoire, Moons) and an item's page over them.
+ * [shared] is text just sent to Vesper from another app; the picker asks where to keep it.
  */
 @Composable
-fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, sharedNote: Long?, onSharedHandled: () -> Unit) {
-    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Notes (default), 1 = Tasks, 2 = Brain, 3 = Shrine, 4 = Moons
+fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
+    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Brain (default), 1 = Shrine, 2 = Moons
     var selectedLobe by rememberSaveable { mutableLongStateOf(-1L) }
     val brainCamera = remember { BrainCamera() }
-    var editorTarget by rememberSaveable { mutableLongStateOf(NO_EDITOR) }
-    var editorSession by rememberSaveable { mutableIntStateOf(0) }
-    // Main scroll to return to when closing a page (back-stack of one); NO_EDITOR = none.
-    var editorParent by rememberSaveable { mutableLongStateOf(NO_EDITOR) }
-    var addingTask by rememberSaveable { mutableStateOf(false) }
+    // The open item page: its id (0 = a new item), where a new one goes, and a counter that gives each opening its own editor.
+    var pageId by rememberSaveable { mutableLongStateOf(NO_PAGE) }
+    var pageLobe by rememberSaveable { mutableLongStateOf(-1L) }
+    var pageBranch by rememberSaveable { mutableLongStateOf(-1L) }
+    var pageSession by rememberSaveable { mutableIntStateOf(0) }
 
-    val notesVm = viewModel { NotesViewModel(host) }
-    val tasksVm = viewModel { TasksViewModel(host) }
     val brainVm = viewModel { BrainViewModel(host) }
     val shrineVm = viewModel { ShrineViewModel(host) }
     val moonsVm = viewModel { MoonsViewModel(host) }
@@ -93,13 +79,8 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
     val lobes by brainVm.lobes.collectAsStateWithLifecycle()
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
     val branches by brainVm.branches.collectAsStateWithLifecycle()
-    val notes by notesVm.notes.collectAsStateWithLifecycle()
-    val tasks by tasksVm.tasks.collectAsStateWithLifecycle()
-    val snuffedTasks by tasksVm.snuffed.collectAsStateWithLifecycle()
 
-    // Hoisted so each tab keeps its scroll position while the other tab (or the editor) is shown.
-    val notesListState = rememberLazyListState()
-    val tasksListState = rememberLazyListState()
+    // Hoisted so the Grimoire keeps its scroll position while another tab (or an item page) is shown.
     val shrineListState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -114,47 +95,18 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
         onDispose { lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(sharedNote) {
-        if (sharedNote != null) {
-            tab = 0
-            editorSession++
-            editorParent = NO_EDITOR
-            editorTarget = sharedNote
-            onSharedHandled()
-        }
-    }
-
-    LaunchedEffect(request) {
-        when (request) {
-            ACTION_NEW_NOTE -> {
-                tab = 0
-                editorSession++
-                editorParent = NO_EDITOR
-                editorTarget = NEW_NOTE
-                onRequestHandled()
-            }
-            ACTION_NEW_TASK -> {
-                tab = 1
-                addingTask = true
-                onRequestHandled()
-            }
-        }
-    }
-
     BoxWithConstraints(Modifier.fillMaxSize()) {
-    // Wide (desktop window): left rail + side-by-side panes. Narrower than 700dp, and always on phones, the bottom-bar layout.
+    // Wide (desktop window): left rail. Narrower than 700dp, and always on phones, the bottom-bar layout.
     val wide = maxWidth >= 700.dp
-    val fullEditor = editorTarget != NO_EDITOR && !wide
+    val fullPage = pageId != NO_PAGE
 
     val onNav: (Int) -> Unit = { index ->
         if (index == tab) {
             // Re-tapping the active tab jumps back to the top.
             scope.launch {
                 when (index) {
-                    0 -> notesListState.animateScrollToItem(0)
-                    1 -> tasksListState.animateScrollToItem(0)
-                    3 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
-                    4 -> moonsReset.intValue++ // jump back to today
+                    1 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
+                    2 -> moonsReset.intValue++ // jump back to today
                     else -> { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
                 }
             }
@@ -163,80 +115,17 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
         }
     }
 
-    val editor: @Composable (Long) -> Unit = { target ->
-        // Key has target too: the outgoing editor must not grab the incoming one's VM.
-        val editorVm = viewModel(key = "editor-$editorSession-$target") {
-            NoteEditorViewModel(
-                host,
-                if (target == NEW_NOTE) null else target,
-                if (target == NEW_NOTE && editorParent != NO_EDITOR) editorParent else null,
-            )
+    val page: @Composable (Long) -> Unit = { target ->
+        // The session is in the key so the outgoing page keeps its own editor while it slides away.
+        val vm = viewModel(key = "idea-$pageSession") {
+            IdeaEditorViewModel(host, target.takeIf { it != 0L }, pageLobe, pageBranch.takeIf { it >= 0 })
         }
-        NoteEditorScreen(
-            editorVm,
-            onClose = {
-                // Closing a page returns to its main scroll's editor, not the list.
-                val parent = editorParent
-                editorParent = NO_EDITOR
-                if (parent != NO_EDITOR) editorSession++
-                editorTarget = parent
-            },
-            onOpenPage = { parent, page -> editorParent = parent; editorSession++; editorTarget = page ?: NEW_NOTE },
-        )
-    }
-
-    val notesScreen: @Composable () -> Unit = {
-        NotesScreen(
-            notes = notes,
-            listState = notesListState,
-            onOpen = { id -> editorSession++; editorParent = NO_EDITOR; editorTarget = id },
-            onNew = { editorSession++; editorParent = NO_EDITOR; editorTarget = NEW_NOTE },
-            // Wide: the open scroll sits beside the list, so burning it must close it.
-            onDelete = { id -> if (wide && editorTarget == id) editorTarget = NO_EDITOR; notesVm.delete(id) },
-            vm = notesVm,
-        )
-    }
-
-    val flames: @Composable (List<Task>?, List<Task>, LazyListState, Boolean) -> Unit = { lit, snuffed, state, snuffedOnly ->
-        TasksScreen(
-            tasks = lit,
-            snuffed = snuffed,
-            listState = state,
-            onComplete = tasksVm::complete,
-            onRelight = tasksVm::relight,
-            onAdd = { addingTask = true },
-            vm = tasksVm,
-            snuffedOnly = snuffedOnly,
-        )
+        IdeaPageScreen(vm, onClose = { pageId = NO_PAGE })
     }
 
     val tabContent: @Composable () -> Unit = {
         Crossfade(targetState = tab, animationSpec = tween(170), label = "tab") { current ->
-            if (current == 0) {
-                if (wide) {
-                    Row(Modifier.fillMaxSize()) {
-                        Box(Modifier.width(300.dp).fillMaxHeight()) { notesScreen() }
-                        Box(Modifier.weight(1f).fillMaxHeight()) {
-                            // Switching scrolls disposes the old editor, which flushes it (see NoteEditorScreen).
-                            if (editorTarget != NO_EDITOR) key(editorSession, editorTarget) { editor(editorTarget) }
-                        }
-                    }
-                } else {
-                    notesScreen()
-                }
-            } else if (current == 1) {
-                if (wide) {
-                    Row(Modifier.fillMaxSize()) {
-                        Box(Modifier.weight(1f).fillMaxHeight()) { flames(tasks, emptyList(), tasksListState, false) }
-                        Box(Modifier.width(2.dp).fillMaxHeight().background(Px.Border))
-                        Box(Modifier.weight(1f).fillMaxHeight()) {
-                            flames(if (tasks == null) null else emptyList(), snuffedTasks, rememberLazyListState(), true)
-                        }
-                    }
-                } else {
-                    flames(tasks, snuffedTasks, tasksListState, false)
-                }
-            } else if (current == 3) {
+            if (current == 1) {
                 ShrineScreen(
                     posts = posts,
                     listState = shrineListState,
@@ -250,7 +139,7 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
                     onDelete = shrineVm::delete,
                     media = host.shrineMedia,
                 )
-            } else if (current == 4) {
+            } else if (current == 2) {
                 MoonsScreen(
                     plans = plans,
                     focus = focus,
@@ -269,19 +158,15 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
                     lobes = lobes,
                     ideas = ideas,
                     branches = branches,
-                    notes = notes,
                     camera = brainCamera,
                     selectedLobe = selectedLobe,
                     onSelectLobe = { selectedLobe = it },
                     onAddLobe = { name -> brainVm.addLobe(name) { selectedLobe = it } },
                     onDeleteLobe = brainVm::deleteLobe,
-                    onSaveIdea = brainVm::saveIdea,
-                    onDeleteIdea = brainVm::deleteIdea,
-                    onSetIdeaDone = brainVm::setIdeaDone,
+                    onOpenIdea = { id, lobeId, branchId -> pageSession++; pageLobe = lobeId; pageBranch = branchId ?: -1L; pageId = id },
                     onAddBranch = brainVm::addBranch,
                     onRenameBranch = brainVm::renameBranch,
                     onDeleteBranch = brainVm::deleteBranch,
-                    onOpenNote = { id -> if (wide) { tab = 0; editorParent = NO_EDITOR }; editorSession++; editorTarget = id },
                     vault = host.vault,
                     sync = host.sync,
                     appScope = host.appScope,
@@ -291,31 +176,21 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
     }
 
     CompositionLocalProvider(LocalWide provides wide) {
-    Box(Modifier.fillMaxSize().background(if (fullEditor) Px.Bg else if (tab == 3) Color(0xFF08040C) else if (tab == 4) Color(0xFF06030C) else Px.Bg)) {
-        // Notes and the editor share the rotting wall, Tasks gets the candle crypt, Brain, Shrine and Moons draw their own opaque backdrops.
-        WallBackdrop(
-            when {
-                fullEditor -> WallKind.Notes
-                tab == 0 -> WallKind.Notes
-                tab == 1 -> WallKind.Candle
-                else -> WallKind.None // Brain, Shrine and Moons draw their own backdrops
-            }
-        )
+    Box(Modifier.fillMaxSize().background(if (fullPage) Px.Bg else if (tab == 1) Color(0xFF08040C) else if (tab == 2) Color(0xFF06030C) else Px.Bg)) {
+        // An item's page shares the rotting wall with the old scroll editor; Brain, Grimoire and Moons draw their own opaque backdrops.
+        WallBackdrop(if (fullPage) WallKind.Notes else WallKind.None)
 
         if (wide) {
             Row(Modifier.fillMaxSize()) {
                 PixelNavRail(tab, onNav)
-                Box(Modifier.weight(1f).fillMaxHeight()) { tabContent() }
-            }
-            if (addingTask) {
-                AddTaskDialog(onDismiss = { addingTask = false }, onAdd = tasksVm::add)
+                Box(Modifier.weight(1f).fillMaxHeight()) { if (fullPage) page(pageId) else tabContent() }
             }
         } else {
-            // The editor slides in over the list, like turning to a fresh page.
+            // The page slides in over the map, like turning to a fresh page.
             AnimatedContent(
-                targetState = editorTarget,
+                targetState = pageId,
                 transitionSpec = {
-                    if (targetState != NO_EDITOR) {
+                    if (targetState != NO_PAGE) {
                         (fadeIn(tween(190)) + slideInHorizontally(tween(300)) { it / 9 }) togetherWith
                             fadeOut(tween(130))
                     } else {
@@ -323,10 +198,10 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
                             (fadeOut(tween(150)) + slideOutHorizontally(tween(260)) { it / 9 })
                     }
                 },
-                label = "editor",
+                label = "page",
             ) { target ->
-                if (target != NO_EDITOR) {
-                    editor(target)
+                if (target != NO_PAGE) {
+                    page(target)
                 } else {
                     Scaffold(
                         containerColor = Color.Transparent,
@@ -335,13 +210,20 @@ fun App(host: VesperHost, request: String?, onRequestHandled: () -> Unit, shared
                     ) { inner ->
                         Box(Modifier.fillMaxSize().padding(inner).statusBarsPadding()) { tabContent() }
                     }
-                    if (addingTask) {
-                        AddTaskDialog(onDismiss = { addingTask = false }, onAdd = tasksVm::add)
-                    }
                 }
             }
         }
     }
     }
+    }
+
+    val lobeList = lobes
+    if (shared != null && lobeList != null) {
+        SharePicker(
+            shared, lobeList, branches.orEmpty(),
+            onPick = { lobeId, branchId -> brainVm.addShared(shared, lobeId, branchId); onSharedHandled() },
+            onNewLobe = { name -> brainVm.addLobe(name) { brainVm.addShared(shared, it, null) }; onSharedHandled() },
+            onCancel = onSharedHandled,
+        )
     }
 }
