@@ -15,8 +15,8 @@ import androidx.compose.ui.unit.sp
 import app.vesper.res.Res
 import app.vesper.res.brain_lobe
 import app.vesper.res.brain_main
-import app.vesper.res.vault_skull
-import app.vesper.res.vault_skull_dead
+import app.vesper.res.vault_heart
+import app.vesper.res.vault_heart_dead
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -40,6 +40,7 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * Golden hashes of the Brain map renderer and the cached label glow.
  * Expected values were captured from the pre-port android.graphics BrainRenderer (M2 part 3).
+ * 2.4.1: the vault skull became a beating heart; overview, beatFresh (was flareFresh), staleHeart (was staleSun) and selectedFar re-captured; the rest are untouched.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -64,7 +65,7 @@ class BrainPixelTest {
         setResourceReaderAndroidContext(RuntimeEnvironment.getApplication()) // Robolectric doesn't start CMP's context provider
         val env = getSystemResourceEnvironment()
         suspend fun img(r: DrawableResource) = getDrawableResourceBytes(env, r).decodeToImageBitmap()
-        BrainRenderer(img(Res.drawable.brain_main), img(Res.drawable.brain_lobe), img(Res.drawable.vault_skull), img(Res.drawable.vault_skull_dead))
+        BrainRenderer(img(Res.drawable.brain_main), img(Res.drawable.brain_lobe), img(Res.drawable.vault_heart), img(Res.drawable.vault_heart_dead))
     }
     private fun pixels(r: BrainRenderer): IntArray = IntArray(r.W * r.H).also { r.pix.bmp.readPixels(it) }
     private fun blitPixels(r: BrainRenderer, px: Int): IntArray {
@@ -91,15 +92,15 @@ class BrainPixelTest {
     @Test fun frames() {
         val r = newRenderer()
         r.resize(180, 390)
-        // calm overview, fresh vault, no pulse flare
+        // calm overview, fresh vault, heart at rest
         r.draw(0.5f, 0f, 0f, 0.85f, layout, -1, 0f, false)
         check("overview", pixels(r), E["overview"])
-        // t = 2.3: beatPh just past 1, so the skull's eyes flare
+        // t = 2.3: beatPh just past 1, so the heart is mid swell with its glow up
         r.draw(2.3f, 4f, -6f, 0.85f, layout, -1, 0f, false)
-        check("flareFresh", pixels(r), E["flareFresh"])
-        // stale vault selected: dead skull, flare suppressed
+        check("beatFresh", pixels(r), E["beatFresh"])
+        // stale vault selected: dead grey heart, no beat
         r.draw(2.3f, 0f, 60f, 1.4f, layout, -1, 1f, true)
-        check("staleSun", pixels(r), E["staleSun"])
+        check("staleHeart", pixels(r), E["staleHeart"])
         // half-stale, lobe 0 selected and zoomed past 2 (flipped sprites, 2px specks/drips)
         r.draw(7.1f, 30f, -70f, 2.4f, layout, 0, 0.5f, false)
         check("selectedZoom", pixels(r), E["selectedZoom"])
@@ -143,8 +144,8 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "overview" to 1733495740, "flareFresh" to 1477361297, "staleSun" to -477077436,
-            "selectedZoom" to 1674955127, "selectedFar" to -1152125229, "small" to -425604476,
+            "overview" to 1892298658, "beatFresh" to 1222925799, "staleHeart" to -1969919943,
+            "selectedZoom" to 1674955127, "selectedFar" to -1586077921, "small" to -425604476,
             "blit3" to 365364102, "glowLabel" to -66391980, "groupDeep" to -1266083703,
         )
     }

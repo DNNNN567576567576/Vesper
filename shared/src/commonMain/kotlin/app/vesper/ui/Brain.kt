@@ -62,14 +62,14 @@ import androidx.compose.ui.graphics.TileMode
 import app.vesper.res.Res
 import app.vesper.res.brain_lobe
 import app.vesper.res.brain_main
-import app.vesper.res.vault_skull
+import app.vesper.res.vault_heart
 import app.vesper.sync.MIN_PASSPHRASE
 import app.vesper.sync.SyncManager
 import app.vesper.sync.SyncUi
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
-import app.vesper.res.vault_skull_dead
+import app.vesper.res.vault_heart_dead
 import org.jetbrains.compose.resources.imageResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -323,9 +323,8 @@ internal class GlowText(val tl: TextLayoutResult) {
 private const val SUN_X = 0f
 private const val SUN_Y = 125f
 private const val SUN_BEND = 8f
-private const val SKULL_SCALE = 1f // sprite is pre-sized: 22x26 world units (lobe: 24x19.5)
-/** Eye centers in sprite pixels relative to the sprite center (from the bright pink pixels). */
-private val SKULL_EYES = arrayOf(floatArrayOf(-1f, 0f), floatArrayOf(7f, 0f))
+private const val HEART_SCALE = 0.85f // sprite is 26x38, so about 22x32 world units (lobe: 24x19.5); its base sits on SUN_Y
+private const val HEART_MID = 14f // world units from the heart's base up to its middle, for glow and tap
 
 /** 0 = fresh, 1 = fully eclipsed: grace of 7 days, then 14 days to go dark. Never backed up = 1. */
 private fun staleness(last: Long?): Float =
@@ -544,8 +543,8 @@ private val SPECK_COLS = intArrayOf(0x1E0A24, 0x4A1650, 0x7A2A6A)
 internal class BrainRenderer(
     private val coreSprite: ImageBitmap,
     private val lobeSprite: ImageBitmap,
-    private val skullSprite: ImageBitmap,
-    private val skullDeadSprite: ImageBitmap,
+    private val heartSprite: ImageBitmap,
+    private val heartDeadSprite: ImageBitmap,
 ) {
     val pix = Pix()
     val W get() = pix.w
@@ -686,27 +685,24 @@ internal class BrainRenderer(
         }
     }
 
-    /** Skull at the vault node; [sv] 0 = alive, 1 = dead. Eyes flare when the pulse arrives. */
+    /** Lub-dub as it arrives along the veins, in quarter steps so the scaled sprite stays crisp. */
+    private fun heartBeat() = round(max(beat(1f), 0.6f * beat(1.16f)) * 4f) / 4f
+
+    /** Glow behind the vault heart; [sv] 0 = alive, 1 = dead. */
     private fun sun(sv: Float, selected: Boolean, d: Float) {
         val l = 1f - sv
-        val ga = (0.35f + 0.3f * beat(1f)) * l * d
-        glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
-        if (selected) glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
+        val ga = (0.35f + 0.3f * heartBeat()) * l * d
+        glowAt(SUN_X, SUN_Y - HEART_MID, 34f, 0xD45AAB, ga)
+        if (selected) glowAt(SUN_X, SUN_Y - HEART_MID, 34f, 0xD45AAB, ga)
     }
 
-    /** Skull + eye flare, drawn after the dither pass so the checker doesn't show on the bone. */
-    private fun skull(sv: Float, d: Float) {
+    /** The heart swells with the pulse and stops beating as it dies; drawn after the dither pass so the checker doesn't show on it. */
+    private fun heart(sv: Float, d: Float) {
         val l = 1f - sv
-        sprite(skullDeadSprite, SUN_X, SUN_Y, SKULL_SCALE, d, false)
-        sprite(skullSprite, SUN_X, SUN_Y, SKULL_SCALE, l * d, false)
-        // eye flare: beatPh crosses 1 as the pulse lands, fades over ~0.6 s (0.27 of beatPh)
-        val q = (beatPh - 1f) / 0.27f
-        if (q < 0f || q >= 1f) return
-        val f = (1f - q) * (1f - q) * l * d
-        for (e in SKULL_EYES) {
-            glowAt(SUN_X + e[0] * SKULL_SCALE, SUN_Y + e[1] * SKULL_SCALE, 7f, 0xF596E1, 0.9f * f)
-            glowAt(SUN_X + e[0] * SKULL_SCALE, SUN_Y + e[1] * SKULL_SCALE, 12f, 0xD45AAB, 0.5f * f)
-        }
+        val s = HEART_SCALE * (1f + 0.14f * heartBeat() * l)
+        val cy = SUN_Y - heartSprite.height * s / 2f // base stays on SUN_Y while it swells
+        sprite(heartDeadSprite, SUN_X, cy, s, d, false)
+        sprite(heartSprite, SUN_X, cy, s, l * d, false)
     }
 
     /** One frame, in the mockup's draw order. [sel] is the selected lobe index or -1. */
@@ -888,7 +884,7 @@ internal class BrainRenderer(
 
         // 2x2 dither + vignette
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), ditherPaint)
-        skull(sv, sunDim)
+        heart(sv, sunDim)
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), vignette)
     }
 }
@@ -1208,9 +1204,9 @@ private fun BrainCanvas(
     val pxSize = remember(density) { round(2.28f * density).coerceAtLeast(1f) }
     val core = imageResource(Res.drawable.brain_main)
     val lobeImg = imageResource(Res.drawable.brain_lobe)
-    val skull = imageResource(Res.drawable.vault_skull)
-    val skullDead = imageResource(Res.drawable.vault_skull_dead)
-    val renderer = remember { BrainRenderer(core, lobeImg, skull, skullDead) }
+    val heart = imageResource(Res.drawable.vault_heart)
+    val heartDead = imageResource(Res.drawable.vault_heart_dead)
+    val renderer = remember { BrainRenderer(core, lobeImg, heart, heartDead) }
     val layout = remember(lobes, web) { buildLayout(lobes, web) }
     val selIdx = layout.lobeIds.indexOf(selectedId)
     val measurer = rememberTextMeasurer(cacheSize = 200)
@@ -1359,7 +1355,7 @@ private fun BrainCanvas(
                             return idea
                         }
                     }
-                    if ((screen(Offset(SUN_X, SUN_Y)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u)) {
+                    if ((screen(Offset(SUN_X, SUN_Y - HEART_MID)) - tap).getDistance() <= maxOf(36.dp.toPx(), 18f * u)) {
                         onTapSun()
                         return null
                     }
@@ -1432,7 +1428,7 @@ private fun BrainCanvas(
 
         run {
             val dim = if (selIdx < 0) 1f else 0.45f
-            vaultLabel.draw(this, dx(SUN_X) - vaultLabel.tl.size.width / 2f, dy(SUN_Y + 24f), dim)
+            vaultLabel.draw(this, dx(SUN_X) - vaultLabel.tl.size.width / 2f, dy(SUN_Y + 12f), dim)
         }
 
         val groupAlpha = ((z - GROUP_ZOOM) / 0.3f).coerceIn(0f, 1f)
