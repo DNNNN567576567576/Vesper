@@ -306,6 +306,54 @@ class BrainNotesTest {
         }
     }
 
+    @Test fun everyLobeNameIsPlacedInEverySlotArrangement() {
+        // every choice of n of the first 10 slots, which includes the real phone (Tasks, Music/Dances, Personal, Languages, Coding, Poetry, My Father in slots 0..6)
+        for (n in 6..8) for (slots in subsets(10, n)) {
+            val lobes = slots.mapIndexed { i, s -> Lobe(id = i + 1L, name = names[i], colorIndex = i, slot = s, uid = "l$i") }
+            val ideas = lobes.flatMap { l -> (0 until 5).map { Idea(id = l.id * 100 + it, lobeId = l.id, title = "t", body = "", uid = "i${l.id}-$it") } }
+            val layout = buildLayout(lobes, placeIdeas(lobes, emptyList(), ideas), now = 0)
+            val sizes = lobes.map { Size(minOf(150f, it.name.length * 11f), 28f) }
+            for (z in listOf(0.6f, 0.85f)) {
+                val at = lobeNames(layout, sizes, pxdp * z, nodeScale(z))
+                assertTrue("slots $slots z=$z: a lobe name was dropped", at.size == n && at.none { it == null })
+                // deterministic: the same input twice gives the same places
+                assertEquals(at, lobeNames(layout, sizes, pxdp * z, nodeScale(z)))
+            }
+        }
+    }
+
+    private fun subsets(of: Int, n: Int): List<List<Int>> =
+        if (n == 0) listOf(emptyList()) else (0 until of).flatMap { s -> subsets(of, n - 1).filter { it.isEmpty() || it[0] > s }.map { listOf(s) + it } }
+
+    @Test fun coldStartFitsOnceSizeAndLobesAreKnownInEitherOrder() {
+        val vault = Size(48f, 28f)
+        fun aimOf(n: Int): FloatArray { val (l, s) = overviewOf(n); return fitOverview({ z -> overviewBoxes(l, s, vault, z, pxdp) }, viewW, viewH, 76f, pxdp, 0.85f, 0.6f) }
+        val want = aimOf(7)
+        fun cam(c: BrainCamera) = listOf(c.x, c.y, c.scale)
+        // size first, lobes load later: the fit on no lobes must not stop the fit on seven
+        BrainCamera().let { c ->
+            c.fitUntouched(viewW.toInt()) { aimOf(0) }
+            c.fitUntouched(viewW.toInt()) { aimOf(7) }
+            assertEquals(want.toList(), cam(c))
+        }
+        // lobes first (no size yet, nothing happens), then the size
+        BrainCamera().let { c ->
+            c.fitUntouched(0) { aimOf(7) }
+            assertEquals(listOf(0f, 0f, 0.85f), cam(c))
+            c.fitUntouched(viewW.toInt()) { aimOf(7) }
+            assertEquals(want.toList(), cam(c))
+        }
+        // a lobe count change re-fits while untouched, but never after a pan or zoom
+        BrainCamera().let { c ->
+            c.fitUntouched(viewW.toInt()) { aimOf(6) }
+            c.fitUntouched(viewW.toInt()) { aimOf(7) }
+            assertEquals(want.toList(), cam(c))
+            c.x += 3f
+            c.fitUntouched(viewW.toInt()) { aimOf(8) }
+            assertEquals(want[0] + 3f, c.x, 0f)
+        }
+    }
+
     @Test fun overviewKeepsTheHomeZoomWhenItAlreadyFits() {
         val (layout, sizes) = overviewOf(2)
         val aim = fitOverview({ z -> overviewBoxes(layout, sizes, Size(48f, 28f), z, pxdp) }, viewW, viewH, 76f, pxdp, 0.85f, 0.6f)

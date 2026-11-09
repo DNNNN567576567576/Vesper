@@ -291,8 +291,8 @@ internal val HEART_BOX = floatArrayOf(-14f, -34f, 14f, 3f)
 
 /**
  * Where each lobe's name sits, as its top-left from the camera at the world origin, in the units of [sizes] ([k] of them per world unit),
- * null = no name. Under its lobe if that keeps clear of the heart and the names already placed (in slot order, so every device agrees),
- * else above it. [ns] is [nodeScale].
+ * null = no name (only a lobe with no name). Under its lobe if that keeps clear of the heart, other sprites and the names already placed
+ * (in slot order, so every device agrees), else above, beside, or further out; with no clear spot, the least overlapping one. [ns] is [nodeScale].
  */
 internal fun lobeNames(layout: Layout, sizes: List<Size?>, k: Float, ns: Float): List<Offset?> {
     val out = arrayOfNulls<Offset>(layout.nL)
@@ -304,8 +304,21 @@ internal fun lobeNames(layout: Layout, sizes: List<Size?>, k: Float, ns: Float):
         val below = (layout.ly[i] + 12f * ns) * k
         val above = (layout.ly[i] - 12f * ns) * k - n.height
         val heartSide = if (layout.lx[i] >= SUN_X) taken[0][2] + 2f else taken[0][0] - 2f - n.width // clear of the heart, still under the lobe
-        val tries = listOf(Offset(cx, below), Offset(cx, above), Offset(heartSide, below))
-        val at = tries.firstOrNull { t -> taken.none { cx0 -> t.x < cx0[2] && t.x + n.width > cx0[0] && t.y < cx0[3] && t.y + n.height > cx0[1] } } ?: tries[0]
+        val side = 16f * ns * k; val mid = layout.ly[i] * k - n.height / 2f
+        val tries = listOf(
+            Offset(cx, below), Offset(cx, above), Offset(heartSide, below),
+            Offset(layout.lx[i] * k + side, mid), Offset(layout.lx[i] * k - side - n.width, mid), // beside the lobe
+            Offset(cx, below + n.height), Offset(cx, above - n.height), // one line further out
+        )
+        // other lobes' sprites count as taken too (not this lobe's own, which the name hangs from)
+        val sprites = (0 until layout.nL).filter { it != i }.map { j ->
+            floatArrayOf((layout.lx[j] - 12f * ns) * k, (layout.ly[j] - 10f * ns) * k, (layout.lx[j] + 12f * ns) * k, (layout.ly[j] + 10f * ns) * k)
+        }
+        fun overlap(t: Offset) = (taken + sprites).sumOf { b ->
+            (minOf(t.x + n.width, b[2]) - maxOf(t.x, b[0])).coerceAtLeast(0f).toDouble() * (minOf(t.y + n.height, b[3]) - maxOf(t.y, b[1])).coerceAtLeast(0f)
+        }
+        // a name is never dropped: with no clear spot it takes the one that overlaps least (the first of equals)
+        val at = tries.firstOrNull { overlap(it) == 0.0 } ?: tries.minByOrNull { overlap(it) }!!
         taken.add(floatArrayOf(at.x, at.y, at.x + n.width, at.y + n.height))
         out[i] = at
     }

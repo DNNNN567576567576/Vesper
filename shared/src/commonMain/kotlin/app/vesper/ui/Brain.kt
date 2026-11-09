@@ -354,6 +354,21 @@ class BrainCamera {
     var x by mutableFloatStateOf(0f)
     var y by mutableFloatStateOf(0f)
     var scale by mutableFloatStateOf(HOME_ZOOM)
+
+    /** The last camera [fitUntouched] set; the camera counts as untouched while it is still the default or exactly that. */
+    private var fitted: FloatArray? = null
+
+    /**
+     * Puts the camera on the overview [aim] if the size is known ([viewW] > 0) and nobody has panned or zoomed since the default
+     * or the last fit. Called again whenever the size or the lobes change, so the order they arrive in does not matter.
+     */
+    internal fun fitUntouched(viewW: Int, aim: () -> FloatArray) {
+        val f = fitted
+        val untouched = if (f == null) x == 0f && y == 0f && scale == HOME_ZOOM else x == f[0] && y == f[1] && scale == f[2]
+        if (viewW <= 0 || !untouched) return
+        val a = aim()
+        x = a[0]; y = a[1]; scale = a[2]; fitted = a
+    }
 }
 
 /** Everything the renderer needs, derived from the real lobes/ideas plus the seeded rot decoration. */
@@ -1297,9 +1312,10 @@ private fun BrainCanvas(
             fitFocus(labels.scene(layout.lobeIds.indexOf(lobe.id)), view.width / density, view.height / density, topInset.value, pxSize / density, 0.8f, FOCUS_MAX_ZOOM)
         } else overviewAim()
     }
-    // the first time the map shows, before anyone has touched the camera, it starts on the fitted overview
+    // Until anyone touches the camera it follows the fitted overview: when the size is known, and again when the lobes load or change
+    // (labels is rebuilt then; at a cold start the lobes arrive after the size, and a fit on none must not count as a touch)
     LaunchedEffect(view, labels) {
-        if (view.width > 0 && selectedId < 0 && cam.x == 0f && cam.y == 0f && cam.scale == HOME_ZOOM) overviewAim().let { cam.x = it[0]; cam.y = it[1]; cam.scale = it[2] }
+        if (selectedId < 0) cam.fitUntouched(view.width, ::overviewAim)
     }
     LaunchedEffect(aim) {
         val a = aim ?: return@LaunchedEffect
