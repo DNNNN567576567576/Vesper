@@ -62,14 +62,14 @@ import androidx.compose.ui.graphics.TileMode
 import app.vesper.res.Res
 import app.vesper.res.brain_lobe
 import app.vesper.res.brain_main
-import app.vesper.res.vault_skull
+import app.vesper.res.vault_heart
 import app.vesper.sync.MIN_PASSPHRASE
 import app.vesper.sync.SyncManager
 import app.vesper.sync.SyncUi
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
-import app.vesper.res.vault_skull_dead
+import app.vesper.res.vault_heart_dead
 import org.jetbrains.compose.resources.imageResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -134,7 +134,7 @@ internal fun lobeColor(l: Lobe) = LobeColors[l.colorIndex.mod(LobeColors.size)]
 
 /** How rotten the map is (0..1). Locked by the approved mockup. */
 private const val ROT = 0.64f
-private const val TAU = 6.2831855f
+internal const val TAU = 6.2831855f
 private const val GOLDEN = 137.508
 
 /** Mulberry32, same generator as the mockup. */
@@ -165,7 +165,7 @@ internal class Placed(
 )
 
 /** Everything on the map below the lobes. [branches] and [items] run lobe by lobe, in the order of the lobes given. */
-internal class Web(val branches: List<PlacedBranch>, val items: List<Placed>)
+internal class Web(val branches: List<PlacedBranch>, val items: List<Placed>, val focus: Long = -1L)
 
 // Items sit on a staggered grid wide enough for a label and tight enough to keep the clouds small. World units.
 internal const val CELL_X = 9f
@@ -218,9 +218,10 @@ private fun blobRadius(n: Int) = sqrt(n * CELL_X * CELL_Y / (TAU / 2))
 
 /**
  * The whole web, from uids and slots only: local row ids differ per device, these don't. Groups fan out from their lobe,
- * ideas fill the cells nearest their group, or nearest the lobe when they have none.
+ * ideas fill the cells nearest their group, or nearest the lobe when they have none. The [focus]ed lobe instead gets
+ * [focusFormation]: a family tree, the groups side by side under the lobe and each one's neurons under it.
  */
-internal fun placeIdeas(lobes: List<Lobe>, branches: List<Branch>, ideas: List<Idea>): Web {
+internal fun placeIdeas(lobes: List<Lobe>, branches: List<Branch>, ideas: List<Idea>, focus: Long = -1L): Web {
     val centres = lobes.map { lobeWorldPos(it.slot) }
     val sunAngle = atan2(SUN_Y, SUN_X)
     val marks = (centres.map { atan2(it.y, it.x) } + sunAngle).sorted()
@@ -250,6 +251,19 @@ internal fun placeIdeas(lobes: List<Lobe>, branches: List<Branch>, ideas: List<I
             outI.add(Placed(idea, lobe, p, r.next() * TAU, (r.next() - 0.5f) * 8f, j, idea.uid == newest, parent))
         }
 
+        if (lobe.id == focus) {
+            fun rings(l: List<Idea>) = l.map { ringCount(it.title, it.body) }
+            val f = focusFormation(c, rings(loose), groups.map { rings(byGroup[it.id].orEmpty()) })
+            groups.forEachIndexed { g, b ->
+                val r = Rng(b.uid.hashCode() * 31 + 7)
+                outB.add(PlacedBranch(b, lobe, f.groups[g], r.next() * TAU, (r.next() - 0.5f) * 12f, byGroup[b.id].orEmpty().size))
+            }
+            val first = outB.size - groups.size
+            loose.forEachIndexed { j, i -> item(i, null, f.loose[j], j, -1) }
+            groups.forEachIndexed { g, b -> byGroup[b.id].orEmpty().forEachIndexed { j, i -> item(i, null, f.items[g][j], j, first + g) } }
+            return@forEachIndexed
+        }
+
         // Fan the groups out from the lobe, wider where the wedge allows, each with room for its own blob.
         val arcs = groups.map { 2f * blobRadius(byGroup[it.id].orEmpty().size) + CELL_X }
         val rho = hypot(c.x, c.y)
@@ -275,20 +289,23 @@ internal fun placeIdeas(lobes: List<Lobe>, branches: List<Branch>, ideas: List<I
             cloud.take(pos, list.size).let { cells -> list.forEachIndexed { j, i -> item(i, cells.getOrNull(j), pos, j, index) } }
         }
     }
-    return Web(outB, outI)
+    return Web(outB, outI, focus)
 }
 
 /** Nodes stop growing at this zoom, so zooming further opens the web up instead of blowing the sprites up. */
-private const val NODE_ZOOM = 2f
-private fun nodeScale(z: Float) = min(1f, NODE_ZOOM / z)
+internal const val NODE_ZOOM = 2f
+/** How bright the rest of the map stays behind a focused sub brain, so its neighbours and the heart do not crowd it. */
+internal const val FOCUS_DIM = 0.2f
+internal fun nodeScale(z: Float) = min(1f, NODE_ZOOM / z)
 
 private const val HOME_ZOOM = 0.85f
 private const val MIN_ZOOM = 0.6f
 private const val MAX_ZOOM = 12f
+/** A focused sub brain zooms in as far as this to fill the screen. */
+private const val FOCUS_MAX_ZOOM = 6f
 /** Group names and taps start here; ideas when their labels fit their cells, see itemZ. */
-private const val GROUP_ZOOM = 1.5f
+internal const val GROUP_ZOOM = 1.5f
 private const val LOBE_MIN_ZOOM = 1.7f
-private val LABEL_WIDTH = 84.dp
 
 /** A camera aim (x, y, zoom) that fits [pts] in a [w] x [h] view of low-res pixels. */
 private fun frame(pts: List<Offset>, w: Float, h: Float, minZ: Float, maxZ: Float): FloatArray {
@@ -319,12 +336,11 @@ internal class GlowText(val tl: TextLayoutResult) {
 }
 
 /** The vault sun: one fixed node (not a lobe), centered below the brain (x = 0), past the first lobe ring. */
-private const val SUN_X = 0f
-private const val SUN_Y = 125f
+internal const val SUN_X = 0f
+internal const val SUN_Y = 125f
 private const val SUN_BEND = 8f
-private const val SKULL_SCALE = 1f // sprite is pre-sized: 22x26 world units (lobe: 24x19.5)
-/** Eye centers in sprite pixels relative to the sprite center (from the bright pink pixels). */
-private val SKULL_EYES = arrayOf(floatArrayOf(-1f, 0f), floatArrayOf(7f, 0f))
+private const val HEART_SCALE = 0.85f // sprite is 26x38, so about 22x32 world units (lobe: 24x19.5); its base sits on SUN_Y
+private const val HEART_MID = 14f // world units from the heart's base up to its middle, for glow, keep-out and tap
 
 /** 0 = fresh, 1 = fully eclipsed: grace of 7 days, then 14 days to go dark. Never backed up = 1. */
 private fun staleness(last: Long?): Float =
@@ -356,7 +372,7 @@ internal class Layout(
     val drips: FloatArray,     // x, y, n, len, owner lobe (-1 none)
 )
 
-/** [now] decides which items are recent (touched within a week). */
+/** [now] decides which items are recent (touched within 48 hours). */
 internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.currentTimeMillis()): Layout {
     val placedIn = web.items
     val nL = lobes.size
@@ -411,7 +427,11 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.current
     // then pushed clear of every lobe, group, item, label and the vault, or left out when there is no room
     val keep = min(1f, ROT * 1.2f)
     val bAll = ArrayList<FloatArray>()
-    val keepOut = keepOutBoxes(lx, ly, bx, by, ix, iy, SUN_X, SUN_Y)
+    val keepOut = keepOutBoxes(lx, ly, bx, by, ix, iy, SUN_X, SUN_Y).let { base ->
+        // a focused sub brain also keeps holes off its whole tree
+        val f = idxOf[web.focus]
+        if (f == null) base else base + focusKeepOutBoxes(lx[f], ly[f], bx.slice(bstart[f] until bstart[f + 1]), by.slice(bstart[f] until bstart[f + 1]), ix.slice(istart[f] until istart[f + 1]), iy.slice(istart[f] until istart[f + 1]))
+    }
     fun blot(x: Float, y: Float, r: Float, ph: Float, u: Float) {
         if (u < keep) clearHole(x, y, r + 1f, keepOut)?.let { bAll.add(floatArrayOf(it[0], it[1], r, ph)) }
     }
@@ -525,7 +545,7 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.current
 // Drawing
 // ---------------------------------------------------------------------------------------------
 
-private fun rnd(v: Float): Int = floor(v + 0.5f).toInt()
+internal fun rnd(v: Float): Int = floor(v + 0.5f).toInt()
 
 private fun mixRgb(a: Int, b: Int, m: Float): Int {
     val k = m.coerceIn(0f, 1f)
@@ -545,8 +565,8 @@ private val SPECK_COLS = intArrayOf(0x1E0A24, 0x4A1650, 0x7A2A6A)
 internal class BrainRenderer(
     private val coreSprite: ImageBitmap,
     private val lobeSprite: ImageBitmap,
-    private val skullSprite: ImageBitmap,
-    private val skullDeadSprite: ImageBitmap,
+    private val heartSprite: ImageBitmap,
+    private val heartDeadSprite: ImageBitmap,
 ) {
     val pix = Pix()
     val W get() = pix.w
@@ -726,27 +746,25 @@ internal class BrainRenderer(
         if (p > 0.8f) glowAt(ipx[k], ipy[k], 12f, 0xF596E1, 0.8f * (p - 0.8f) * 5f)
     }
 
-    /** Skull at the vault node; [sv] 0 = alive, 1 = dead. Eyes flare when the pulse arrives. */
+    /** Lub-dub as it arrives along the veins, in quarter steps so the scaled sprite stays crisp. */
+    private fun heartBeat() = round(max(beat(1f), 0.6f * beat(1.16f)) * 4f) / 4f
+
+    /** Glow behind the vault heart; [sv] 0 = alive, 1 = dead. */
     private fun sun(sv: Float, selected: Boolean, d: Float) {
         val l = 1f - sv
-        val ga = (0.35f + 0.3f * beat(1f)) * l * d
-        glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
-        if (selected) glowAt(SUN_X, SUN_Y, 34f, 0xD45AAB, ga)
+        val ga = (0.35f + 0.3f * heartBeat()) * l * d
+        glowAt(SUN_X, SUN_Y - HEART_MID, 34f, 0xD45AAB, ga)
+        if (selected) glowAt(SUN_X, SUN_Y - HEART_MID, 34f, 0xD45AAB, ga)
     }
 
-    /** Skull + eye flare, drawn after the dither pass so the checker doesn't show on the bone. */
-    private fun skull(sv: Float, d: Float) {
+    /** The heart swells with the pulse and stops beating as it dies; drawn after the dither pass so the checker doesn't show on it. */
+    private fun heart(sv: Float, d: Float) {
+        if (d == 0f) return // sprites draw even at alpha 0, so skip them when hidden
         val l = 1f - sv
-        sprite(skullDeadSprite, SUN_X, SUN_Y, SKULL_SCALE, d, false)
-        sprite(skullSprite, SUN_X, SUN_Y, SKULL_SCALE, l * d, false)
-        // eye flare: beatPh crosses 1 as the pulse lands, fades over ~0.6 s (0.27 of beatPh)
-        val q = (beatPh - 1f) / 0.27f
-        if (q < 0f || q >= 1f) return
-        val f = (1f - q) * (1f - q) * l * d
-        for (e in SKULL_EYES) {
-            glowAt(SUN_X + e[0] * SKULL_SCALE, SUN_Y + e[1] * SKULL_SCALE, 7f, 0xF596E1, 0.9f * f)
-            glowAt(SUN_X + e[0] * SKULL_SCALE, SUN_Y + e[1] * SKULL_SCALE, 12f, 0xD45AAB, 0.5f * f)
-        }
+        val s = HEART_SCALE * (1f + 0.14f * heartBeat() * l)
+        val cy = SUN_Y - heartSprite.height * s / 2f // base stays on SUN_Y while it swells
+        sprite(heartDeadSprite, SUN_X, cy, s, d, false)
+        sprite(heartSprite, SUN_X, cy, s, l * d, false)
     }
 
     /** One frame, in the mockup's draw order. [sel] is the selected lobe index or -1. */
@@ -755,8 +773,8 @@ internal class BrainRenderer(
         beatPh = (t * 0.45f) % 1.7f
         val ns = nodeScale(z)
         if (ipx.size < L.nI) { ipx = FloatArray(L.nI); ipy = FloatArray(L.nI) }
-        fun dimOf(i: Int) = if ((sel < 0 && !sunSel) || sel == i) 1f else 0.45f
-        val sunDim = if (sel < 0) 1f else 0.45f
+        fun dimOf(i: Int) = if ((sel < 0 && !sunSel) || sel == i) 1f else if (sel >= 0) FOCUS_DIM else 0.45f
+        val sunDim = if (sel < 0) 1f else 0f // a focused sub brain hides the heart and its veins completely
 
         pix.fill(0x07030B)
 
@@ -779,9 +797,11 @@ internal class BrainRenderer(
             dot(rnd(W / 2f + ddx), rnd(H / 2f + ddy), 1, 1, 0xCDB8FF, a)
         }
 
-        // big rings + core aura
-        floatArrayOf(60f, 105f, 150f).forEachIndexed { i, r -> ring(0f, 0f, r, 90, t * (if (i % 2 == 1) -1f else 1f), 0x39234C, 0.6f * (1f - ROT * 0.5f)) }
-        glowAt(0f, 0f, 90f, 0x5A2FA0, 0.3f)
+        // big rings + core aura: a focused sub brain shows no trace of the core
+        if (sel < 0) {
+            floatArrayOf(60f, 105f, 150f).forEachIndexed { i, r -> ring(0f, 0f, r, 90, t * (if (i % 2 == 1) -1f else 1f), 0x39234C, 0.6f * (1f - ROT * 0.5f)) }
+            glowAt(0f, 0f, 90f, 0x5A2FA0, 0.3f)
+        }
 
         // cracks
         for (i in L.cracks.indices) {
@@ -816,8 +836,9 @@ internal class BrainRenderer(
 
         // veins + threads
         for (i in 0 until L.nL) {
+            if (sel >= 0 && i != sel) continue // a focused sub brain draws nothing of the other lobes
             val d = dimOf(i)
-            vein(L.lx[i], L.ly[i], L.lbend[i], 3, i * 5f, d)
+            vein(L.lx[i], L.ly[i], L.lbend[i], 3, i * 5f, if (sel >= 0) 0f else d) // a focused sub brain shows no veins to the core: they would cross its tree
             for (g in L.bstart[i] until L.bstart[i + 1]) {
                 thread(L.lx[i], L.ly[i], L.bx[g], L.by[g], L.bbend[g], L.bph[g], L.lcol[i], d)
                 thread(L.lx[i], L.ly[i], L.bx[g], L.by[g], L.bbend[g] + 2.5f, L.bph[g] + 1f, L.lcol[i], d)
@@ -839,7 +860,7 @@ internal class BrainRenderer(
             glowAt(bzx, bzy, 6f, 0xF0C8F0, 0.9f * sunDim)
             dot(rnd(sx(bzx)), rnd(sy(bzy)), if (z > 2f) 2 else 1, if (z > 2f) 2 else 1, 0xFFFFFF, sunDim)
             for (i in 0 until L.nL) {
-                val d = dimOf(i)
+                val d = if (sel >= 0) 0f else dimOf(i)
                 ctrl(0f, 0f, L.lx[i], L.ly[i], L.lbend[i])
                 bz(0f, 0f, ccx, ccy, L.lx[i], L.ly[i], ps)
                 glowAt(bzx, bzy, 6f, 0xF0C8F0, 0.9f * d)
@@ -848,8 +869,9 @@ internal class BrainRenderer(
             }
         }
 
-        // ideas: a core dot, ringed by how much is written; a magenta core when touched this week
+        // ideas: a core dot, ringed by how much is written; a magenta core when touched in the last 48 hours
         for (i in 0 until L.nL) {
+            if (sel >= 0 && i != sel) continue
             val d = dimOf(i)
             val col = L.lcol[i]
             for (k in L.istart[i] until L.istart[i + 1]) {
@@ -898,6 +920,7 @@ internal class BrainRenderer(
 
         // lobes, each with its groups
         for (i in 0 until L.nL) {
+            if (sel >= 0 && i != sel) continue
             val d = dimOf(i)
             val isSel = i == sel
             val col = L.lcol[i]
@@ -915,12 +938,14 @@ internal class BrainRenderer(
 
         sun(sv, sunSel, sunDim)
 
-        // core
-        glowAt(0f, 0f, 48f, 0xB03AA0, 0.25f + 0.6f * beat(0.05f))
-        glowAt(0f, 0f, 36f, 0xB69AFF, 0.3f)
-        ring(0f, 0f, 30f, 48, t * 2f, 0xB69AFF, 0.85f)
-        ring(0f, 0f, 35f, 56, -t * 1.5f, 0xD45AAB, 0.7f)
-        sprite(coreSprite, 0f, 0f, 0.64f, 1f, false)
+        // core: not drawn at all behind a focused sub brain
+        if (sel < 0) {
+            glowAt(0f, 0f, 48f, 0xB03AA0, 0.25f + 0.6f * beat(0.05f))
+            glowAt(0f, 0f, 36f, 0xB69AFF, 0.3f)
+            ring(0f, 0f, 30f, 48, t * 2f, 0xB69AFF, 0.85f)
+            ring(0f, 0f, 35f, 56, -t * 1.5f, 0xD45AAB, 0.7f)
+            sprite(coreSprite, 0f, 0f, 0.64f, 1f, false)
+        }
 
         // spores
         for (i in 0 until L.spores.size / 4) {
@@ -934,7 +959,7 @@ internal class BrainRenderer(
 
         // 2x2 dither + vignette
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), ditherPaint)
-        skull(sv, sunDim)
+        heart(sv, sunDim)
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), vignette)
     }
 }
@@ -965,7 +990,7 @@ fun BrainScreen(
     val lobeList = lobes.orEmpty()
     val ideaList = ideas.orEmpty()
     val branchList = branches.orEmpty()
-    val web = remember(lobeList, branchList, ideaList) { placeIdeas(lobeList, branchList, ideaList) }
+    val web = remember(lobeList, branchList, ideaList, selectedLobe) { placeIdeas(lobeList, branchList, ideaList, selectedLobe) }
     val selected = lobeList.firstOrNull { it.id == selectedLobe }
     val selectedNow by rememberUpdatedState(selected?.id ?: -1L)
     var homeTick by remember { mutableStateOf(0) }
@@ -1022,7 +1047,7 @@ fun BrainScreen(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             BrainCanvas(
                 lobeList, web, selected?.id ?: -1L, homeTick, camera, sv, sunSel, goTo,
-                topInset = if (selected != null) HEADER_H else 0.dp,
+                topInset = if (selected != null) HEADER_H else TITLE_H,
                 onTapSun = { onSelectLobe(-1L); sunSel = true },
                 onTapLobe = { id -> sunSel = false; onSelectLobe(id) },
                 onDoubleTapLobe = { id -> onOpenIdea(0L, id, null) },
@@ -1201,12 +1226,11 @@ fun BrainScreen(
 internal class GoTo(val ideaId: Long)
 
 private val HEADER_H = 60.dp
+/** The "Brain" title row of the whole map. */
+private val TITLE_H = 76.dp
 
 /** The pulse that runs to a neuron as it opens: [k] is the item, [t0] when it started and [dur] how long (map seconds). */
 private class SparkRun(val k: Int, val t0: Float, val dur: Float)
-
-/** A label and the size it was measured for (so a zoom change rebuilds it). */
-private class ItemLabel(val g: GlowText, val key: Int)
 
 /** Top strip of a focused sub brain: its name in its own colour, how many items, and the + menu. */
 @Composable
@@ -1253,28 +1277,29 @@ private fun BrainCanvas(
     val pxSize = remember(density) { round(2.28f * density).coerceAtLeast(1f) }
     val core = imageResource(Res.drawable.brain_main)
     val lobeImg = imageResource(Res.drawable.brain_lobe)
-    val skull = imageResource(Res.drawable.vault_skull)
-    val skullDead = imageResource(Res.drawable.vault_skull_dead)
-    val renderer = remember { BrainRenderer(core, lobeImg, skull, skullDead) }
+    val heart = imageResource(Res.drawable.vault_heart)
+    val heartDead = imageResource(Res.drawable.vault_heart_dead)
+    val renderer = remember { BrainRenderer(core, lobeImg, heart, heartDead) }
     val layout = remember(lobes, web) { buildLayout(lobes, web) }
     val selIdx = layout.lobeIds.indexOf(selectedId)
     val measurer = rememberTextMeasurer(cacheSize = 200)
     val pageFont = PageFont; val titleFont = TitleFont; val pixelFont = PixelFont // composable getters, read outside remember
-    // The zoom at which one cell is as wide as an idea's label: where the labels fit.
-    val itemZ = remember(density, pxSize) { LABEL_WIDTH.value * density / (pxSize * CELL_X) }
+    val labels = remember(lobes, web, layout, density, pxSize) { BrainLabels(measurer, density, pxSize, pageFont, titleFont, pixelFont, lobes, web, layout) }
     var view by remember { mutableStateOf(IntSize.Zero) }
     var aim by remember { mutableStateOf<FloatArray?>(null) } // x, y, zoom; a new array glides there
     var firstRun by remember { mutableStateOf(true) }
+    fun overviewAim() = fitOverview(labels::overviewBoxes, view.width / density, view.height / density, topInset.value, pxSize / density, HOME_ZOOM, MIN_ZOOM)
     LaunchedEffect(selectedId, homeTick) {
         if (firstRun) { firstRun = false; return@LaunchedEffect }
         val lobe = lobes.firstOrNull { it.id == selectedId }
         aim = if (lobe != null) {
-            // the whole cloud: lobe, groups and items, centred below the header
-            fitCloud(
-                web.items.filter { it.lobe.id == lobe.id }.map { it.pos } + web.branches.filter { it.lobe.id == lobe.id }.map { it.pos } + lobeWorldPos(lobe.slot),
-                view.width / pxSize, view.height / pxSize, topInset.value * density / pxSize, 0.8f, 3f,
-            )
-        } else floatArrayOf(0f, 0f, HOME_ZOOM)
+            // the whole sub brain (lobe, groups, items, rings, names) centred between the header and the bottom bar
+            fitFocus(labels.scene(layout.lobeIds.indexOf(lobe.id)), view.width / density, view.height / density, topInset.value, pxSize / density, 0.8f, FOCUS_MAX_ZOOM)
+        } else overviewAim()
+    }
+    // the first time the map shows, before anyone has touched the camera, it starts on the fitted overview
+    LaunchedEffect(view, labels) {
+        if (view.width > 0 && selectedId < 0 && cam.x == 0f && cam.y == 0f && cam.scale == HOME_ZOOM) overviewAim().let { cam.x = it[0]; cam.y = it[1]; cam.scale = it[2] }
     }
     LaunchedEffect(aim) {
         val a = aim ?: return@LaunchedEffect
@@ -1283,39 +1308,7 @@ private fun BrainCanvas(
             cam.x = x0 + (a[0] - x0) * value; cam.y = y0 + (a[1] - y0) * value; cam.scale = s0 + (a[2] - s0) * value
         }
     }
-    val labelStyle = { c: Color, glow: Color ->
-        TextStyle(fontFamily = titleFont, fontSize = 20.sp, color = c, shadow = Shadow(glow.copy(alpha = 0.7f), blurRadius = 12f * density))
-    }
-    val lobeLabels = remember(lobes, layout, density) {
-        List(layout.nL) { i ->
-            val name = lobes[i].name
-            if (name.isBlank()) null else {
-                val lc = Color(layout.lcol[i] or 0xFF000000.toInt())
-                GlowText(measurer.measure(
-                    name, labelStyle(lc, lc), overflow = TextOverflow.Ellipsis, maxLines = 1,
-                    constraints = Constraints(maxWidth = (150f * density).toInt().coerceAtLeast(60)),
-                ))
-            }
-        }
-    }
-    val groupLabels = remember(web, density) {
-        web.branches.map { b ->
-            val lc = lobeColor(b.lobe)
-            GlowText(measurer.measure(
-                b.branch.name, TextStyle(fontFamily = pageFont, fontSize = 17.sp, color = lc, shadow = Shadow(lc.copy(alpha = 0.7f), blurRadius = 8f * density)),
-                overflow = TextOverflow.Ellipsis, maxLines = 1, constraints = Constraints(maxWidth = (110f * density).toInt().coerceAtLeast(60)),
-            ))
-        }
-    }
-    val vaultLabel = remember(sunSv, density) {
-        val c = lerp(Color(0xFFF596E1), Color(0xFF6F6080), sunSv)
-        GlowText(measurer.measure("vault", labelStyle(c, if (sunSv > 0.5f) Color.Transparent else c), maxLines = 1))
-    }
     val tapScope = rememberCoroutineScope()
-    // Built only when first seen, a few per frame, so a big cloud coming into view can't stall a frame.
-    val itemLabels = remember(web, density) { arrayOfNulls<ItemLabel>(web.items.size) }
-    val hintStyle = remember { TextStyle(fontFamily = pixelFont, fontSize = 9.sp, color = Px.TextDim) }
-
     var time by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) {
         var t0 = 0L
@@ -1394,7 +1387,7 @@ private fun BrainCanvas(
                     }
                 }
             }
-            .pointerInput(lobes, web, layout, itemZ, selectedId, onTapSun) {
+            .pointerInput(lobes, web, layout, selectedId, onTapSun) {
                 // Single taps act at once (waiting for a possible double tap felt laggy). Returns what a
                 // second tap may turn into a double tap: a Lobe.
                 fun handle(tap: Offset): Any? {
@@ -1407,7 +1400,7 @@ private fun BrainCanvas(
                     // Drawn (wobbling) dot position when the renderer has one, else the layout position.
                     fun ipos(k: Int) = if (renderer.ipx.size > k) Offset(renderer.ipx[k], renderer.ipy[k]) else web.items[k].pos
                     // In a focused sub brain its groups and items answer at any zoom; otherwise once zoomed in.
-                    fun live(lobeId: Long) = z >= GROUP_ZOOM || lobeId == selectedId
+                    fun live(lobeId: Long) = if (selectedId >= 0) lobeId == selectedId else z >= GROUP_ZOOM
                     val reach = 26.dp.toPx()
                     val g = web.branches.filter { live(it.lobe.id) }.minByOrNull { (screen(it.pos) - tap).getDistance() }
                     val dg = if (g == null) Float.MAX_VALUE else (screen(g.pos) - tap).getDistance()
@@ -1415,17 +1408,17 @@ private fun BrainCanvas(
                     val di = if (ik == null) Float.MAX_VALUE else (screen(ipos(ik)) - tap).getDistance()
                     if (g != null && dg <= reach && dg <= di) { onTapBranch(g.branch); return null }
                     if (ik != null && di <= reach) { openItem(ik); return null }
-                    if ((screen(Offset(SUN_X, SUN_Y)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u)) {
+                    if (selectedId < 0 && (screen(Offset(SUN_X, SUN_Y - HEART_MID)) - tap).getDistance() <= maxOf(36.dp.toPx(), 18f * u)) {
                         onTapSun()
                         return null
                     }
-                    val lobe = lobes.minByOrNull { (screen(lobeWorldPos(it.slot)) - tap).getDistance() }
+                    val lobe = lobes.filter { selectedId < 0 || it.id == selectedId }.minByOrNull { (screen(lobeWorldPos(it.slot)) - tap).getDistance() }
                     if (lobe != null && (screen(lobeWorldPos(lobe.slot)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u * nodeScale(z))) {
                         onTapLobe(lobe.id)
                         return lobe
                     }
                     // The main brain is the core at the world origin (inside the r35 ring).
-                    if (tap.minus(screen(Offset.Zero)).getDistance() <= maxOf(36.dp.toPx(), 30f * u)) {
+                    if (selectedId < 0 && tap.minus(screen(Offset.Zero)).getDistance() <= maxOf(36.dp.toPx(), 30f * u)) {
                         onTapBrain()
                         return null
                     }
@@ -1455,98 +1448,7 @@ private fun BrainCanvas(
         renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel, sp?.k ?: -1, if (sp == null) 0f else ((time - sp.t0) / sp.dur).coerceIn(0f, 1f))
         drawIntoCanvas { renderer.blit(it, px) }
 
-        // Labels at full resolution, same world -> device transform as the bitmap.
-        val z = cam.scale
-        val ns = nodeScale(z)
-        val u = pxSize * z
-        val ox = renderer.W * pxSize / 2f
-        val oy = renderer.H * pxSize / 2f
-        fun dx(wx: Float) = (wx - cam.x) * u + ox
-        fun dy(wy: Float) = (wy - cam.y) * u + oy
-        fun dimOf(i: Int) = if ((selIdx < 0 && !sunSel) || selIdx == i) 1f else 0.45f
-        fun off(left: Float, top: Float, w: Float, h: Float) = left > size.width || left + w < 0f || top > size.height || top + h < 0f
-
-        // Taken label boxes (left, top, right, bottom): a name that would land on another is left out this frame.
-        val taken = ArrayList<FloatArray>()
-        fun fits(left: Float, top: Float, w: Float, h: Float): Boolean {
-            if (taken.any { left < it[2] && left + w > it[0] && top < it[3] && top + h > it[1] }) return false
-            taken.add(floatArrayOf(left, top, left + w, top + h))
-            return true
-        }
-        // The skull and its glow: names keep off it.
-        val skL = dx(SUN_X - 14f); val skR = dx(SUN_X + 14f); val skT = dy(SUN_Y - 14f); val skB = dy(SUN_Y + 14f)
-        taken.add(floatArrayOf(skL, skT, skR, skB))
-
-        for (i in 0 until layout.nL) {
-            val g = lobeLabels[i] ?: continue
-            val tl = g.tl
-            val w = tl.size.width.toFloat(); val h = tl.size.height.toFloat()
-            val left = dx(layout.lx[i]) - w / 2f
-            var top = dy(layout.ly[i] + 12f * ns)
-            // under the lobe it would run into the skull: put it above the lobe instead
-            if (left < skR && left + w > skL && top < skB && top + h > skT) top = dy(layout.ly[i] - 12f * ns) - h
-            if (off(left, top, w, h)) continue
-            taken.add(floatArrayOf(left, top, left + w, top + h))
-            g.draw(this, left, top, dimOf(i))
-        }
-
-        run {
-            val dim = if (selIdx < 0) 1f else 0.45f
-            vaultLabel.draw(this, dx(SUN_X) - vaultLabel.tl.size.width / 2f, dy(SUN_Y + 24f), dim)
-        }
-
-        // The focused sub brain shows every group and item name at once; the others when zoomed in far enough.
-        val groupAlpha = ((z - GROUP_ZOOM) / 0.3f).coerceIn(0f, 1f)
-        for (i in 0 until layout.nL) {
-            val a = if (i == selIdx) 1f else groupAlpha
-            if (a <= 0f) continue
-            for (g in layout.bstart[i] until layout.bstart[i + 1]) {
-                val tl = groupLabels[g].tl
-                val left = dx(layout.bx[g]) - tl.size.width / 2f
-                val top = dy(layout.by[g]) + 9f * ns * u
-                if (off(left, top, tl.size.width.toFloat(), tl.size.height.toFloat()) || !fits(left, top, tl.size.width.toFloat(), tl.size.height.toFloat())) continue
-                groupLabels[g].draw(this, left, top, a * dimOf(i))
-            }
-        }
-
-        val itemAlpha = ((z - (itemZ - 0.5f)) / 0.5f).coerceIn(0f, 1f)
-        if (renderer.ipx.size >= layout.nI) {
-            // A name is as wide as the cell it hangs in (cells are where items sit), one line unless the rows are far enough apart for two.
-            val boxDp = (CELL_X * u / density - 5f).coerceIn(34f, LABEL_WIDTH.value)
-            val lines = if (CELL_Y * u / density >= 34f) 2 else 1
-            val key = (boxDp / 6f).toInt() * 2 + (lines - 1)
-            val boxW = boxDp * density; val boxH = (if (lines == 2) 34f else 19f) * density
-            val style = TextStyle(
-                fontFamily = pageFont, fontSize = if (boxDp >= 56f) 15.sp else 12.sp, lineHeight = if (boxDp >= 56f) 15.sp else 12.sp,
-                color = Color(0xFFE6DCFF), textAlign = TextAlign.Center, shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.85f), blurRadius = 8f * density),
-            )
-            var built = 0
-            for (i in 0 until layout.nL) {
-                val a = if (i == selIdx) 1f else itemAlpha
-                if (a <= 0f) continue
-                for (k in layout.istart[i] until layout.istart[i + 1]) {
-                    // cull before measuring: a label is at most boxW wide and boxH tall, centred under its dot
-                    val cx = dx(renderer.ipx[k]); val top = dy(renderer.ipy[k]) + 7.dp.toPx()
-                    if (off(cx - boxW / 2f, top, boxW, boxH)) continue
-                    val cached = itemLabels[k]
-                    val label = if (cached != null && (cached.key == key || built >= 6)) cached else if (built >= 6) continue else run {
-                        built++
-                        ItemLabel(GlowText(measurer.measure(
-                            ideaLabel(web.items[k].idea).ifBlank { "..." }, style, overflow = TextOverflow.Ellipsis, maxLines = lines,
-                            constraints = Constraints(maxWidth = boxW.toInt().coerceAtLeast(40)),
-                        )), key).also { itemLabels[k] = it }
-                    }
-                    val tl = label.g.tl
-                    if (!fits(cx - tl.size.width / 2f, top, tl.size.width.toFloat(), tl.size.height.toFloat())) continue
-                    label.g.draw(this, cx - tl.size.width / 2f, top, a * dimOf(i))
-                }
-            }
-        }
-
-        if (layout.nL == 0) {
-            val hint = measurer.measure("TAP THE BRAIN TO GROW A LOBE", hintStyle)
-            drawText(hint, topLeft = Offset(dx(0f) - hint.size.width / 2f, dy(44f)))
-        }
+        labels.draw(this, renderer, cam.x, cam.y, cam.scale, selIdx, sunSel, sunSv)
     }
 }
 
