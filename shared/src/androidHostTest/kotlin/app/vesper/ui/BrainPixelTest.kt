@@ -71,6 +71,9 @@ import org.robolectric.annotation.GraphicsMode
  * moved below it, the thick pixel veins left the low-res frame (thin veins are drawn at full resolution now), the core pulses as a
  * spark leaves, and the heart fades out during a fly-through. dimension changed on purpose: the empty group gets a ghost star and the
  * done note a dim grey one. selectedZoom, selectedFar, small, blit3 and glowLabel are untouched.
+ * 2.5.11 (portal above): every focused-world frame changed on purpose (selectedZoom, selectedFar, dimension, small, blit3): the edge ring is gone,
+ * the portal arc and its rays hang at the top of the page. 2.5.12-13: arc reshaped (smooth full-resolution ring); the main map gets the organic
+ * nerves back (overview, beatFresh, staleHeart, showAll changed on purpose). flyIn and glowLabel are untouched.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -194,7 +197,7 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "beatFresh" to -919076428, "blit3" to 1235799470, "dimension" to -189178725, "flyIn" to -2110394125, "glowLabel" to -66391980, "overview" to -2086053561, "selectedFar" to -55927002, "selectedZoom" to -1787436881, "showAll" to 1064181201, "small" to -940769502, "staleHeart" to 435219629,
+            "beatFresh" to 213117253, "blit3" to -233220472, "dimension" to 2147259452, "flyIn" to -2110394125, "glowLabel" to -66391980, "overview" to -909083742, "selectedFar" to 892757751, "selectedZoom" to 1668357871, "showAll" to -667925983, "small" to 584038376, "staleHeart" to -1729973114,
         )
     }
 }

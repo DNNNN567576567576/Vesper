@@ -217,6 +217,8 @@ internal class Web(val branches: List<PlacedBranch>, val items: List<Placed>, va
 /** A portal's ring radius and how far its outer dotted ring reaches, in world units at zoom 1. */
 internal const val PORTAL_R = 11f
 internal const val PORTAL_OUT = 16f
+/** How deep (dp) the portal arc hangs at the top of a world. */
+internal const val ARC_D = 56f
 
 /**
  * The [focus]ed sub brain's world, from uids only (local row ids differ per device, these don't), laid out for the view [frame]
@@ -518,12 +520,13 @@ internal class BrainRenderer(
     var dragX = 0f
     var dragY = 0f
 
+    /** dp per low-res pixel, for the world's portal arc (its width is capped in dp). */
+    var pxdp = 2.286f
+
     private val cv get() = pix.canvas
     private val spritePaint = pixPaint()
     private val ditherPaint = makeDitherPaint(0.26f * ROT)
     private val vignette = pixPaint()
-    private val edge = pixPaint()
-    private var edgeKey = 0L
 
     // per-frame state
     private var t = 0f
@@ -577,6 +580,29 @@ internal class BrainRenderer(
             for (k in 0..2) {
                 val an = a0 + step * (k / 3f)
                 dot(rnd(ox + cos(an) * rr), rnd(oy + sin(an) * rr), 1, 1, rgb, a)
+            }
+        }
+    }
+
+    /**
+     * An organic nerve from the core to ([x2], [y2]): [strands] pixel threads bowed by [bend], pulsing with the beat, wobbling a little,
+     * with dark dead specks; no beads. It stops [endGap] short of the far end and at the brain's rim.
+     */
+    private fun vein(x2: Float, y2: Float, bend: Float, strands: Int, seed: Float, alpha: Float, endGap: Float, hiRgb: Int = 0xB69AFF) {
+        if (alpha <= 0f || !onScreen(0f, 0f, x2, y2, 30f)) return
+        val len = hypot(x2, y2).let { if (it == 0f) 1f else it }
+        val nx = -y2 / len; val ny = x2 / len
+        for (st in 0 until strands) {
+            val b = bend + (st - (strands - 1) / 2f) * (1f + 2.5f * ROT)
+            val n = ceil(len * z * 1.2f).toInt().coerceIn(1, 3000)
+            for (i in 0..n) {
+                val s = i / n.toFloat()
+                veinPoint(sp, 0f, 0f, x2, y2, b, s)
+                if (hypot(sp[0], sp[1]) < 33f || hypot(sp[0] - x2, sp[1] - y2) < endGap) continue
+                val wob = sin(s * 11f + st * 2.1f + seed + t * 0.6f) * 1.6f * ROT * (1f - abs(s - 0.5f))
+                val dead = sin(s * 37f + seed * 3f + st) > 0.93f
+                val rgb = if (dead) 0x14061A else mixRgb(0x5A3FA0, hiRgb, beat(s))
+                dot(rnd(sx(sp[0] + nx * wob)), rnd(sy(sp[1] + ny * wob)), 1, 1, rgb, alpha)
             }
         }
     }
@@ -724,6 +750,63 @@ internal class BrainRenderer(
         }
     }
 
+    /** A half ring of dots on an ellipse round screen ([cx], [cy]), radii [rx], [ry], from angle [a0] to [a1] (0..PI = the lower half). */
+    private fun arcE(cx: Float, cy: Float, rx: Float, ry: Float, a0: Float, a1: Float, th: Int, rgb: Int, a: Float) {
+        val n = ceil(max(rx, ry) * (a1 - a0) * 1.4f / th).toInt().coerceIn(1, 3000)
+        for (q in 0..n) {
+            val an = a0 + (a1 - a0) * q / n
+            dot(rnd(cx + cos(an) * rx - th / 2f), rnd(cy + sin(an) * ry - th / 2f), th, th, rgb, a)
+        }
+    }
+
+    /** The world's portal arc, in low-res px: centre x, centre y (on the page top), half width, depth, and the time. Valid after [draw]. */
+    fun arcGeom() = floatArrayOf(W / 2f, sy(0f) - ARC_D / pxdp - 6f / pxdp, min(0.55f * W, 300f / pxdp), ARC_D / pxdp, t)
+
+    /**
+     * The doorway you came through, hanging as a shallow smile over the top of the page (it scrolls with the page): its dark inside with
+     * slowly swirling stars, a soft glow and a few faint light rays swaying down over the page. The ring itself is smooth, drawn at
+     * full resolution by [drawPortalRing].
+     */
+    private fun portalAbove(col: Int) {
+        val g = arcGeom(); val cx = g[0]; val cy = g[1]; val ox = g[2]; val oy = g[3]
+        if (cy + oy < 0f || cy > H) return
+        pix.glow(cx, cy + oy * 0.4f, ox * 0.9f, col, 0.3f + 0.15f * beat(1f))
+        // rays: soft wedges from the mouth, fading out by 60% of the way down the screen
+        val y1 = H * 0.6f
+        for (i in 0 until 6) {
+            val u = (i - 2.5f) / 2.5f
+            val sway = sin(t * 0.3f + i * 1.9f)
+            val x0 = cx + u * ox * 0.5f; val slope = u * 0.2f + 0.05f * sway
+            val v = (x0 - cx) / ox
+            val y0 = cy + oy * sqrt(max(0f, 1f - v * v))
+            for (y in max(rnd(y0), 0) until min(rnd(y1), H)) {
+                val f = (y - y0) / (y1 - y0)
+                val hw = 2f + f * 9f * (1f + 0.3f * sway)
+                val a = 0.14f * (1f - f) * (1f - f) * (0.75f + 0.25f * sin(t * 0.5f + i * 2.3f))
+                val xc = x0 + (y - y0) * slope
+                val l = rnd(xc - hw)
+                dot(l, y, rnd(xc + hw) - l, 1, 0xD6C8FF, a)
+            }
+        }
+        // the dark inside, a row at a time
+        for (y in max(ceil(cy).toInt(), 0)..min(floor(cy + oy).toInt(), H - 1)) {
+            val v = (y + 0.5f - cy) / oy
+            val hw = ox * sqrt(max(0f, 1f - v * v))
+            val x0 = rnd(cx - hw)
+            dot(x0, y, rnd(cx + hw) - x0, 1, 0x0B0618, 0.92f)
+        }
+        pix.glow(cx, cy + oy * 0.35f, ox * 0.55f, col, 0.22f)
+        // stars swirling slowly inside, the inner ones faster
+        val rr = Rng(4242)
+        for (k in 0 until 16) {
+            val f = sqrt(rr.next()) * 0.85f; val a0 = rr.next() * TAU; val tw = rr.next() * TAU
+            val an = a0 - t * (0.04f + 0.1f * (1f - f))
+            val x = cx + cos(an) * f * ox * 0.95f; val y = cy + abs(sin(an)) * f * oy * 0.85f
+            val b = 0.4f + 0.3f * sin(t * 1.5f + tw)
+            if (k % 5 == 0) twinkle(x, y, 1, 0xD6C8FF, b + 0.2f) else dot(rnd(x), rnd(y), 1, 1, if (k % 3 == 0) 0xFFFFFF else 0xD6C8FF, b)
+        }
+    }
+
     /** Sub brain [i]'s world: constellations of stars, each joined in order by thin lines, a rare spark running along one. */
     private fun world(L: Layout, i: Int) {
         val lineRgb = mixRgb(L.lcol[i], 0xE6DCFF, 0.35f)
@@ -746,7 +829,7 @@ internal class BrainRenderer(
 
     /**
      * One frame. [sel] is the lobe whose world this is, or -1 for the main map: the main brain, its veins with sparks running out,
-     * every sub brain as a portal, and the vault heart. A world draws only its constellations, inside a faint ring of its shade.
+     * every sub brain as a portal, and the vault heart. A world draws its constellations under the portal it came through.
      */
     fun draw(time: Float, camX: Float, camY: Float, zoom: Float, L: Layout, sel: Int, sv: Float, sunSel: Boolean) {
         t = time; this.camX = camX; this.camY = camY; z = zoom
@@ -791,7 +874,7 @@ internal class BrainRenderer(
             } else dot(rnd(x), rnd(y), 1, 1, 0xCDB8FF, a)
         }
 
-        if (focus) world(L, sel) else {
+        if (focus) { portalAbove(L.lcol[sel]); world(L, sel) } else {
             // the main map's rot: big rings and core aura, cracks, mold specks
             floatArrayOf(60f, 105f, 150f).forEachIndexed { i, r -> ring(0f, 0f, r, 90, t * (if (i % 2 == 1) -1f else 1f), 0x39234C, 0.6f * (1f - ROT * 0.5f)) }
             glowAt(0f, 0f, 90f, 0x4A2FA0, 0.3f)
@@ -814,7 +897,12 @@ internal class BrainRenderer(
                 dot(rnd(sx(L.specks[i * 3])), rnd(sy(L.specks[i * 3 + 1])), sk, sk, SPECK_COLS[L.specks[i * 3 + 2].toInt()], 1f)
             }
 
-            // sparks running out from the core along the veins (the thin veins themselves are drawn at full resolution, [drawVeins]);
+            // the nerves: core to every portal, core to the heart (faded out while a portal is flown through)
+            val va = d * (1f - flyP * 4f).coerceIn(0f, 1f)
+            for (i in 0 until L.nL) vein(L.lx[i], L.ly[i], L.lbend[i], 3, i * 5f, va, (PORTAL_R + 2.5f) * ns)
+            vein(SUN_X, SUN_Y - HEART_MID, SUN_BEND, 2, 9f, va * sunDim, 16f, 0xD6C8FF)
+
+            // sparks running out from the core along the veins (the nerves themselves are [vein]);
             // the core gives a small pulse as each one leaves
             var pulse = 0f
             for (i in 0 until L.nL) {
@@ -880,23 +968,6 @@ internal class BrainRenderer(
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), ditherPaint)
         heart(sv, sunDim)
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), vignette)
-
-        // inside a portal: a faint glowing ring of its shade round the edges of the view
-        if (focus) {
-            val col = L.lcol[sel]
-            val key = (col.toLong() shl 32) or (W.toLong() shl 16) or H.toLong()
-            if (key != edgeKey) {
-                edgeKey = key
-                val c = Color(0xFF000000.toInt() or col)
-                edge.shader = RadialGradientShader(
-                    Offset.Zero, W / 2f, listOf(c.copy(alpha = 0f), c.copy(alpha = 0f), c.copy(alpha = 0.28f), c.copy(alpha = 0.12f)),
-                    listOf(0f, 0.72f, 0.95f, 1f), TileMode.Clamp,
-                )
-            }
-            cv.save(); cv.translate(W / 2f, H / 2f); cv.scale(1f, H / W.toFloat())
-            cv.drawRect(-W.toFloat(), -W.toFloat(), W.toFloat(), W.toFloat(), edge)
-            cv.restore()
-        }
     }
 }
 
@@ -975,18 +1046,18 @@ fun BrainScreen(
             val from = floatArrayOf(camera.x, camera.y, camera.scale)
             camera.outside = from
             flyId = run.lobe.id
-            a.animateTo(1f, tween(220, easing = LinearEasing)) { tapP = value } // the tap: a squish and a burst of sparkles first
+            a.animateTo(1f, tween(160, easing = LinearEasing)) { tapP = value } // the tap: a squish and a burst of sparkles first
             tapP = 0f
             a.snapTo(0f)
-            a.animateTo(1f, tween(700, easing = ease)) { flyTo(from, value) }
+            a.animateTo(1f, tween(500, easing = ease)) { flyTo(from, value) }
             worldA = 0f
             selectNow(run.to)
             repeat(2) { withFrameNanos { } } // let the world lay itself out unseen
             flyId = -1L; flyP = 0f
             a.snapTo(0f)
-            a.animateTo(1f, tween(450, easing = LinearOutSlowInEasing)) { worldA = value }
+            a.animateTo(1f, tween(320, easing = LinearOutSlowInEasing)) { worldA = value }
         } else {
-            a.animateTo(1f, tween(350, easing = FastOutLinearInEasing)) { worldA = 1f - value }
+            a.animateTo(1f, tween(250, easing = FastOutLinearInEasing)) { worldA = 1f - value }
             val back = camera.outside ?: camera.overview ?: floatArrayOf(p.x, p.y, camera.home)
             flyId = run.lobe.id
             flyTo(back, 1f)
@@ -994,7 +1065,7 @@ fun BrainScreen(
             repeat(2) { withFrameNanos { } }
             worldA = 1f
             a.snapTo(0f)
-            a.animateTo(1f, tween(700, easing = ease)) { flyTo(back, 1f - value) }
+            a.animateTo(1f, tween(500, easing = ease)) { flyTo(back, 1f - value) }
             camera.x = back[0]; camera.y = back[1]; camera.scale = back[2]
             flyId = -1L; flyP = 0f
         }
@@ -1374,29 +1445,35 @@ private fun SubBrainHeader(lobe: Lobe, count: Int, modifier: Modifier, onBack: (
     }
 }
 
-/** Thin glowing veins from the core's rim to each portal's rim and down to the heart, at full resolution over the low-res frame. */
-private fun DrawScope.drawVeins(L: Layout, renderer: BrainRenderer, pxSize: Float, camX: Float, camY: Float, z: Float, a: Float) {
-    if (a <= 0f) return
-    val u = pxSize * z
-    val ox = renderer.W * pxSize / 2f; val oy = renderer.H * pxSize / 2f
-    val ns = nodeScale(z)
-    val pt = FloatArray(2)
-    val glow = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
-    val core = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
-    fun vein(x2: Float, y2: Float, bend: Float, endGap: Float, c: Color) {
-        val path = Path(); var started = false
-        for (q in 0..32) {
-            veinPoint(pt, 0f, 0f, x2, y2, bend, q / 32f)
-            if (hypot(pt[0], pt[1]) < 37f || hypot(pt[0] - x2, pt[1] - y2) < endGap) continue
-            val px = (pt[0] - camX) * u + ox; val py = (pt[1] - camY) * u + oy
-            if (!started) { path.moveTo(px, py); started = true } else path.lineTo(px, py)
-        }
-        if (!started) return
-        drawPath(path, Color(0xFF8A6CF0).copy(alpha = 0.16f * a), style = glow)
-        drawPath(path, c.copy(alpha = 0.75f * a), style = core)
+/** The world portal's smooth ring at full resolution: soft glow, a solid ring in [col], a thin lavender dashed one just outside, sparkles. */
+private fun DrawScope.drawPortalRing(renderer: BrainRenderer, pxSize: Float, col: Int) {
+    val g = renderer.arcGeom()
+    val cx = g[0] * pxSize; val cy = g[1] * pxSize; val ox = g[2] * pxSize; val oy = g[3] * pxSize; val t = g[4]
+    if (cy + oy < 0f || cy > size.height) return
+    val c = Color(0xFF000000.toInt() or col)
+    fun ring(rx: Float, ry: Float, from: Float, sweep: Float, w: Dp, color: Color) =
+        drawArc(color, from, sweep, false, Offset(cx - rx, cy - ry), Size(2f * rx, 2f * ry), style = Stroke(w.toPx(), cap = StrokeCap.Round))
+    ring(ox, oy, 0f, 180f, 16.dp, c.copy(alpha = 0.08f))
+    ring(ox, oy, 0f, 180f, 9.dp, c.copy(alpha = 0.14f))
+    ring(ox, oy, 0f, 180f, 3.dp, c)
+    val gap = 5.dp.toPx(); val dx = ox + gap; val dy = oy + gap
+    val light = Color(0xFFD6C8FF)
+    val fr = (t * 0.05f) % 1f
+    for (q in -1..6) { // six dashes and six gaps round the half turn, sliding
+        val a0 = (q + fr) * 30f; val a1 = a0 + 18f
+        if (a1 > 0f && a0 < 180f) ring(dx, dy, max(a0, 0f), min(a1, 180f) - max(a0, 0f), 1.dp, light.copy(alpha = 0.8f))
     }
-    for (i in 0 until L.nL) vein(L.lx[i], L.ly[i], L.lbend[i], (PORTAL_OUT + 1f) * ns, Color(0xFFB69AFF))
-    vein(SUN_X, SUN_Y - HEART_MID, SUN_BEND, 20f, Color(0xFFD6C8FF))
+    for (q in 0 until 3) {
+        val an = ((t * 0.06f + q / 3f) % 1f) * PI_F
+        val e = min(1f, sin(an) * 5f)
+        val at = Offset(cx + cos(an) * dx, cy + sin(an) * dy)
+        drawCircle(Color(0xFFC9B6FF).copy(alpha = 0.25f * e), 8.dp.toPx(), at)
+        drawCircle(Color(0xFFC9B6FF).copy(alpha = 0.4f * e), 4.dp.toPx(), at)
+        drawCircle(Color.White.copy(alpha = e), 1.6.dp.toPx(), at)
+        val arm = (if (sin(t * 2f + q * 2f) > 0.4f) 7.dp else 5.dp).toPx()
+        drawLine(Color.White.copy(alpha = 0.8f * e), at - Offset(arm, 0f), at + Offset(arm, 0f), 1f)
+        drawLine(Color.White.copy(alpha = 0.8f * e), at - Offset(0f, arm), at + Offset(0f, arm), 1f)
+    }
 }
 
 @Composable
@@ -1440,8 +1517,11 @@ private fun BrainCanvas(
     var view by remember { mutableStateOf(IntSize.Zero) }
     // A dimension is laid out for this view (its shape and its name sizes), so it is laid out again when the window changes size.
     val nameH = remember(measurer, density, LocalDensity.current.fontScale) { nameHeights(measurer, density, pageFont, titleFont, pixelFont) }
-    val frame = if (view.width <= 0) DimFrame(top = topInset.value, pxdp = pxSize / density, itemH = nameH[0], groupH = nameH[1], coreH = nameH[2])
-        else DimFrame(view.width / density, view.height / density, topInset.value, pxSize / density, nameH[0], nameH[1], nameH[2])
+    renderer.pxdp = pxSize / density
+    // the world's title hangs just under the portal arc over the page top, so the page starts that far down (arc depth + 6 dp, less the 12 dp margin)
+    val arcTop = topInset.value + ARC_D - 6f
+    val frame = if (view.width <= 0) DimFrame(top = arcTop, pxdp = pxSize / density, itemH = nameH[0], groupH = nameH[1], coreH = nameH[2])
+        else DimFrame(view.width / density, view.height / density, arcTop, pxSize / density, nameH[0], nameH[1], nameH[2])
     val web = remember(lobes, branches, ideas, selectedId, if (selectedId >= 0) frame.w to frame.h else null) {
         placeIdeas(lobes, branches, ideas, selectedId, frame)
     }
@@ -1655,7 +1735,7 @@ private fun BrainCanvas(
         drawIntoCanvas { renderer.blit(it, px) }
 
         val fade = (1f - flyP * 4f).coerceIn(0f, 1f)
-        if (selIdx < 0) drawVeins(layout, renderer, pxSize, cam.x, cam.y, cam.scale, (if (sunSel) 0.45f else 1f) * fade)
+        if (selIdx >= 0) drawPortalRing(renderer, pxSize, layout.lcol[selIdx])
         labels.draw(this, renderer, cam.x, cam.y, cam.scale, selIdx, sunSel, sunSv, fade = fade)
     }
 }
