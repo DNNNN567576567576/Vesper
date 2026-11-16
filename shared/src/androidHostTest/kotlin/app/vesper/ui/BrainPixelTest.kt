@@ -74,6 +74,9 @@ import org.robolectric.annotation.GraphicsMode
  * 2.5.11 (portal above): every focused-world frame changed on purpose (selectedZoom, selectedFar, dimension, small, blit3): the edge ring is gone,
  * the portal arc and its rays hang at the top of the page. 2.5.12-13: arc reshaped (smooth full-resolution ring); the main map gets the organic
  * nerves back (overview, beatFresh, staleHeart, showAll changed on purpose). flyIn and glowLabel are untouched.
+ * 2.5.14: every focused-world frame changed on purpose (selectedZoom, selectedFar, dimension, small, blit3): the portal mouth is a darker
+ * hole with an inner glow along the arc and brighter stars. flyIn changed on purpose: the other portals fade out early in a fly-through and
+ * the flown portal drops its dashes and dots by mid-flight. overview, beatFresh, staleHeart, showAll and glowLabel are untouched.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -197,7 +200,7 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "beatFresh" to 213117253, "blit3" to -233220472, "dimension" to 2147259452, "flyIn" to -2110394125, "glowLabel" to -66391980, "overview" to -909083742, "selectedFar" to 892757751, "selectedZoom" to 1668357871, "showAll" to -667925983, "small" to 584038376, "staleHeart" to -1729973114,
+            "beatFresh" to 213117253, "blit3" to -1127952068, "dimension" to 1271659063, "flyIn" to -1287240568, "glowLabel" to -66391980, "overview" to -909083742, "selectedFar" to 1676187487, "selectedZoom" to -1281280888, "showAll" to -667925983, "small" to 2081209502, "staleHeart" to -1729973114,
         )
     }
 }

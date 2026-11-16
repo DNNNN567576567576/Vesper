@@ -513,6 +513,10 @@ internal class BrainRenderer(
     /** The tap on the portal [flyIdx] before it is flown through: 0..1 of its squish and sparkle burst, 0 = none. */
     var tapP = 0f
 
+    /** A search pick flashing in a world: world x, y pairs, and how far the flash has run (0..1); null = none. */
+    var flash: FloatArray? = null
+    var flashP = 0f
+
     /** Arrange mode: a dotted ring on every slot a sub brain may move to (world x, y pairs), null = not arranging. */
     var slots: FloatArray? = null
     /** Arrange mode: lobe index [dragIdx] follows the finger at [dragX], [dragY] (world); -1 = none. */
@@ -730,23 +734,25 @@ internal class BrainRenderer(
                 dot(rnd(x - big / 2f), rnd(y - big / 2f), big, big, if (k % 3 == 0) 0xFFFFFF else 0xD6C8FF, b * a)
             }
         }
-        // the rings
+        // the rings; the one being flown through drops its dashes, dots and sparkles by mid-flight, before they blow up into bars
         val th = max(1, rnd(r / 9f))
         arc(cx, cy, r, 0f, TAU, th, col, a)
+        val da = a * (if (i == flyIdx) (1f - flyP * 2.5f).coerceIn(0f, 1f) else 1f)
+        if (da <= 0f) return
         val rd = (PORTAL_R + 2.5f) * s * z
         val light = mixRgb(col, 0xFFFFFF, 0.45f)
         val dth = max(1, rnd(r / 14f))
-        for (q in 0 until 10) arc(cx, cy, rd, q * TAU / 10f + t * 0.5f + ph, TAU / 10f * 0.55f, dth, light, 0.85f * a)
+        for (q in 0 until 10) arc(cx, cy, rd, q * TAU / 10f + t * 0.5f + ph, TAU / 10f * 0.55f, dth, light, 0.85f * da)
         val oth = max(1, rnd(out / 14f))
         for (q in 0 until 24) {
             val an = q * TAU / 24f - t * 0.3f + ph
-            dot(rnd(cx + cos(an) * out - oth / 2f), rnd(cy + sin(an) * out - oth / 2f), oth, oth, col, (if (q % 3 == 0) 0.95f else 0.5f) * a)
+            dot(rnd(cx + cos(an) * out - oth / 2f), rnd(cy + sin(an) * out - oth / 2f), oth, oth, col, (if (q % 3 == 0) 0.95f else 0.5f) * da)
         }
         for (q in 0 until 3) {
             val an = t * 0.8f + q * TAU / 3f + ph
             val x = cx + cos(an) * rd; val y = cy + sin(an) * rd
-            pix.glow(x, y, 3f + r * 0.12f, 0xC9B6FF, 0.5f * a)
-            twinkle(x, y, max(dth, if (sin(t * 2f + q * 2f + ph) > 0.4f) 2 else 1), 0xD6C8FF, a)
+            pix.glow(x, y, 3f + r * 0.12f, 0xC9B6FF, 0.5f * da)
+            twinkle(x, y, max(dth, if (sin(t * 2f + q * 2f + ph) > 0.4f) 2 else 1), 0xD6C8FF, da)
         }
     }
 
@@ -788,22 +794,40 @@ internal class BrainRenderer(
                 dot(l, y, rnd(xc + hw) - l, 1, 0xD6C8FF, a)
             }
         }
-        // the dark inside, a row at a time
+        // the dark inside, a row at a time: a deep hole, darkest down at the arc, softening toward the top
         for (y in max(ceil(cy).toInt(), 0)..min(floor(cy + oy).toInt(), H - 1)) {
             val v = (y + 0.5f - cy) / oy
             val hw = ox * sqrt(max(0f, 1f - v * v))
             val x0 = rnd(cx - hw)
-            dot(x0, y, rnd(cx + hw) - x0, 1, 0x0B0618, 0.92f)
+            dot(x0, y, rnd(cx + hw) - x0, 1, 0x07030F, 0.6f + 0.38f * min(1f, v * 1.6f))
         }
-        pix.glow(cx, cy + oy * 0.35f, ox * 0.55f, col, 0.22f)
+        // a gentle glow of its shade just inside the arc
+        for (k in 1..4) arcE(cx, cy, ox - k, oy - k, 0f, PI_F, 1, col, 0.2f * (1f - k / 5f))
         // stars swirling slowly inside, the inner ones faster
         val rr = Rng(4242)
         for (k in 0 until 16) {
             val f = sqrt(rr.next()) * 0.85f; val a0 = rr.next() * TAU; val tw = rr.next() * TAU
             val an = a0 - t * (0.04f + 0.1f * (1f - f))
             val x = cx + cos(an) * f * ox * 0.95f; val y = cy + abs(sin(an)) * f * oy * 0.85f
-            val b = 0.4f + 0.3f * sin(t * 1.5f + tw)
-            if (k % 5 == 0) twinkle(x, y, 1, 0xD6C8FF, b + 0.2f) else dot(rnd(x), rnd(y), 1, 1, if (k % 3 == 0) 0xFFFFFF else 0xD6C8FF, b)
+            val b = 0.55f + 0.3f * sin(t * 1.5f + tw)
+            if (k % 5 == 0) twinkle(x, y, 1, 0xD6C8FF, b + 0.15f) else dot(rnd(x), rnd(y), 1, 1, if (k % 3 == 0) 0xFFFFFF else 0xD6C8FF, b)
+        }
+    }
+
+    /** A quick bright pulse and a small ring burst on each point of [f] (world x, y pairs), [flashP] of the way through. */
+    private fun flashAt(f: FloatArray) {
+        val e = flashP.coerceIn(0f, 1f)
+        val pulse = sin(e * PI_F)
+        val out = 1f - (1f - e) * (1f - e)
+        for (j in 0 until f.size / 2) {
+            val x = sx(f[j * 2]); val y = sy(f[j * 2 + 1])
+            pix.glow(x, y, 10f + 8f * pulse, 0xE6DCFF, 0.7f * pulse)
+            twinkle(x, y, 2 + rnd(3f * pulse), 0xD6C8FF, pulse)
+            for (q in 0 until 10) {
+                val an = q * TAU / 10f
+                val rr = 4f + 14f * out
+                twinkle(x + cos(an) * rr, y + sin(an) * rr, if (q % 2 == 0) 1 else 0, 0xFFFFFF, 1f - e)
+            }
         }
     }
 
@@ -874,7 +898,7 @@ internal class BrainRenderer(
             } else dot(rnd(x), rnd(y), 1, 1, 0xCDB8FF, a)
         }
 
-        if (focus) { portalAbove(L.lcol[sel]); world(L, sel) } else {
+        if (focus) { portalAbove(L.lcol[sel]); world(L, sel); flash?.let(::flashAt) } else {
             // the main map's rot: big rings and core aura, cracks, mold specks
             floatArrayOf(60f, 105f, 150f).forEachIndexed { i, r -> ring(0f, 0f, r, 90, t * (if (i % 2 == 1) -1f else 1f), 0x39234C, 0.6f * (1f - ROT * 0.5f)) }
             glowAt(0f, 0f, 90f, 0x4A2FA0, 0.3f)
@@ -932,7 +956,12 @@ internal class BrainRenderer(
             slots?.let { s -> for (j in 0 until s.size / 2) ring(s[j * 2], s[j * 2 + 1], 13f * ns, 28, t * 2f, 0xC9B6FF, 0.6f) }
 
             // the portals, all one size; the one being flown through keeps growing with the zoom, after a squish and a sparkle burst
-            for (i in 0 until L.nL) portal(i, L.lx[i], L.ly[i], portalScale(i, ns, flyIdx, flyP, tapP), L, if (i == dragIdx) 0.35f else d)
+            // the other portals (glow and all) are gone within the first eighth of a fly-through, before they can streak past
+            val others = if (flyIdx >= 0) (1f - flyP * 8f).coerceIn(0f, 1f) else 1f
+            for (i in 0 until L.nL) {
+                val a = (if (i == dragIdx) 0.35f else d) * (if (i == flyIdx) 1f else others)
+                if (a > 0f) portal(i, L.lx[i], L.ly[i], portalScale(i, ns, flyIdx, flyP, tapP), L, a)
+            }
             if (tapP > 0f && tapP < 1f && flyIdx in 0 until L.nL) {
                 val cx = sx(L.lx[flyIdx]); val cy = sy(L.ly[flyIdx])
                 val e = 1f - (1f - tapP) * (1f - tapP)
@@ -996,6 +1025,9 @@ fun BrainScreen(
     /** The main map shows every group and note (on) or only the sub brains (off). */
     showAll: Boolean,
     onToggleShowAll: () -> Unit,
+    /** The Brain's little sounds; the main brain's menu has the switch. */
+    soundsOn: Boolean,
+    onToggleSounds: () -> Unit,
     vault: Vault,
     sync: SyncManager,
     appScope: CoroutineScope,
@@ -1012,7 +1044,6 @@ fun BrainScreen(
     var flyId by remember { mutableStateOf(-1L) } // the portal being flown through on the main map
     var flyP by remember { mutableFloatStateOf(0f) } // 0 = the map as it was, 1 = inside the ring
     var worldA by remember { mutableFloatStateOf(1f) } // the page's opacity; it scales with it while a portal runs
-    var afterPortal by remember { mutableStateOf<Idea?>(null) } // a searched note opens once its world is in
     var goTo by remember { mutableStateOf<GoTo?>(null) }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var rootOff by remember { mutableStateOf(Offset.Zero) } // where this view sits in the root, for the note card's start
@@ -1027,7 +1058,6 @@ fun BrainScreen(
         portal = PortalRun(to, lobe)
     }
     val selectNow by rememberUpdatedState(onSelectLobe)
-    val openNow by rememberUpdatedState(onOpenIdea)
     LaunchedEffect(portal) {
         val run = portal ?: return@LaunchedEffect
         val p = lobeRingPos(lobeList, run.lobe, rx)
@@ -1046,9 +1076,11 @@ fun BrainScreen(
             val from = floatArrayOf(camera.x, camera.y, camera.scale)
             camera.outside = from
             flyId = run.lobe.id
+            Sounds.play(Sfx.Tick)
             a.animateTo(1f, tween(160, easing = LinearEasing)) { tapP = value } // the tap: a squish and a burst of sparkles first
             tapP = 0f
             a.snapTo(0f)
+            Sounds.play(Sfx.WhooshIn)
             a.animateTo(1f, tween(500, easing = ease)) { flyTo(from, value) }
             worldA = 0f
             selectNow(run.to)
@@ -1057,6 +1089,7 @@ fun BrainScreen(
             a.snapTo(0f)
             a.animateTo(1f, tween(320, easing = LinearOutSlowInEasing)) { worldA = value }
         } else {
+            Sounds.play(Sfx.WhooshOut)
             a.animateTo(1f, tween(250, easing = FastOutLinearInEasing)) { worldA = 1f - value }
             val back = camera.outside ?: camera.overview ?: floatArrayOf(p.x, p.y, camera.home)
             flyId = run.lobe.id
@@ -1070,7 +1103,6 @@ fun BrainScreen(
             flyId = -1L; flyP = 0f
         }
         portal = null
-        afterPortal?.let { afterPortal = null; openNow(it.id, it.lobeId, it.branchId, rootOff + Offset(viewSize.width / 2f, viewSize.height / 2f)) }
     }
     /** One level out: sub brain -> whole map, through the portal. */
     val stepOut: () -> Unit = {
@@ -1144,7 +1176,7 @@ fun BrainScreen(
                     onTapLobe = { id -> sunSel = false; startPortal(id) },
                     onTapBrain = { at -> if (arranging) arrangingRaw = false else menu = MenuAt(at, null) },
                     onOpenIdea = { it, at -> onOpenIdea(it.id, it.lobeId, it.branchId, at + rootOff) },
-                    onPeek = { it, at -> peek = it?.let { i -> i to at } },
+                    onPeek = { it, at -> if (it != null) Sounds.play(Sfx.Tick); peek = it?.let { i -> i to at } },
                     onTapBranch = { b, at -> menu = MenuAt(at, b) },
                     onTapEmpty = { sunSel = false; stepOut() }, // only the whole map gets here; a portal page ignores empty space
                     onMoveLobe = onMoveLobe,
@@ -1180,7 +1212,11 @@ fun BrainScreen(
                         "Rename" to { renamingLobe = selected },
                         "Delete" to { deleting = selected },
                     )
-                    else -> listOf("+ sub brain" to { addingLobe = true }, "Arrange" to { arrangingRaw = true })
+                    else -> listOf(
+                        "+ sub brain" to { addingLobe = true },
+                        "Arrange" to { arrangingRaw = true },
+                        (if (soundsOn) "Sounds on" else "Sounds off") to onToggleSounds,
+                    )
                 }
                 BrainMenu(m.at, chips, close)
             }
@@ -1191,8 +1227,8 @@ fun BrainScreen(
                 ideaList, lobeList, branchList,
                 onPick = { h ->
                     searching = false
-                    goTo = h.branch?.takeIf { h.idea == null }?.let { GoTo(it.id) }
-                    afterPortal = h.idea
+                    // a note: its world pans to its star, which flashes, and its card grows from there; a group: pan and flash
+                    goTo = h.idea?.let { GoTo(-1L, it.id) } ?: h.branch?.let { GoTo(it.id) }
                     startPortal(h.lobe.id)
                 },
                 onClose = { searching = false },
@@ -1351,7 +1387,7 @@ private fun PeekBubble(idea: Idea, at: Offset) {
 }
 
 /** A search pick that is a group: once its dimension is in, the camera centres on group [branchId]. A new instance each time. */
-internal class GoTo(val branchId: Long)
+internal class GoTo(val branchId: Long, val ideaId: Long = -1L)
 
 /** A brain's menu, opened by tapping it at [at] (px): the centre brain's (main map or dimension) when [branch] is null, else that group's. */
 private class MenuAt(val at: Offset, val branch: Branch?)
@@ -1556,12 +1592,37 @@ private fun BrainCanvas(
         if (selectedId < 0) cam.fitUntouched(view.width, force = fittedW > 0 && view.width != fittedW, aim = ::overviewAim)
         if (view.width > 0) fittedW = view.width
     }
-    // A searched group: once its dimension is placed, glide to centre it.
-    val doneGoTo = remember { arrayOfNulls<GoTo>(1) } // each pick glides once, not again on a later visit
-    LaunchedEffect(goTo, web) {
+    // A search pick, once its world is in and the portal is done: pan so it shows, flash it, then a note's card grows from its star.
+    val doneGoTo = remember { arrayOfNulls<GoTo>(1) } // each pick runs once, not again on a later visit
+    val webNow by rememberUpdatedState(web)
+    val openIdeaNow by rememberUpdatedState(onOpenIdea)
+    LaunchedEffect(goTo, web.focus >= 0, locked) {
         val g = goTo ?: return@LaunchedEffect
-        if (web.focus < 0 || doneGoTo[0] === g) return@LaunchedEffect
-        web.branches.firstOrNull { it.branch.id == g.branchId }?.let { doneGoTo[0] = g; aim = floatArrayOf(cam.x, max(cam.y, it.pos.y), cam.scale) }
+        val w = webNow
+        if (w.focus < 0 || locked || doneGoTo[0] === g || view.height <= 0) return@LaunchedEffect
+        val item = w.items.firstOrNull { it.idea.id == g.ideaId }
+        val group = if (item == null) w.branches.indexOfFirst { it.branch.id == g.branchId } else -1
+        if (item == null && group < 0) return@LaunchedEffect
+        doneGoTo[0] = g
+        val spot = item?.pos ?: w.branches[group].pos
+        val oy = ceil(view.height / pxSize) * pxSize / 2f
+        fun screenY() = (spot.y - cam.y) * pxSize * cam.scale + oy
+        val toY = if (item == null) max(cam.y, spot.y) // a group: glide its name to the middle, as before
+            else if (screenY() !in (topInset.value + 40f) * density..view.height - 70f * density) spot.y else cam.y
+        if (toY != cam.y) {
+            aim = null
+            val y0 = cam.y
+            Animatable(0f).animateTo(1f, tween(380, easing = FastOutSlowInEasing)) { cam.y = y0 + (toY - y0) * value }
+        }
+        renderer.flash = if (item != null) floatArrayOf(spot.x, spot.y)
+            else (listOf(spot) + w.items.filter { it.parent == group }.map { it.pos }).flatMap { listOf(it.x, it.y) }.toFloatArray()
+        Animatable(0f).animateTo(1f, tween(if (item != null) 350 else 600, easing = LinearEasing)) { renderer.flashP = value }
+        renderer.flash = null
+        if (item != null) {
+            val u = pxSize * cam.scale
+            val ox = ceil(view.width / pxSize) * pxSize / 2f
+            openIdeaNow(item.idea, Offset((spot.x - cam.x) * u + ox, screenY()))
+        }
     }
     LaunchedEffect(aim) {
         val a = aim ?: return@LaunchedEffect
@@ -1734,7 +1795,7 @@ private fun BrainCanvas(
         renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel)
         drawIntoCanvas { renderer.blit(it, px) }
 
-        val fade = (1f - flyP * 4f).coerceIn(0f, 1f)
+        val fade = (1f - flyP * 8f).coerceIn(0f, 1f)
         if (selIdx >= 0) drawPortalRing(renderer, pxSize, layout.lcol[selIdx])
         labels.draw(this, renderer, cam.x, cam.y, cam.scale, selIdx, sunSel, sunSv, fade = fade)
     }

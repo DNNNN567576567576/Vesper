@@ -17,6 +17,7 @@ import java.time.LocalDate
 /**
  * Golden hashes for the pixel renderers in Moons, Screens (sigil/match) and Shrine (burned paper).
  * Expected values were captured from the pre-port android.graphics code (M2 part 2).
+ * 2.5.14: sigilBack changed on purpose: the back button's ring dots (and its press ring) are purple only, no pink.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -155,7 +156,7 @@ class GraphicsPixelTest {
             "scorch1234" to -1164893181,
             "scorch3" to 949875924,
             "scorch77" to -1088830581,
-            "sigilBack" to -816877388,
+            "sigilBack" to -870467572,
             "sigilBlit215" to 1791923250,
             "sigilPlus" to 289087112,
             "sigilPressed" to 2080739057,

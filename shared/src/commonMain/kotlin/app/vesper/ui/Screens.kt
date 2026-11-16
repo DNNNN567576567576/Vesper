@@ -277,17 +277,18 @@ internal fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back:
         }
     }
 
-    // Dotted ring.
+    // Dotted ring. The back button is purple only (no pink); the add and quill buttons keep their magenta accent.
+    val accent = if (back) 0xB69AFF else 0xD45AAB
     val shift = floor(t * 3f).toInt()
     for (i in 0 until 40) {
         if ((i + shift) % 4 == 0) continue
         val a = i / 40f * 2f * PI.toFloat() + t * 0.6f
-        pix.dot(floor(c + cos(a) * 12f).toInt(), floor(c + sin(a) * 12f).toInt(), 1, 1, if (i % 5 == 0) 0xD45AAB else 0x8A6AD0)
+        pix.dot(floor(c + cos(a) * 12f).toInt(), floor(c + sin(a) * 12f).toInt(), 1, 1, if (i % 5 == 0) accent else 0x8A6AD0)
     }
 
     // Plus (or back arrow).
     val pressedLook = press > 0.5f
-    val arm = if (pressedLook) 0xFFD0F0 else 0xC9B0FF
+    val arm = if (pressedLook) (if (back) 0xD6C8FF else 0xFFD0F0) else 0xC9B0FF
     val ci = c.toInt()
     if (quill) {
         // Diagonal feather: shaft from the nib (bottom left) to the tip, with a vane on both sides and an ink dot.
@@ -317,7 +318,7 @@ internal fun drawSigil(pix: Pix, t: Float, press: Float, ringStart: Float, back:
         val rr = 10f + 8f * k
         for (i in 0 until 16) {
             val a = i / 16f * 2f * PI.toFloat()
-            pix.dot(floor(c + cos(a) * rr).toInt(), floor(c + sin(a) * rr).toInt(), 1, 1, 0xD45AAB, 1f - k)
+            pix.dot(floor(c + cos(a) * rr).toInt(), floor(c + sin(a) * rr).toInt(), 1, 1, if (back) 0x8F7BFF else 0xD45AAB, 1f - k)
         }
     }
 }

@@ -78,6 +78,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
     val branches by brainVm.branches.collectAsStateWithLifecycle()
     val brainShowAll by brainVm.showAll.collectAsStateWithLifecycle()
+    val brainSounds by brainVm.sounds.collectAsStateWithLifecycle()
 
     // Hoisted so the Grimoire keeps its scroll position while another tab (or an item page) is shown.
     val shrineListState = rememberLazyListState()
@@ -172,6 +173,8 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     onDeleteBranch = brainVm::deleteBranch,
                     showAll = brainShowAll,
                     onToggleShowAll = brainVm::toggleShowAll,
+                    soundsOn = brainSounds,
+                    onToggleSounds = brainVm::toggleSounds,
                     vault = host.vault,
                     sync = host.sync,
                     appScope = host.appScope,

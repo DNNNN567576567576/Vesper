@@ -20,6 +20,7 @@ import java.io.File
 class NotebookApp : Application(), VesperHost {
     override fun onCreate() {
         super.onCreate()
+        app.vesper.ui.initSounds(this)
         // One-time safety net before the v3 -> v4 migration: runs before the lazy [db] is ever opened.
         backupRawDatabaseOnce()
         // Once the DB is open (and migrated), also dump the user's data as readable JSON.

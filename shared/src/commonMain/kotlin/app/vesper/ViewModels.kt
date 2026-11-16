@@ -39,6 +39,7 @@ enum class NoteSort { EDITED, ADDED, MANUAL }
 private const val KEY_NOTE_SORT = "noteSort"
 private const val KEY_TASK_NEWEST = "taskNewestFirst"
 private const val KEY_BRAIN_SHOW_ALL = "brainShowAll"
+private const val KEY_BRAIN_SOUNDS = "brainSounds"
 
 
 /** `null` = the first database emission has not arrived yet. */
@@ -334,6 +335,15 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
     fun toggleShowAll() {
         showAll.value = !showAll.value
         notebook.settings.putBoolean(KEY_BRAIN_SHOW_ALL, showAll.value)
+    }
+
+    /** The Brain's little sounds on or off (default on). Remembered across restarts. */
+    val sounds by lazy { MutableStateFlow(notebook.settings.getBoolean(KEY_BRAIN_SOUNDS, true).also { app.vesper.ui.Sounds.on = it }) }
+
+    fun toggleSounds() {
+        sounds.value = !sounds.value
+        app.vesper.ui.Sounds.on = sounds.value
+        notebook.settings.putBoolean(KEY_BRAIN_SOUNDS, sounds.value)
     }
 
     /** Permanent, and takes the lobe's ideas with it. The caller confirms first. */
