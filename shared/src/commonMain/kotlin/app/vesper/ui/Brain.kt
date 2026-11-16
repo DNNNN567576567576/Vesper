@@ -1,11 +1,28 @@
 package app.vesper.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.PaintingStyle
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.Layout
+import kotlin.math.roundToInt
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -81,6 +98,10 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.TextStyle
@@ -116,18 +137,21 @@ import kotlin.math.min
 import kotlin.math.round
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.pow
+import androidx.compose.animation.core.CubicBezierEasing
 
 // ---------------------------------------------------------------------------------------------
 // Palette + layout
 // ---------------------------------------------------------------------------------------------
 
-private val LobeColors = listOf(
+/** One purple shade per sub brain, by colorIndex. Purple only: no pink in the Brain tab. */
+internal val LobeColors = listOf(
     Color(0xFFB69AFF),
-    Color(0xFFD45AAB),
-    Color(0xFF8F6BFF),
-    Color(0xFFE08AD0),
-    Color(0xFF9A7BD8),
-    Color(0xFFC27AE0),
+    Color(0xFF9C84FF),
+    Color(0xFFC9B6FF),
+    Color(0xFF8A6CF0),
+    Color(0xFFA88BFF),
+    Color(0xFF7F66E6),
 )
 
 internal fun lobeColor(l: Lobe) = LobeColors[l.colorIndex.mod(LobeColors.size)]
@@ -135,7 +159,7 @@ internal fun lobeColor(l: Lobe) = LobeColors[l.colorIndex.mod(LobeColors.size)]
 /** How rotten the map is (0..1). Locked by the approved mockup. */
 private const val ROT = 0.64f
 internal const val TAU = 6.2831855f
-private const val GOLDEN = 137.508
+private const val PI_F = 3.1415927f
 
 /** Mulberry32, same generator as the mockup. */
 private class Rng(seed: Int) {
@@ -148,173 +172,82 @@ private class Rng(seed: Int) {
     }
 }
 
-/** World units are low-res pixels at zoom 1. The core sits at (0, 0). */
-private fun lobeWorldPos(slot: Int): Offset {
-    val a = Math.toRadians(-83.0 + slot * GOLDEN)
-    val k = if (slot >= 6) 1.0 + 0.35 * (slot / 6) else 1.0
-    return Offset((cos(a) * 60.0 * k).toFloat(), (sin(a) * 90.0 * k).toFloat())
+/** The portal ring's half height in world units (low-res pixels at zoom 1); the core sits at (0, 0). */
+internal const val RING_RY = 100f
+
+/** The ring's half width for a [w] x [h] dp view (title row included): wider views get a wider ellipse. */
+internal fun ringRx(w: Float, h: Float): Float = if (w <= 0f || h <= 0f) 66f else (RING_RY * w / max(1f, h - 76f) * 1.15f).coerceIn(58f, 190f)
+
+/** Portal [rank] of [n], evenly round one ellipse ([rx] by [RING_RY]): the first at the top, or the top and bottom left open when [n] is even. */
+internal fun ringPos(rank: Int, n: Int, rx: Float): Offset {
+    val a = -TAU / 4f + (rank + if (n % 2 == 0) 0.5f else 0f) * TAU / max(1, n)
+    return Offset(cos(a) * rx, sin(a) * RING_RY)
 }
 
-/** A group node; [size] is how many ideas hang off it. */
-internal class PlacedBranch(val branch: Branch, val lobe: Lobe, val pos: Offset, val ph: Float, val bend: Float, val size: Int)
-
-/** An idea on the map; [parent] indexes [Web.branches], -1 = directly on the lobe. */
-internal class Placed(
-    val idea: Idea, val lobe: Lobe, val pos: Offset,
-    val ph: Float, val bend: Float, val j: Int, val newest: Boolean, val parent: Int,
-)
-
-/** Everything on the map below the lobes. [branches] and [items] run lobe by lobe, in the order of the lobes given. */
-internal class Web(val branches: List<PlacedBranch>, val items: List<Placed>, val focus: Long = -1L)
-
-// Items sit on a staggered grid wide enough for a label and tight enough to keep the clouds small. World units.
-internal const val CELL_X = 9f
-internal const val CELL_Y = 5f
-
-private fun cellPos(ix: Int, iy: Int) = Offset((ix + (iy and 1) * 0.5f) * CELL_X, iy * CELL_Y)
-
-/**
- * One lobe's cloud: the grid cells it may use. Each lobe owns a wedge around the core, halfway to its neighbours and to the
- * vault, so clouds can't overlap however large they grow: they just reach further out. Cells near any node stay empty.
- */
-private class Cloud(private val c: Offset, private val others: List<Offset>, private val a: Float, private val left: Float, private val right: Float) {
-    private val used = HashSet<Pair<Int, Int>>()
-
-    private fun allowed(p: Offset): Boolean {
-        val rho = hypot(p.x, p.y)
-        if (rho < 46f) return false
-        var d = atan2(p.y, p.x) - a
-        if (d > TAU / 2) d -= TAU
-        if (d < -TAU / 2) d += TAU
-        val m = 5f / rho
-        if (d < -left + m || d > right - m) return false
-        val ex = (p.x - c.x) / 14f; val ey = (p.y - c.y) / (if (p.y > c.y) 18f else 11f) // the lobe, and its name below it
-        return ex * ex + ey * ey >= 1f && hypot(p.x - SUN_X, p.y - SUN_Y) >= 24f && others.none { hypot(p.x - it.x, p.y - it.y) < 20f }
-    }
-
-    /** The [n] free cells nearest [anchor], nearest first, now taken. */
-    fun take(anchor: Offset, n: Int): List<Pair<Int, Int>> {
-        if (n == 0) return emptyList()
-        val ax = rnd(anchor.x / CELL_X); val ay = rnd(anchor.y / CELL_Y)
-        var r = ceil(sqrt(n.toFloat())).toInt() + 3
-        while (true) {
-            val found = ArrayList<Pair<Int, Int>>()
-            for (iy in ay - 2 * r..ay + 2 * r) for (ix in ax - r..ax + r) {
-                if ((ix to iy) !in used && allowed(cellPos(ix, iy))) found.add(ix to iy)
-            }
-            if (found.size >= n || r > 512) {
-                val best = found.sortedWith(compareBy({ (cellPos(it.first, it.second) - anchor).getDistanceSquared() }, { it.second }, { it.first })).take(n)
-                used.addAll(best)
-                return best
-            }
-            r *= 2
-        }
-    }
-
-    fun reserve(ix: Int, iy: Int) { used.add(ix to iy) }
+/** Where [lobe] sits on the ring: sub brains go round it in slot order. */
+internal fun lobeRingPos(lobes: List<Lobe>, lobe: Lobe, rx: Float): Offset {
+    val order = lobes.sortedWith(compareBy({ it.slot }, { it.uid }))
+    return ringPos(order.indexOfFirst { it.id == lobe.id }.coerceAtLeast(0), lobes.size, rx)
 }
 
-private fun blobRadius(n: Int) = sqrt(n * CELL_X * CELL_Y / (TAU / 2))
+/** A portal's size: every portal is the same ([ns]); only the one being flown through ([fly], [flyP]) grows, squished by a tap ([tapP]). */
+internal fun portalScale(i: Int, ns: Float, fly: Int, flyP: Float, tapP: Float): Float {
+    if (i != fly) return ns
+    val squish = when {
+        tapP <= 0f || tapP >= 1f -> 1f
+        tapP < 0.4f -> 1f - 0.18f * tapP / 0.4f
+        tapP < 0.75f -> 0.82f + 0.26f * (tapP - 0.4f) / 0.35f
+        else -> 1.08f - 0.08f * (tapP - 0.75f) / 0.25f
+    }
+    return ns.toDouble().pow(1.0 - flyP).toFloat() * squish
+}
 
 /**
- * The whole web, from uids and slots only: local row ids differ per device, these don't. Groups fan out from their lobe,
- * ideas fill the cells nearest their group, or nearest the lobe when they have none. The [focus]ed lobe instead gets
- * [focusFormation]: a family tree, the groups side by side under the lobe and each one's neurons under it.
+ * A group in a world: [pos] is where its name hangs, [name] that name's box (l, t, r, b, dp from [pos]); [size] is how many notes it has.
+ * An empty group gets a ghost star at [ghost] with "empty" in the box [ghostName] (dp from [ghost]).
  */
-internal fun placeIdeas(lobes: List<Lobe>, branches: List<Branch>, ideas: List<Idea>, focus: Long = -1L): Web {
-    val centres = lobes.map { lobeWorldPos(it.slot) }
-    val sunAngle = atan2(SUN_Y, SUN_X)
-    val marks = (centres.map { atan2(it.y, it.x) } + sunAngle).sorted()
-    val byLobe = ideas.groupBy { it.lobeId }
-    val outB = ArrayList<PlacedBranch>()
+internal class PlacedBranch(val branch: Branch, val lobe: Lobe, val pos: Offset, val size: Int, val name: FloatArray, val ghost: Offset? = null, val ghostName: FloatArray? = null)
+
+/** A note's star in a world; [parent] indexes [Web.branches], -1 = loose. [j] is its place in its constellation (0 starts one). */
+internal class Placed(val idea: Idea, val lobe: Lobe, val pos: Offset, val ph: Float, val j: Int, val newest: Boolean, val parent: Int, val name: FloatArray)
+
+/** What is placed below the portals: only the [focus]ed sub brain's world ([dim]); the main map places nothing. */
+internal class Web(val branches: List<PlacedBranch>, val items: List<Placed>, val focus: Long = -1L, val dim: Dimension? = null)
+
+/** A portal's ring radius and how far its outer dotted ring reaches, in world units at zoom 1. */
+internal const val PORTAL_R = 11f
+internal const val PORTAL_OUT = 16f
+
+/**
+ * The [focus]ed sub brain's world, from uids only (local row ids differ per device, these don't), laid out for the view [frame]
+ * by [dimensionLayout]. Any other [focus] (the main map) places nothing: portals show their contents as stars instead.
+ */
+internal fun placeIdeas(lobes: List<Lobe>, branches: List<Branch>, ideas: List<Idea>, focus: Long = -1L, frame: DimFrame = DimFrame()): Web {
+    val lobe = lobes.firstOrNull { it.id == focus } ?: return Web(emptyList(), emptyList(), focus)
+    val groups = branches.filter { it.lobeId == lobe.id }.sortedBy { it.uid }
+    val known = groups.mapTo(HashSet()) { it.id }
+    val mine = ideas.filter { it.lobeId == lobe.id }.sortedBy { it.uid }
+    val byGroup = mine.groupBy { i -> i.branchId?.takeIf { it in known } }
+    val loose = byGroup[null].orEmpty()
+    val newest = mine.maxWithOrNull(compareBy({ it.updatedAt }, { it.uid }))?.uid
+    val d = dimensionLayout(loose.size, groups.map { byGroup[it.id].orEmpty().size }, frame)
     val outI = ArrayList<Placed>()
-    lobes.forEachIndexed { li, lobe ->
-        val c = centres[li]
-        val a = atan2(c.y, c.x)
-        val at = marks.indexOf(a)
-        val prev = if (at == 0) marks.last() - TAU else marks[at - 1]
-        val next = if (at == marks.lastIndex) marks.first() + TAU else marks[at + 1]
-        val left = min((a - prev) / 2f, 1.4f); val right = min((next - a) / 2f, 1.4f)
-        val cloud = Cloud(c, centres.filterIndexed { i, _ -> i != li }, a, left, right)
-
-        val groups = branches.filter { it.lobeId == lobe.id }.sortedBy { it.uid }
-        val known = groups.mapTo(HashSet()) { it.id }
-        val mine = byLobe[lobe.id].orEmpty().sortedBy { it.uid }
-        val byGroup = mine.groupBy { i -> i.branchId?.takeIf { it in known } }
-        val loose = byGroup[null].orEmpty()
-        val newest = mine.maxWithOrNull(compareBy({ it.updatedAt }, { it.uid }))?.uid
-
-        fun item(idea: Idea, cell: Pair<Int, Int>?, fallback: Offset, j: Int, parent: Int) {
-            val r = Rng(idea.uid.hashCode() * 7919 + 13)
-            val base = cell?.let { cellPos(it.first, it.second) } ?: fallback
-            val p = Offset(base.x + (r.next() - 0.5f) * 2f, base.y + (r.next() - 0.5f) * 1.2f)
-            outI.add(Placed(idea, lobe, p, r.next() * TAU, (r.next() - 0.5f) * 8f, j, idea.uid == newest, parent))
-        }
-
-        if (lobe.id == focus) {
-            fun rings(l: List<Idea>) = l.map { ringCount(it.title, it.body) }
-            val f = focusFormation(c, rings(loose), groups.map { rings(byGroup[it.id].orEmpty()) })
-            groups.forEachIndexed { g, b ->
-                val r = Rng(b.uid.hashCode() * 31 + 7)
-                outB.add(PlacedBranch(b, lobe, f.groups[g], r.next() * TAU, (r.next() - 0.5f) * 12f, byGroup[b.id].orEmpty().size))
-            }
-            val first = outB.size - groups.size
-            loose.forEachIndexed { j, i -> item(i, null, f.loose[j], j, -1) }
-            groups.forEachIndexed { g, b -> byGroup[b.id].orEmpty().forEachIndexed { j, i -> item(i, null, f.items[g][j], j, first + g) } }
-            return@forEachIndexed
-        }
-
-        // Fan the groups out from the lobe, wider where the wedge allows, each with room for its own blob.
-        val arcs = groups.map { 2f * blobRadius(byGroup[it.id].orEmpty().size) + CELL_X }
-        val rho = hypot(c.x, c.y)
-        val fanLeft = atan2(rho * left, 30f).coerceIn(0.1f, 1.3f); val fanRight = atan2(rho * right, 30f).coerceIn(0.1f, 1.3f)
-        val d = max(20f + blobRadius(loose.size) + (arcs.maxOrNull() ?: 0f) / 2f, 0.6f * arcs.sum() / (fanLeft + fanRight))
-        var along = a - arcs.sum() / d * fanLeft / (fanLeft + fanRight)
-        val nodes = groups.mapIndexed { g, b ->
-            val ang = along + arcs[g] / (2f * d)
-            along += arcs[g] / d
-            val cell = cloud.take(Offset(c.x + cos(ang) * d, c.y + sin(ang) * d), 1).firstOrNull()
-            // room for the node and the name that hangs under it
-            cell?.let { (ix, iy) -> for (x in -1..1) for (y in -1..1) cloud.reserve(ix + x, iy + y) }
-            val r = Rng(b.uid.hashCode() * 31 + 7)
-            val pos = cell?.let { cellPos(it.first, it.second) } ?: Offset(c.x + cos(ang) * d, c.y + sin(ang) * d)
-            outB.add(PlacedBranch(b, lobe, pos, r.next() * TAU, (r.next() - 0.5f) * 12f, byGroup[b.id].orEmpty().size))
-            outB.lastIndex to pos
-        }
-        val anchor = Offset(c.x + cos(a) * 8f, c.y + sin(a) * 8f)
-        cloud.take(anchor, loose.size).let { cells -> loose.forEachIndexed { j, i -> item(i, cells.getOrNull(j), anchor, j, -1) } }
-        groups.forEachIndexed { g, b ->
-            val (index, pos) = nodes[g]
-            val list = byGroup[b.id].orEmpty()
-            cloud.take(pos, list.size).let { cells -> list.forEachIndexed { j, i -> item(i, cells.getOrNull(j), pos, j, index) } }
-        }
-    }
-    return Web(outB, outI, focus)
+    fun item(idea: Idea, at: Offset, j: Int, parent: Int, name: FloatArray) =
+        outI.add(Placed(idea, lobe, at, Rng(idea.uid.hashCode() * 7919 + 13).next() * TAU, j, idea.uid == newest, parent, name))
+    var n = 0
+    d.loose.forEachIndexed { c, part -> part.forEachIndexed { j, at -> item(loose[n++], at, j, -1, d.looseNames[c][j]) } }
+    groups.forEachIndexed { g, b -> byGroup[b.id].orEmpty().forEachIndexed { j, i -> item(i, d.items[g][j], j, g, d.itemNames[g][j]) } }
+    val outB = groups.mapIndexed { g, b -> PlacedBranch(b, lobe, d.groups[g], byGroup[b.id].orEmpty().size, d.groupNames[g], d.ghosts[g]?.first, d.ghosts[g]?.second) }
+    return Web(outB, outI, focus, d)
 }
 
 /** Nodes stop growing at this zoom, so zooming further opens the web up instead of blowing the sprites up. */
 internal const val NODE_ZOOM = 2f
-/** How bright the rest of the map stays behind a focused sub brain, so its neighbours and the heart do not crowd it. */
-internal const val FOCUS_DIM = 0.2f
 internal fun nodeScale(z: Float) = min(1f, NODE_ZOOM / z)
 
 private const val HOME_ZOOM = 0.85f
 private const val MIN_ZOOM = 0.6f
 private const val MAX_ZOOM = 12f
-/** A focused sub brain zooms in as far as this to fill the screen. */
-private const val FOCUS_MAX_ZOOM = 6f
-/** Group names and taps start here; ideas when their labels fit their cells, see itemZ. */
-internal const val GROUP_ZOOM = 1.5f
-private const val LOBE_MIN_ZOOM = 1.7f
-
-/** A camera aim (x, y, zoom) that fits [pts] in a [w] x [h] view of low-res pixels. */
-private fun frame(pts: List<Offset>, w: Float, h: Float, minZ: Float, maxZ: Float): FloatArray {
-    val x0 = pts.minOf { it.x }; val x1 = pts.maxOf { it.x }
-    val y0 = pts.minOf { it.y }; val y1 = pts.maxOf { it.y }
-    val z = min((w - 30f) / max(1f, x1 - x0), (h - 80f) / max(1f, y1 - y0)).coerceIn(minZ, maxZ)
-    return floatArrayOf((x0 + x1) / 2f, (y0 + y1) / 2f, z)
-}
-
 /**
  * A label whose blurred Shadow glow is rasterized once into a bitmap and then just blitted.
  * Android re-blurs a text shadow on every draw, which is costly when done for many labels every frame.
@@ -335,12 +268,12 @@ internal class GlowText(val tl: TextLayoutResult) {
     }
 }
 
-/** The vault sun: one fixed node (not a lobe), centered below the brain (x = 0), past the first lobe ring. */
+/** The vault sun: one fixed node (not a lobe), centered below the brain (x = 0), off and below the portal ring. */
 internal const val SUN_X = 0f
-internal const val SUN_Y = 125f
-private const val SUN_BEND = 8f
+internal const val SUN_Y = 158f
+internal const val SUN_BEND = 8f
 private const val HEART_SCALE = 0.85f // sprite is 26x38, so about 22x32 world units (lobe: 24x19.5); its base sits on SUN_Y
-private const val HEART_MID = 14f // world units from the heart's base up to its middle, for glow, keep-out and tap
+internal const val HEART_MID = 14f // world units from the heart's base up to its middle, for glow, keep-out and tap
 
 /** 0 = fresh, 1 = fully eclipsed: grace of 7 days, then 14 days to go dark. Never backed up = 1. */
 private fun staleness(last: Long?): Float =
@@ -357,17 +290,25 @@ class BrainCamera {
 
     /** The last camera [fitUntouched] set; the camera counts as untouched while it is still the default or exactly that. */
     private var fitted: FloatArray? = null
+    /** Where the camera was on the main map before flying into a portal: where it flies back out to. */
+    internal var outside: FloatArray? = null
+    /** The last overview fit, if any. */
+    internal val overview: FloatArray? get() = fitted
+    /** The zoom of the last overview fit: the map's home, so "zoomed in" means past it. */
+    var home by mutableFloatStateOf(HOME_ZOOM)
+        private set
 
     /**
      * Puts the camera on the overview [aim] if the size is known ([viewW] > 0) and nobody has panned or zoomed since the default
-     * or the last fit. Called again whenever the size or the lobes change, so the order they arrive in does not matter.
+     * or the last fit, or always when [force]d (the window changed width). Called again whenever the size or the lobes change,
+     * so the order they arrive in does not matter.
      */
-    internal fun fitUntouched(viewW: Int, aim: () -> FloatArray) {
+    internal fun fitUntouched(viewW: Int, force: Boolean = false, aim: () -> FloatArray) {
         val f = fitted
         val untouched = if (f == null) x == 0f && y == 0f && scale == HOME_ZOOM else x == f[0] && y == f[1] && scale == f[2]
-        if (viewW <= 0 || !untouched) return
+        if (viewW <= 0 || !(untouched || force)) return
         val a = aim()
-        x = a[0]; y = a[1]; scale = a[2]; fitted = a
+        x = a[0]; y = a[1]; scale = a[2]; fitted = a; home = a[2]
     }
 }
 
@@ -375,11 +316,11 @@ class BrainCamera {
 internal class Layout(
     val nL: Int, val lobeIds: LongArray, val lx: FloatArray, val ly: FloatArray, val lbend: FloatArray,
     val lcol: IntArray, val lslot: IntArray, val istart: IntArray,
-    val nI: Int, val ix: FloatArray, val iy: FloatArray, val iph: FloatArray, val ibend: FloatArray,
+    val nI: Int, val ix: FloatArray, val iy: FloatArray, val iph: FloatArray,
     val ij: IntArray, val inew: BooleanArray, val ipar: IntArray, val irings: IntArray, val irecent: BooleanArray,
-    val bstart: IntArray, val bx: FloatArray, val by: FloatArray, val bph: FloatArray, val bbend: FloatArray,
+    val bstart: IntArray, val bx: FloatArray, val by: FloatArray,
+    val idone: BooleanArray, val gx: FloatArray, val gy: FloatArray, // done notes; each group's ghost star (NaN = it has notes)
     val dust: FloatArray,      // x, y, ph, b
-    val blots: FloatArray,     // x, y, r, ph
     val stains: FloatArray,    // x, y, r
     val cracks: Array<FloatArray>, // x0, y0, x1, y1, ...
     val specks: FloatArray,    // x, y, colour index
@@ -388,7 +329,7 @@ internal class Layout(
 )
 
 /** [now] decides which items are recent (touched within 48 hours). */
-internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.currentTimeMillis()): Layout {
+internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.currentTimeMillis(), rx: Float = 66f): Layout {
     val placedIn = web.items
     val nL = lobes.size
     val idxOf = HashMap<Long, Int>()
@@ -400,7 +341,7 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.current
     val istart = IntArray(nL + 1)
     for (i in 0 until nL) {
         val l = lobes[i]
-        val p = lobeWorldPos(l.slot)
+        val p = if (l.id == web.focus) Offset.Zero else lobeRingPos(lobes, l, rx) // a portal page's lobe is its core
         lx[i] = p.x; ly[i] = p.y
         lbend[i] = (Rng(l.uid.hashCode() * 31 + 7).next() - 0.5f) * 30f
         lcol[i] = lobeColor(l).toArgb() and 0xFFFFFF
@@ -413,7 +354,6 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.current
     val ix = FloatArray(nI) { placed[it].pos.x }
     val iy = FloatArray(nI) { placed[it].pos.y }
     val iph = FloatArray(nI) { placed[it].ph }
-    val ibend = FloatArray(nI) { placed[it].bend }
     val ij = IntArray(nI) { placed[it].j }
     val inew = BooleanArray(nI) { placed[it].newest }
     val ipar = IntArray(nI) { placed[it].parent }
@@ -425,8 +365,9 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.current
     for (i in 0 until nL) bstart[i + 1] += bstart[i]
     val bx = FloatArray(web.branches.size) { web.branches[it].pos.x }
     val by = FloatArray(web.branches.size) { web.branches[it].pos.y }
-    val bph = FloatArray(web.branches.size) { web.branches[it].ph }
-    val bbend = FloatArray(web.branches.size) { web.branches[it].bend }
+    val idone = BooleanArray(nI) { placed[it].idea.done }
+    val gx = FloatArray(web.branches.size) { web.branches[it].ghost?.x ?: Float.NaN }
+    val gy = FloatArray(web.branches.size) { web.branches[it].ghost?.y ?: Float.NaN }
 
     // dust
     val rd = Rng(101)
@@ -437,47 +378,6 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.current
         dust[i * 4 + 2] = rd.next() * TAU
         dust[i * 4 + 3] = rd.next()
     }
-
-    // blots (rot spots): each kept with probability min(1, ROT * 1.2), decided by its own roll so it is stable;
-    // then pushed clear of every lobe, group, item, label and the vault, or left out when there is no room
-    val keep = min(1f, ROT * 1.2f)
-    val bAll = ArrayList<FloatArray>()
-    val keepOut = keepOutBoxes(lx, ly, bx, by, ix, iy, SUN_X, SUN_Y).let { base ->
-        // a focused sub brain also keeps holes off its whole tree
-        val f = idxOf[web.focus]
-        if (f == null) base else base + focusKeepOutBoxes(lx[f], ly[f], bx.slice(bstart[f] until bstart[f + 1]), by.slice(bstart[f] until bstart[f + 1]), ix.slice(istart[f] until istart[f + 1]), iy.slice(istart[f] until istart[f + 1]))
-    }
-    fun blot(x: Float, y: Float, r: Float, ph: Float, u: Float) {
-        if (u < keep) clearHole(x, y, r + 1f, keepOut)?.let { bAll.add(floatArrayOf(it[0], it[1], r, ph)) }
-    }
-    val rc = Rng(202)
-    repeat(12) {
-        val a = rc.next() * TAU; val d = 22f + rc.next() * 24f
-        val r = 2f + rc.next() * 5f; val ph = rc.next() * TAU; val u = rc.next()
-        blot(cos(a) * d, sin(a) * d * 1.2f, r, ph, u)
-    }
-    for (i in 0 until nL) {
-        val rl = Rng(lobes[i].uid.hashCode() * 17 + 303)
-        repeat(5) {
-            val a = rl.next() * TAU; val d = 10f + rl.next() * 26f
-            val r = 1.5f + rl.next() * 4f; val ph = rl.next() * TAU; val u = rl.next()
-            blot(lx[i] + cos(a) * d, ly[i] + sin(a) * d, r, ph, u)
-        }
-        repeat(3) {
-            val s = 0.2f + rl.next() * 0.6f
-            val jx = (rl.next() - 0.5f) * 14f; val jy = (rl.next() - 0.5f) * 14f
-            val r = 1.5f + rl.next() * 3.5f; val ph = rl.next() * TAU; val u = rl.next()
-            blot(lx[i] * s + jx, ly[i] * s + jy, r, ph, u)
-        }
-    }
-    val rf = Rng(505)
-    repeat(14) {
-        val a = rf.next() * TAU; val d = 40f + rf.next() * 120f
-        val r = 2f + rf.next() * 6f; val ph = rf.next() * TAU; val u = rf.next()
-        blot(cos(a) * d * 0.8f, sin(a) * d * 1.3f, r, ph, u)
-    }
-    val blots = FloatArray(bAll.size * 4)
-    bAll.forEachIndexed { i, b -> System.arraycopy(b, 0, blots, i * 4, 4) }
 
     // stains
     val rs = Rng(606)
@@ -546,13 +446,11 @@ internal fun buildLayout(lobes: List<Lobe>, web: Web, now: Long = System.current
         dl.add(x); dl.add(y); dl.add(n.toFloat()); dl.add(len); dl.add(owner.toFloat())
     }
     drip(0f, 18f, 14, 55f, -1)
-    for (i in 0 until nL) drip(lx[i], ly[i] + 8f, 5, 30f, i)
-    for (i in 0 until bAll.size) if (i % 4 == 0) drip(bAll[i][0], bAll[i][1] + bAll[i][2], 2, 16f, -1)
 
     return Layout(
-        nL, ids, lx, ly, lbend, lcol, lslot, istart, nI, ix, iy, iph, ibend, ij, inew, ipar, irings, irecent,
-        bstart, bx, by, bph, bbend,
-        dust, blots, stains, cracks, specks, spores, dl.toFloatArray(),
+        nL, ids, lx, ly, lbend, lcol, lslot, istart, nI, ix, iy, iph, ij, inew, ipar, irings, irecent,
+        bstart, bx, by, idone, gx, gy,
+        dust, stains, cracks, specks, spores, dl.toFloatArray(),
     )
 }
 
@@ -570,8 +468,27 @@ private fun mixRgb(a: Int, b: Int, m: Float): Int {
     return (r shl 16) or (g shl 8) or bl
 }
 
-private val BEADS = floatArrayOf(0.25f, 0.45f, 0.62f, 0.8f)
-private val SPECK_COLS = intArrayOf(0x1E0A24, 0x4A1650, 0x7A2A6A)
+private val SPECK_COLS = intArrayOf(0x140A24, 0x2E1A50, 0x4A3478)
+
+private const val SPARK_RUN = 1.4f
+
+/** How far (0..1) along its vein spark [seed] is at [t] seconds, or -1 when it rests: one run of [SPARK_RUN] s every [every] to 1.8x [every] s, each at its own moment. */
+internal fun sparkProgress(seed: Int, t: Float, every: Float): Float {
+    val r = Rng(seed * 31 + 5)
+    val period = every * (1f + 0.8f * r.next())
+    val at = (((t + r.next() * period) % period) + period) % period
+    return if (at < SPARK_RUN) at / SPARK_RUN else -1f
+}
+
+/** The point [s] (0..1) along the vein bowed by [bend] from (x1, y1) to (x2, y2), into [out]; the same curve ctrl/bz draw. */
+internal fun veinPoint(out: FloatArray, x1: Float, y1: Float, x2: Float, y2: Float, bend: Float, s: Float) {
+    val dx = x2 - x1; val dy = y2 - y1
+    val len = hypot(dx, dy).let { if (it == 0f) 1f else it }
+    val cx = (x1 + x2) / 2f - dy / len * bend; val cy = (y1 + y2) / 2f + dx / len * bend
+    val u = 1f - s
+    out[0] = u * u * x1 + 2f * u * s * cx + s * s * x2
+    out[1] = u * u * y1 + 2f * u * s * cy + s * s * y2
+}
 
 /**
  * Renders the map into a low-res [Pix] (one pixel = one "world unit" at zoom 1). All pixel work is
@@ -579,7 +496,6 @@ private val SPECK_COLS = intArrayOf(0x1E0A24, 0x4A1650, 0x7A2A6A)
  */
 internal class BrainRenderer(
     private val coreSprite: ImageBitmap,
-    private val lobeSprite: ImageBitmap,
     private val heartSprite: ImageBitmap,
     private val heartDeadSprite: ImageBitmap,
 ) {
@@ -587,14 +503,27 @@ internal class BrainRenderer(
     val W get() = pix.w
     val H get() = pix.h
 
-    /** Animated idea positions (world) for the current frame, read by the label pass. */
-    var ipx = FloatArray(0)
-    var ipy = FloatArray(0)
+    /** Show-all: each portal's groups and notes (two numbers per lobe index), drawn as the stars inside it; null = a generic swirl. */
+    var contents: IntArray? = null
+    /** The portal being flown through (lobe index, -1 = none) and how far: 0 as on the map, 1 it grows with the zoom, past the view. */
+    var flyIdx = -1
+    var flyP = 0f
+    /** The tap on the portal [flyIdx] before it is flown through: 0..1 of its squish and sparkle burst, 0 = none. */
+    var tapP = 0f
+
+    /** Arrange mode: a dotted ring on every slot a sub brain may move to (world x, y pairs), null = not arranging. */
+    var slots: FloatArray? = null
+    /** Arrange mode: lobe index [dragIdx] follows the finger at [dragX], [dragY] (world); -1 = none. */
+    var dragIdx = -1
+    var dragX = 0f
+    var dragY = 0f
 
     private val cv get() = pix.canvas
     private val spritePaint = pixPaint()
     private val ditherPaint = makeDitherPaint(0.26f * ROT)
     private val vignette = pixPaint()
+    private val edge = pixPaint()
+    private var edgeKey = 0L
 
     // per-frame state
     private var t = 0f
@@ -602,12 +531,8 @@ internal class BrainRenderer(
     private var camY = 0f
     private var z = 1f
     private var beatPh = 0f
-    private val lo = (rnd(110 - 40 * ROT) shl 16) or (rnd(80 - 48 * ROT) shl 8) or rnd(170 - 84 * ROT)
-    private val hi = (245 shl 16) or (150 shl 8) or 225
+    private val sp = FloatArray(2)
 
-    // ctrl / bezier scratch
-    private var ccx = 0f; private var ccy = 0f; private var cnx = 0f; private var cny = 0f; private var clen = 0f
-    private var bzx = 0f; private var bzy = 0f
 
     fun resize(w: Int, h: Int) {
         if (!pix.resize(w, h) && vignette.shader != null) return
@@ -639,21 +564,6 @@ internal class BrainRenderer(
     private fun glowAt(wx: Float, wy: Float, r: Float, rgb: Int, a: Float, over: Boolean = false) =
         pix.glow(sx(wx), sy(wy), r * z, rgb, a, add = !over)
 
-    private fun ctrl(x1: Float, y1: Float, x2: Float, y2: Float, bend: Float) {
-        val dx = x2 - x1; val dy = y2 - y1
-        var len = hypot(dx, dy)
-        if (len == 0f) len = 1f
-        clen = len; cnx = -dy / len; cny = dx / len
-        ccx = (x1 + x2) / 2f - dy / len * bend
-        ccy = (y1 + y2) / 2f + dx / len * bend
-    }
-
-    private fun bz(x1: Float, y1: Float, cx: Float, cy: Float, x2: Float, y2: Float, s: Float) {
-        val u = 1f - s
-        bzx = u * u * x1 + 2f * u * s * cx + s * s * x2
-        bzy = u * u * y1 + 2f * u * s * cy + s * s * y2
-    }
-
     /** Dotted circle: 3 px per segment, every 4th segment skipped (shifted by floor(rot)). */
     private fun ring(wx: Float, wy: Float, r: Float, segs: Int, rot: Float, rgb: Int, a: Float) {
         val rr = r * z
@@ -671,7 +581,7 @@ internal class BrainRenderer(
         }
     }
 
-    private fun sprite(bm: ImageBitmap, wx: Float, wy: Float, scale: Float, alpha: Float, flip: Boolean) {
+    private fun sprite(bm: ImageBitmap, wx: Float, wy: Float, scale: Float, alpha: Float, flip: Boolean, filter: ColorFilter? = null) {
         val w = bm.width * scale * z
         val h = bm.height * scale * z
         val cx = sx(wx); val cy = sy(wy)
@@ -679,86 +589,23 @@ internal class BrainRenderer(
         val l = rnd(cx - w / 2f); val t = rnd(cy - h / 2f)
         val dstSize = IntSize(rnd(cx + w / 2f) - l, rnd(cy + h / 2f) - t)
         spritePaint.alpha = (alpha * 255f).toInt().coerceIn(0, 255) / 255f
+        spritePaint.colorFilter = filter
         if (flip) { cv.save(); cv.translate(cx, cy); cv.scale(-1f, 1f); cv.translate(-cx, -cy) }
         cv.drawImageRect(bm, IntOffset.Zero, IntSize(bm.width, bm.height), IntOffset(l, t), dstSize, spritePaint)
         if (flip) cv.restore()
     }
 
-    private fun vein(x2: Float, y2: Float, bend: Float, strands: Int, seed: Float, alpha: Float, hiRgb: Int = hi) {
-        if (!onScreen(0f, 0f, x2, y2, 30f)) return
-        for (st in 0 until strands) {
-            ctrl(0f, 0f, x2, y2, bend + (st - (strands - 1) / 2f) * (1f + 2.5f * ROT))
-            val cx = ccx; val cy = ccy; val nx = cnx; val ny = cny
-            val n = ceil(clen * z * 1.2f).toInt().coerceIn(1, 3000)
-            for (i in 0..n) {
-                val s = i / n.toFloat()
-                bz(0f, 0f, cx, cy, x2, y2, s)
-                val wob = sin(s * 11f + st * 2.1f + seed + t * 0.6f) * 1.6f * ROT * (1f - abs(s - 0.5f))
-                val dead = sin(s * 37f + seed * 3f + st) > 0.93f
-                val rgb = if (dead) 0x14061A else mixRgb(lo, hiRgb, beat(s))
-                dot(rnd(sx(bzx + nx * wob)), rnd(sy(bzy + ny * wob)), 1, 1, rgb, alpha)
-            }
-            if (st == 0) {
-                for (k in 0..3) {
-                    bz(0f, 0f, cx, cy, x2, y2, BEADS[k])
-                    disc(sx(bzx), sy(bzy), max(1f, z * (0.6f + (0.4f * k) % 2f)), if (k % 2 == 1) 0xD45AAB else 0x5A1A5A, alpha)
-                }
-            }
+    /** A small bright spark [p] (0..1) along a vein: white core, soft purple glow, a short fading tail. */
+    private fun spark(x1: Float, y1: Float, x2: Float, y2: Float, bend: Float, p: Float, a: Float) {
+        if (p < 0f || a <= 0f || !onScreen(x1, y1, x2, y2, 30f)) return
+        val w = if (z > 2f) 2 else 1
+        val fade = a * min(1f, min(p, 1f - p) * 8f)
+        for (j in 3 downTo 0) {
+            veinPoint(sp, x1, y1, x2, y2, bend, max(0f, p - j * 0.05f))
+            val f = (1f - j * 0.25f) * fade
+            glowAt(sp[0], sp[1], 5f - j, 0x8F7BFF, 0.6f * f)
+            dot(rnd(sx(sp[0])), rnd(sy(sp[1])), w, w, if (j == 0) 0xFFFFFF else 0xD6C8FF, f)
         }
-    }
-
-    private fun thread(x1: Float, y1: Float, x2: Float, y2: Float, bend: Float, ph: Float, rgb: Int, dim: Float) {
-        if (!onScreen(x1, y1, x2, y2, 10f)) return
-        ctrl(x1, y1, x2, y2, bend)
-        val cx = ccx; val cy = ccy; val nx = cnx; val ny = cny
-        val n = ceil(clen * z * 1.2f).toInt().coerceIn(1, 1500)
-        for (i in 0..n) {
-            val s = i / n.toFloat()
-            bz(x1, y1, cx, cy, x2, y2, s)
-            val wob = sin(s * 9f + ph * 7f + t * 0.6f) * 0.9f * ROT * (1f - abs(s - 0.5f))
-            val xx = rnd(sx(bzx + nx * wob)); val yy = rnd(sy(bzy + ny * wob))
-            if (sin(s * 29f + ph * 5f) > 0.9f) dot(xx, yy, 1, 1, 0x14061A, dim)
-            else dot(xx, yy, 1, 1, rgb, (0.35f + 0.5f * beat(1f + s * 0.5f)) * dim)
-        }
-    }
-
-    /** Where a pulse is [p] (0..1) of the way from the core, through the lobe and group, to item [k]; leaves it in bzx/bzy. */
-    private fun sparkPos(L: Layout, k: Int, p: Float) {
-        var li = 0
-        while (L.istart[li + 1] <= k) li++
-        val g = L.ipar[k]
-        val px = if (g < 0) L.lx[li] else L.bx[g]; val py = if (g < 0) L.ly[li] else L.by[g]
-        val xs = floatArrayOf(0f, L.lx[li], px, ipx[k]); val ys = floatArrayOf(0f, L.ly[li], py, ipy[k])
-        val bends = floatArrayOf(L.lbend[li], if (g < 0) 0f else L.bbend[g], L.ibend[k])
-        // legs: core -> lobe, lobe -> group (only with one), parent -> item
-        val from = if (g < 0) intArrayOf(0, 2) else intArrayOf(0, 1, 2)
-        val to = if (g < 0) intArrayOf(1, 3) else intArrayOf(1, 2, 3)
-        val bd = if (g < 0) floatArrayOf(bends[0], bends[2]) else bends
-        var total = 0f
-        for (j in from.indices) total += hypot(xs[to[j]] - xs[from[j]], ys[to[j]] - ys[from[j]])
-        var at = p.coerceIn(0f, 1f) * total
-        for (j in from.indices) {
-            val len = hypot(xs[to[j]] - xs[from[j]], ys[to[j]] - ys[from[j]])
-            if (at <= len || j == from.lastIndex) {
-                val x1 = xs[from[j]]; val y1 = ys[from[j]]; val x2 = xs[to[j]]; val y2 = ys[to[j]]
-                ctrl(x1, y1, x2, y2, bd[j])
-                bz(x1, y1, ccx, ccy, x2, y2, if (len <= 0f) 1f else (at / len).coerceIn(0f, 1f))
-                return
-            }
-            at -= len
-        }
-    }
-
-    /** The bright pulse running the veins to item [k], with a short tail; flares the neuron as it lands. */
-    private fun sparkPulse(L: Layout, k: Int, p: Float) {
-        for (j in 4 downTo 0) {
-            sparkPos(L, k, max(0f, p - j * 0.045f))
-            val f = 1f - j * 0.2f
-            glowAt(bzx, bzy, (6f - j) , 0xF0C8F0, 0.9f * f)
-            val w = if (z > 2f) 2 else 1
-            dot(rnd(sx(bzx)), rnd(sy(bzy)), w, w, 0xFFFFFF, f)
-        }
-        if (p > 0.8f) glowAt(ipx[k], ipy[k], 12f, 0xF596E1, 0.8f * (p - 0.8f) * 5f)
     }
 
     /** Lub-dub as it arrives along the veins, in quarter steps so the scaled sprite stays crisp. */
@@ -768,8 +615,8 @@ internal class BrainRenderer(
     private fun sun(sv: Float, selected: Boolean, d: Float) {
         val l = 1f - sv
         val ga = (0.35f + 0.3f * heartBeat()) * l * d
-        glowAt(SUN_X, SUN_Y - HEART_MID, 34f, 0xD45AAB, ga)
-        if (selected) glowAt(SUN_X, SUN_Y - HEART_MID, 34f, 0xD45AAB, ga)
+        glowAt(SUN_X, SUN_Y - HEART_MID, 34f, 0x8A6CF0, ga)
+        if (selected) glowAt(SUN_X, SUN_Y - HEART_MID, 34f, 0x8A6CF0, ga)
     }
 
     /** The heart swells with the pulse and stops beating as it dies; drawn after the dither pass so the checker doesn't show on it. */
@@ -779,28 +626,150 @@ internal class BrainRenderer(
         val s = HEART_SCALE * (1f + 0.14f * heartBeat() * l)
         val cy = SUN_Y - heartSprite.height * s / 2f // base stays on SUN_Y while it swells
         sprite(heartDeadSprite, SUN_X, cy, s, d, false)
-        sprite(heartSprite, SUN_X, cy, s, l * d, false)
+        sprite(heartSprite, SUN_X, cy, s, l * d, false) // the original art, untinted: the one pink thing the user keeps
     }
 
-    /** One frame, in the mockup's draw order. [sel] is the selected lobe index or -1. */
-    fun draw(time: Float, camX: Float, camY: Float, zoom: Float, L: Layout, sel: Int, sv: Float, sunSel: Boolean, spark: Int = -1, sparkP: Float = 0f) {
+    /** A straight line between two screen points, [gap] px short of each end. */
+    private fun line(x1: Float, y1: Float, x2: Float, y2: Float, gap: Float, rgb: Int, a: Float) {
+        val len = hypot(x2 - x1, y2 - y1)
+        val n = ceil(len).toInt().coerceAtMost(4000)
+        for (q in 0..n) {
+            val dd = q.toFloat()
+            if (dd < gap || dd > len - gap) continue
+            dot(rnd(x1 + (x2 - x1) * dd / len), rnd(y1 + (y2 - y1) * dd / len), 1, 1, rgb, a)
+        }
+    }
+
+    /** A four-point pixel star at screen ([x], [y]): a white heart and [arm] px arms in [rgb], fading out. */
+    private fun twinkle(x: Float, y: Float, arm: Int, rgb: Int, a: Float) {
+        val ix = rnd(x); val iy = rnd(y)
+        dot(ix, iy, 1, 1, 0xFFFFFF, a)
+        for (k in 1..arm) {
+            val f = a * (1f - k / (arm + 1f))
+            dot(ix - k, iy, 1, 1, rgb, f); dot(ix + k, iy, 1, 1, rgb, f); dot(ix, iy - k, 1, 1, rgb, f); dot(ix, iy + k, 1, 1, rgb, f)
+        }
+    }
+
+    /** Dots along a circle of [r] px round screen ([cx], [cy]), from angle [a0] through [sweep], each [th] px square. */
+    private fun arc(cx: Float, cy: Float, r: Float, a0: Float, sweep: Float, th: Int, rgb: Int, a: Float) {
+        val n = ceil(r * sweep * 1.4f / th).toInt().coerceIn(1, 3000)
+        for (q in 0..n) {
+            val an = a0 + sweep * q / n
+            dot(rnd(cx + cos(an) * r - th / 2f), rnd(cy + sin(an) * r - th / 2f), th, th, rgb, a)
+        }
+    }
+
+    /**
+     * Sub brain [i] as a portal at world ([wx], [wy]), [s] its node scale: a glowing ring in its shade round a dark inside where stars
+     * swirl (its groups and notes with show-all on, else a few generic ones), a lighter dashed ring turning one way, an outer dotted
+     * ring the other, and three sparkles riding the rim.
+     */
+    private fun portal(i: Int, wx: Float, wy: Float, s: Float, L: Layout, a: Float) {
+        val cx = sx(wx); val cy = sy(wy)
+        val r = PORTAL_R * s * z
+        val out = PORTAL_OUT * s * z
+        if (cx + out * 2f < 0 || cy + out * 2f < 0 || cx - out * 2f > W || cy - out * 2f > H) return
+        val col = L.lcol[i]
+        val ph = L.lslot[i] * 2.39f
+        pix.glow(cx, cy, out * 1.7f, col, (0.3f + 0.25f * beat(1f)) * a)
+        // the dark inside, a row at a time so it stays a pixel circle
+        for (y in max(ceil(cy - r).toInt(), 0)..min(floor(cy + r).toInt(), H - 1)) {
+            val dy = y + 0.5f - cy
+            val hw = sqrt(max(0f, r * r - dy * dy))
+            val x0 = rnd(cx - hw)
+            dot(x0, y, rnd(cx + hw) - x0, 1, 0x0B0618, a)
+        }
+        // three faint arms winding in
+        val arms = (r * 2.2f).toInt().coerceIn(4, 900)
+        for (arm in 0 until 3) for (q in 0 until arms) {
+            val f = q / arms.toFloat()
+            val an = arm * TAU / 3f + f * 3.4f - t * 0.45f + ph
+            dot(rnd(cx + cos(an) * f * r * 0.92f), rnd(cy + sin(an) * f * r * 0.92f), 1, 1, mixRgb(0x0B0618, col, 0.2f + 0.3f * f), 0.8f * a)
+        }
+        // the stars, slowly swirling, the inner ones faster: one bright star per group and one small one per note, 40 at most
+        val c = contents
+        val ng = if (c != null) min(c[i * 2], 12) else 0
+        val nn = if (c != null) min(c[i * 2 + 1], 40 - ng) else 6
+        val big = max(1, rnd(r / 40f))
+        val rr = Rng(L.lslot[i] * 977 + 3)
+        for (k in 0 until ng + nn) {
+            val f = sqrt(rr.next()) * 0.84f; val a0 = rr.next() * TAU; val tw = rr.next() * TAU
+            val an = a0 - t * (0.1f + 0.3f * (1f - f))
+            val x = cx + cos(an) * f * r; val y = cy + sin(an) * f * r
+            if (k < ng) {
+                pix.glow(x, y, 2.5f + 2f * big, 0xE6DCFF, 0.45f * a)
+                twinkle(x, y, big, 0xD6C8FF, a)
+            } else {
+                val b = (if (c == null) 0.35f else 0.6f) + 0.3f * sin(t * 1.5f + tw)
+                dot(rnd(x - big / 2f), rnd(y - big / 2f), big, big, if (k % 3 == 0) 0xFFFFFF else 0xD6C8FF, b * a)
+            }
+        }
+        // the rings
+        val th = max(1, rnd(r / 9f))
+        arc(cx, cy, r, 0f, TAU, th, col, a)
+        val rd = (PORTAL_R + 2.5f) * s * z
+        val light = mixRgb(col, 0xFFFFFF, 0.45f)
+        val dth = max(1, rnd(r / 14f))
+        for (q in 0 until 10) arc(cx, cy, rd, q * TAU / 10f + t * 0.5f + ph, TAU / 10f * 0.55f, dth, light, 0.85f * a)
+        val oth = max(1, rnd(out / 14f))
+        for (q in 0 until 24) {
+            val an = q * TAU / 24f - t * 0.3f + ph
+            dot(rnd(cx + cos(an) * out - oth / 2f), rnd(cy + sin(an) * out - oth / 2f), oth, oth, col, (if (q % 3 == 0) 0.95f else 0.5f) * a)
+        }
+        for (q in 0 until 3) {
+            val an = t * 0.8f + q * TAU / 3f + ph
+            val x = cx + cos(an) * rd; val y = cy + sin(an) * rd
+            pix.glow(x, y, 3f + r * 0.12f, 0xC9B6FF, 0.5f * a)
+            twinkle(x, y, max(dth, if (sin(t * 2f + q * 2f + ph) > 0.4f) 2 else 1), 0xD6C8FF, a)
+        }
+    }
+
+    /** Sub brain [i]'s world: constellations of stars, each joined in order by thin lines, a rare spark running along one. */
+    private fun world(L: Layout, i: Int) {
+        val lineRgb = mixRgb(L.lcol[i], 0xE6DCFF, 0.35f)
+        for (k in L.istart[i] + 1 until L.istart[i + 1]) {
+            if (L.ij[k] == 0 || L.ipar[k] != L.ipar[k - 1]) continue // a new constellation starts
+            line(sx(L.ix[k - 1]), sy(L.iy[k - 1]), sx(L.ix[k]), sy(L.iy[k]), 4f, lineRgb, 0.45f)
+            spark(L.ix[k - 1], L.iy[k - 1], L.ix[k], L.iy[k], 0f, sparkProgress(4000 + k, t, 24f), 0.8f)
+        }
+        // an empty group's ghost: a dim dotted ring where its first star would be
+        for (g in L.bstart[i] until L.bstart[i + 1]) if (!L.gx[g].isNaN()) ring(L.gx[g], L.gy[g], 4.5f, 14, t, lineRgb, 0.5f)
+        for (k in L.istart[i] until L.istart[i + 1]) {
+            val x = sx(L.ix[k]); val y = sy(L.iy[k])
+            if (x < -8f || y < -8f || x > W + 8f || y > H + 8f) continue
+            if (L.idone[k]) { dot(rnd(x), rnd(y), 1, 1, 0x6F6880, 0.8f); continue } // done: a small dim grey star, no twinkle
+            val tw = 0.5f + 0.5f * sin(t * 1.3f + L.iph[k])
+            pix.glow(x, y, 6f, 0xC9B6FF, 0.2f + 0.2f * tw)
+            twinkle(x, y, if (tw > 0.7f) 3 else 2, 0xD6C8FF, 0.75f + 0.25f * tw)
+        }
+    }
+
+    /**
+     * One frame. [sel] is the lobe whose world this is, or -1 for the main map: the main brain, its veins with sparks running out,
+     * every sub brain as a portal, and the vault heart. A world draws only its constellations, inside a faint ring of its shade.
+     */
+    fun draw(time: Float, camX: Float, camY: Float, zoom: Float, L: Layout, sel: Int, sv: Float, sunSel: Boolean) {
         t = time; this.camX = camX; this.camY = camY; z = zoom
         beatPh = (t * 0.45f) % 1.7f
         val ns = nodeScale(z)
-        if (ipx.size < L.nI) { ipx = FloatArray(L.nI); ipy = FloatArray(L.nI) }
-        fun dimOf(i: Int) = if ((sel < 0 && !sunSel) || sel == i) 1f else if (sel >= 0) FOCUS_DIM else 0.45f
-        val sunDim = if (sel < 0) 1f else 0f // a focused sub brain hides the heart and its veins completely
+        val focus = sel >= 0
+        val d = if (sunSel) 0.45f else 1f // the map dims behind the open vault
+        // a world hides the heart completely; a fly-through fades it out early so it never fills the view
+        val sunDim = if (focus) 0f else if (flyIdx >= 0) (1f - flyP * 6f).coerceIn(0f, 1f) else 1f
 
-        pix.fill(0x07030B)
+        // a world gets a faint wash of its sub brain's shade
+        pix.fill(if (focus) mixRgb(0x07030B, L.lcol[sel], 0.08f) else 0x07030B)
 
         // fog
         for (i in 0 until 7) {
-            glowAt(sin(t * 0.05f + i * 1.3f) * 80f, cos(t * 0.04f + i * 1.7f) * 150f, 80f, if (i % 2 == 1) 0x5A1A6A else 0x3A1A7A, 0.5f * ROT)
+            glowAt(sin(t * 0.05f + i * 1.3f) * 80f, cos(t * 0.04f + i * 1.7f) * 150f, 80f, if (i % 2 == 1) 0x2A1A6A else 0x3A1A7A, 0.5f * ROT)
         }
         // dark stains
         for (i in 0 until L.stains.size / 3) glowAt(L.stains[i * 3], L.stains[i * 3 + 1], L.stains[i * 3 + 2], 0x030105, 0.55f * ROT, over = true)
 
-        // dust, with parallax
+        // dust, with parallax; in a world it swirls slowly round the middle, fainter; it stretches into streaks mid fly-through
+        val warp = if (!focus && flyIdx in 0 until L.nL) sin(flyP * PI_F) else 0f
+        val wcx = if (warp > 0f) sx(L.lx[flyIdx]) else 0f; val wcy = if (warp > 0f) sy(L.ly[flyIdx]) else 0f
         val f = 0.6f + z * 0.25f
         val spanX = 420f * f; val spanY = 620f * f
         for (i in 0 until L.dust.size / 4) {
@@ -808,174 +777,126 @@ internal class BrainRenderer(
             var ddy = (L.dust[i * 4 + 1] - camY * 0.5f) * f
             ddx = ((ddx + spanX / 2f) % spanX + spanX) % spanX - spanX / 2f
             ddy = ((ddy + spanY / 2f) % spanY + spanY) % spanY - spanY / 2f
-            val a = (1f - ROT * 0.55f) * (0.3f + 0.7f * max(0f, sin(t * 1.3f + L.dust[i * 4 + 2]))) * L.dust[i * 4 + 3]
-            dot(rnd(W / 2f + ddx), rnd(H / 2f + ddy), 1, 1, 0xCDB8FF, a)
+            var a = (1f - ROT * 0.55f) * (0.3f + 0.7f * max(0f, sin(t * 1.3f + L.dust[i * 4 + 2]))) * L.dust[i * 4 + 3]
+            if (focus) {
+                val an = t * 0.02f + hypot(ddx, ddy) * 0.004f
+                val rx = ddx * cos(an) - ddy * sin(an); ddy = ddx * sin(an) + ddy * cos(an); ddx = rx
+                a *= 0.55f
+            }
+            val x = W / 2f + ddx; val y = H / 2f + ddy
+            if (warp > 0.02f) {
+                // warp: each dust star streaks away from the portal's middle
+                val vx = x - wcx; val vy = y - wcy
+                line(x, y, x + vx * warp * 0.35f, y + vy * warp * 0.35f, 0f, 0xCDB8FF, a * (1f - 0.4f * warp))
+            } else dot(rnd(x), rnd(y), 1, 1, 0xCDB8FF, a)
         }
 
-        // big rings + core aura: a focused sub brain shows no trace of the core
-        if (sel < 0) {
+        if (focus) world(L, sel) else {
+            // the main map's rot: big rings and core aura, cracks, mold specks
             floatArrayOf(60f, 105f, 150f).forEachIndexed { i, r -> ring(0f, 0f, r, 90, t * (if (i % 2 == 1) -1f else 1f), 0x39234C, 0.6f * (1f - ROT * 0.5f)) }
-            glowAt(0f, 0f, 90f, 0x5A2FA0, 0.3f)
-        }
-
-        // cracks
-        for (i in L.cracks.indices) {
-            val pts = L.cracks[i]
-            val rgb = if (i % 3 != 0) 0x1A0820 else 0x2E0F36
-            var k = 0
-            while (k + 3 < pts.size) {
-                val x0 = sx(pts[k]); val y0 = sy(pts[k + 1]); val x1 = sx(pts[k + 2]); val y1 = sy(pts[k + 3])
-                val n = ceil(hypot(x1 - x0, y1 - y0)).toInt().coerceIn(1, 400)
-                for (q in 0..n) {
-                    val s = q / n.toFloat()
-                    dot(rnd(x0 + (x1 - x0) * s), rnd(y0 + (y1 - y0) * s), 1, 1, rgb, 1f)
+            glowAt(0f, 0f, 90f, 0x4A2FA0, 0.3f)
+            for (i in L.cracks.indices) {
+                val pts = L.cracks[i]
+                val rgb = if (i % 3 != 0) 0x140A22 else 0x241038
+                var k = 0
+                while (k + 3 < pts.size) {
+                    val x0 = sx(pts[k]); val y0 = sy(pts[k + 1]); val x1 = sx(pts[k + 2]); val y1 = sy(pts[k + 3])
+                    val n = ceil(hypot(x1 - x0, y1 - y0)).toInt().coerceIn(1, 400)
+                    for (q in 0..n) {
+                        val s = q / n.toFloat()
+                        dot(rnd(x0 + (x1 - x0) * s), rnd(y0 + (y1 - y0) * s), 1, 1, rgb, 1f)
+                    }
+                    k += 2
                 }
-                k += 2
             }
-        }
-        // mold specks
-        val sk = if (z > 2f) 2 else 1
-        for (i in 0 until L.specks.size / 3) {
-            dot(rnd(sx(L.specks[i * 3])), rnd(sy(L.specks[i * 3 + 1])), sk, sk, SPECK_COLS[L.specks[i * 3 + 2].toInt()], 1f)
-        }
-        // rot spots
-        for (i in 0 until L.blots.size / 4) {
-            val bx = L.blots[i * 4]; val by = L.blots[i * 4 + 1]
-            val rr = L.blots[i * 4 + 2] * (1f + 0.12f * sin(t * 0.8f + L.blots[i * 4 + 3]))
-            val hot = 0.3f + 0.7f * beat(hypot(bx, by) / 70f)
-            val cx = sx(bx); val cy = sy(by)
-            disc(cx, cy, (rr + 1f) * z, mixRgb(0x3A1440, 0x962882, hot * 0.6f), 1f)
-            disc(cx, cy, rr * z, 0x06020A, 1f)
-            if (rr * z > 3f) dot(rnd(cx - 0.3f * rr * z), rnd(cy - 0.3f * rr * z), 1, 1, 0x2A0C30, 1f)
-        }
+            val sk = if (z > 2f) 2 else 1
+            for (i in 0 until L.specks.size / 3) {
+                dot(rnd(sx(L.specks[i * 3])), rnd(sy(L.specks[i * 3 + 1])), sk, sk, SPECK_COLS[L.specks[i * 3 + 2].toInt()], 1f)
+            }
 
-        // veins + threads
-        for (i in 0 until L.nL) {
-            if (sel >= 0 && i != sel) continue // a focused sub brain draws nothing of the other lobes
-            val d = dimOf(i)
-            vein(L.lx[i], L.ly[i], L.lbend[i], 3, i * 5f, if (sel >= 0) 0f else d) // a focused sub brain shows no veins to the core: they would cross its tree
-            for (g in L.bstart[i] until L.bstart[i + 1]) {
-                thread(L.lx[i], L.ly[i], L.bx[g], L.by[g], L.bbend[g], L.bph[g], L.lcol[i], d)
-                thread(L.lx[i], L.ly[i], L.bx[g], L.by[g], L.bbend[g] + 2.5f, L.bph[g] + 1f, L.lcol[i], d)
-            }
-            for (k in L.istart[i] until L.istart[i + 1]) {
-                val nx = L.ix[k] + sin(t * 0.5f + L.iph[k]) * 1.5f * ns
-                val ny = L.iy[k] + cos(t * 0.4f + L.iph[k]) * 1.5f * ns
-                ipx[k] = nx; ipy[k] = ny
-                val g = L.ipar[k]
-                thread(if (g < 0) L.lx[i] else L.bx[g], if (g < 0) L.ly[i] else L.by[g], nx, ny, L.ibend[k], L.iph[k], L.lcol[i], d)
-            }
-        }
-        vein(SUN_X, SUN_Y, SUN_BEND, 2, 9f, sunDim, 0xF5B0E8)
-        // heartbeat pulse travelling out each vein
-        val ps = (t * 0.45f) % 1.7f
-        if (ps <= 1f) {
-            ctrl(0f, 0f, SUN_X, SUN_Y, SUN_BEND)
-            bz(0f, 0f, ccx, ccy, SUN_X, SUN_Y, ps)
-            glowAt(bzx, bzy, 6f, 0xF0C8F0, 0.9f * sunDim)
-            dot(rnd(sx(bzx)), rnd(sy(bzy)), if (z > 2f) 2 else 1, if (z > 2f) 2 else 1, 0xFFFFFF, sunDim)
+            // sparks running out from the core along the veins (the thin veins themselves are drawn at full resolution, [drawVeins]);
+            // the core gives a small pulse as each one leaves
+            var pulse = 0f
             for (i in 0 until L.nL) {
-                val d = if (sel >= 0) 0f else dimOf(i)
-                ctrl(0f, 0f, L.lx[i], L.ly[i], L.lbend[i])
-                bz(0f, 0f, ccx, ccy, L.lx[i], L.ly[i], ps)
-                glowAt(bzx, bzy, 6f, 0xF0C8F0, 0.9f * d)
-                val w = if (z > 2f) 2 else 1
-                dot(rnd(sx(bzx)), rnd(sy(bzy)), w, w, 0xFFFFFF, d)
+                val p = sparkProgress(1000 + L.lslot[i], t, 12f)
+                if (p in 0f..0.15f) pulse = max(pulse, 1f - p / 0.15f)
+                spark(0f, 0f, L.lx[i], L.ly[i], L.lbend[i], p, 0.5f * d)
             }
-        }
 
-        // ideas: a core dot, ringed by how much is written; a magenta core when touched in the last 48 hours
-        for (i in 0 until L.nL) {
-            if (sel >= 0 && i != sel) continue
-            val d = dimOf(i)
-            val col = L.lcol[i]
-            for (k in L.istart[i] until L.istart[i + 1]) {
-                val ph = L.iph[k]
-                val a = 0.55f + 0.25f * sin(t * 1.7f + ph) + 0.5f * beat(1.5f)
-                val s = max(2, rnd(2f * min(z, 2.8f) / 1.4f))
-                val cx = sx(ipx[k]); val cy = sy(ipy[k])
-                val rings = L.irings[k]
-                val reach = s * 0.9f + 3f + rings * 2.2f + 8f * ns * z
-                if (cx + reach < 0 || cy + reach < 0 || cx - reach > W || cy - reach > H) continue
-                val recent = L.irecent[k]
-                if (rings > 0) glowAt(ipx[k], ipy[k], max(3f, 7f - L.ij[k] * 0.5f) * ns, if (recent) 0xD45AAB else col, a * d)
-                if (L.inew[k]) glowAt(ipx[k], ipy[k], 11f * ns, 0xD45AAB, 0.5f * d)
-                for (r in 0 until rings) {
-                    ring(
-                        ipx[k], ipy[k], (s * 0.9f + 3f + r * 2.2f) / z, 8 + 4 * r, t * (if (r % 2 == 0) 1.2f else -1.2f) + ph,
-                        if (r == 2) 0xD45AAB else 0xB69AFF, 0.8f * d,
-                    )
-                }
-                disc(cx, cy, s * 0.9f + 1f, 0x2A0C30, d)
-                val ds = max(1, s shr 1)
-                dot(rnd(cx + s * 0.6f), rnd(cy - s * 0.2f), ds, ds, 0x06020A, d)
-                dot(rnd(cx - s / 2f), rnd(cy - s / 2f), s, s, if (recent) 0xD45AAB else if (rings == 0) 0x6F6080 else 0xF6EEFF, d)
-            }
-        }
-        if (spark in 0 until L.nI) sparkPulse(L, spark, sparkP)
-
-        // drips
-        if (ROT > 0.2f) {
-            val fade = min(1f, (ROT - 0.2f) * 2f)
-            val wh = rnd(z * 1.5f).coerceIn(1, 4)
-            for (k in 0 until L.drips.size / 5) {
-                val dx0 = L.drips[k * 5]; val dy0 = L.drips[k * 5 + 1]
-                val n = L.drips[k * 5 + 2].toInt(); val len = L.drips[k * 5 + 3]
-                val owner = L.drips[k * 5 + 4].toInt()
-                val d = if (owner >= 0) dimOf(owner) else 1f
-                for (i in 0 until n) {
-                    val ph = i * 1.7f + k * 0.9f
-                    val x = dx0 + sin(ph * 3f) * (if (n > 5) 14f else 6f)
-                    val y = dy0 + (t * 7f + ph * 13f) % len
-                    val a = (1f - (y - dy0) / len) * fade * d
-                    dot(rnd(sx(x)), rnd(sy(y)), 1, wh, if (i % 3 != 0) 0x8A3A9A else 0xC050A8, a)
+            // drips from the core
+            if (ROT > 0.2f) {
+                val fade = min(1f, (ROT - 0.2f) * 2f)
+                val wh = rnd(z * 1.5f).coerceIn(1, 4)
+                for (k in 0 until L.drips.size / 5) {
+                    val dx0 = L.drips[k * 5]; val dy0 = L.drips[k * 5 + 1]
+                    val n = L.drips[k * 5 + 2].toInt(); val len = L.drips[k * 5 + 3]
+                    for (i in 0 until n) {
+                        val ph = i * 1.7f + k * 0.9f
+                        val x = dx0 + sin(ph * 3f) * (if (n > 5) 14f else 6f)
+                        val y = dy0 + (t * 7f + ph * 13f) % len
+                        val a = (1f - (y - dy0) / len) * fade * d
+                        dot(rnd(sx(x)), rnd(sy(y)), 1, wh, if (i % 3 != 0) 0x4A3A8A else 0x7A62D0, a)
+                    }
                 }
             }
-        }
 
-        // lobes, each with its groups
-        for (i in 0 until L.nL) {
-            if (sel >= 0 && i != sel) continue
-            val d = dimOf(i)
-            val isSel = i == sel
-            val col = L.lcol[i]
-            val ga = (0.3f + 0.5f * beat(1f)) * d
-            for (g in L.bstart[i] until L.bstart[i + 1]) {
-                glowAt(L.bx[g], L.by[g], 13f * ns, col, ga)
-                ring(L.bx[g], L.by[g], 8f * ns, 20, t * 3f, col, 0.8f * d)
-                sprite(lobeSprite, L.bx[g], L.by[g], 0.25f * ns, d, g % 2 == 1)
+            // arrange mode: where a sub brain may go
+            slots?.let { s -> for (j in 0 until s.size / 2) ring(s[j * 2], s[j * 2 + 1], 13f * ns, 28, t * 2f, 0xC9B6FF, 0.6f) }
+
+            // the portals, all one size; the one being flown through keeps growing with the zoom, after a squish and a sparkle burst
+            for (i in 0 until L.nL) portal(i, L.lx[i], L.ly[i], portalScale(i, ns, flyIdx, flyP, tapP), L, if (i == dragIdx) 0.35f else d)
+            if (tapP > 0f && tapP < 1f && flyIdx in 0 until L.nL) {
+                val cx = sx(L.lx[flyIdx]); val cy = sy(L.ly[flyIdx])
+                val e = 1f - (1f - tapP) * (1f - tapP)
+                for (q in 0 until 10) {
+                    val an = q * TAU / 10f + L.lslot[flyIdx] * 0.7f
+                    val rr = (PORTAL_OUT + 3f + 20f * e) * ns * z
+                    twinkle(cx + cos(an) * rr, cy + sin(an) * rr, if (q % 3 == 0) 2 else 1, 0xFFFFFF, 1f - tapP)
+                }
             }
-            glowAt(L.lx[i], L.ly[i], 26f * ns, col, ga)
-            if (isSel) glowAt(L.lx[i], L.ly[i], 26f * ns, col, ga)
-            ring(L.lx[i], L.ly[i], 15f * ns, 32, t * 3f, if (isSel) 0xB69AFF else col, 0.8f * d)
-            sprite(lobeSprite, L.lx[i], L.ly[i], 0.5f * ns, d, L.lslot[i] % 2 == 1)
-        }
+            if (dragIdx in 0 until L.nL) portal(dragIdx, dragX, dragY, 1.1f * ns, L, 1f)
 
-        sun(sv, sunSel, sunDim)
+            sun(sv, sunSel, sunDim)
 
-        // core: not drawn at all behind a focused sub brain
-        if (sel < 0) {
-            glowAt(0f, 0f, 48f, 0xB03AA0, 0.25f + 0.6f * beat(0.05f))
+            // the main brain
+            glowAt(0f, 0f, 48f, 0x7A4ACF, 0.25f + 0.6f * beat(0.05f) + 0.2f * pulse)
             glowAt(0f, 0f, 36f, 0xB69AFF, 0.3f)
             ring(0f, 0f, 30f, 48, t * 2f, 0xB69AFF, 0.85f)
-            ring(0f, 0f, 35f, 56, -t * 1.5f, 0xD45AAB, 0.7f)
-            sprite(coreSprite, 0f, 0f, 0.64f, 1f, false)
-        }
+            ring(0f, 0f, 35f, 56, -t * 1.5f, 0x8A6CF0, 0.7f)
+            sprite(coreSprite, 0f, 0f, 0.64f * (1f + 0.06f * pulse), 1f, false)
 
-        // spores
-        for (i in 0 until L.spores.size / 4) {
-            val ph = L.spores[i * 4 + 2]; val sp = L.spores[i * 4 + 3]
-            val x = L.spores[i * 4] + sin(t * 0.2f + ph) * 10f
-            val y = L.spores[i * 4 + 1] - (t * sp + ph * 30f) % 60f + 30f
-            val a = 0.4f + 0.6f * max(0f, sin(t * 2f + ph))
-            dot(rnd(sx(x)), rnd(sy(y)), 1, 1, if (i % 3 != 0) 0xD45AAB else 0xB69AFF, a)
-            if (i % 4 == 0) glowAt(x, y, 3f, 0xD45AAB, a * 0.5f)
+            // spores
+            for (i in 0 until L.spores.size / 4) {
+                val ph = L.spores[i * 4 + 2]; val sp = L.spores[i * 4 + 3]
+                val x = L.spores[i * 4] + sin(t * 0.2f + ph) * 10f
+                val y = L.spores[i * 4 + 1] - (t * sp + ph * 30f) % 60f + 30f
+                val a = 0.4f + 0.6f * max(0f, sin(t * 2f + ph))
+                dot(rnd(sx(x)), rnd(sy(y)), 1, 1, if (i % 3 != 0) 0x8A6CF0 else 0xB69AFF, a)
+                if (i % 4 == 0) glowAt(x, y, 3f, 0x8A6CF0, a * 0.5f)
+            }
         }
 
         // 2x2 dither + vignette
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), ditherPaint)
         heart(sv, sunDim)
         cv.drawRect(0f, 0f, W.toFloat(), H.toFloat(), vignette)
+
+        // inside a portal: a faint glowing ring of its shade round the edges of the view
+        if (focus) {
+            val col = L.lcol[sel]
+            val key = (col.toLong() shl 32) or (W.toLong() shl 16) or H.toLong()
+            if (key != edgeKey) {
+                edgeKey = key
+                val c = Color(0xFF000000.toInt() or col)
+                edge.shader = RadialGradientShader(
+                    Offset.Zero, W / 2f, listOf(c.copy(alpha = 0f), c.copy(alpha = 0f), c.copy(alpha = 0.28f), c.copy(alpha = 0.12f)),
+                    listOf(0f, 0.72f, 0.95f, 1f), TileMode.Clamp,
+                )
+            }
+            cv.save(); cv.translate(W / 2f, H / 2f); cv.scale(1f, H / W.toFloat())
+            cv.drawRect(-W.toFloat(), -W.toFloat(), W.toFloat(), W.toFloat(), edge)
+            cv.restore()
+        }
     }
 }
 
@@ -992,12 +913,18 @@ fun BrainScreen(
     selectedLobe: Long,
     onSelectLobe: (Long) -> Unit,
     onAddLobe: (String) -> Unit,
+    onRenameLobe: (Long, String) -> Unit,
+    /** Moves a sub brain to another slot; whoever sat there takes its old one. */
+    onMoveLobe: (Long, Int) -> Unit,
     onDeleteLobe: (Long) -> Unit,
-    /** Opens an item's page: [id] 0 starts a new one in [lobeId] (and [branchId], a group). */
-    onOpenIdea: (id: Long, lobeId: Long, branchId: Long?) -> Unit,
+    /** Opens an item's card, growing from [from] (px in the root): [id] 0 starts a new one in [lobeId] (and [branchId], a group). */
+    onOpenIdea: (id: Long, lobeId: Long, branchId: Long?, from: Offset) -> Unit,
     onAddBranch: (Long, String) -> Unit,
     onRenameBranch: (Long, String) -> Unit,
     onDeleteBranch: (Long) -> Unit,
+    /** The main map shows every group and note (on) or only the sub brains (off). */
+    showAll: Boolean,
+    onToggleShowAll: () -> Unit,
     vault: Vault,
     sync: SyncManager,
     appScope: CoroutineScope,
@@ -1005,26 +932,94 @@ fun BrainScreen(
     val lobeList = lobes.orEmpty()
     val ideaList = ideas.orEmpty()
     val branchList = branches.orEmpty()
-    val web = remember(lobeList, branchList, ideaList, selectedLobe) { placeIdeas(lobeList, branchList, ideaList, selectedLobe) }
     val selected = lobeList.firstOrNull { it.id == selectedLobe }
     val selectedNow by rememberUpdatedState(selected?.id ?: -1L)
     var homeTick by remember { mutableStateOf(0) }
-    /** One level out: sub brain -> whole map. */
+    // The portal: the camera flies into the tapped portal until its ring passes the edges of the view, then the world fades in,
+    // settling from a little too big. Leaving runs it backwards: the world shrinks away, the camera pulls back out of the ring.
+    var portal by remember { mutableStateOf<PortalRun?>(null) }
+    var flyId by remember { mutableStateOf(-1L) } // the portal being flown through on the main map
+    var flyP by remember { mutableFloatStateOf(0f) } // 0 = the map as it was, 1 = inside the ring
+    var worldA by remember { mutableFloatStateOf(1f) } // the page's opacity; it scales with it while a portal runs
+    var afterPortal by remember { mutableStateOf<Idea?>(null) } // a searched note opens once its world is in
+    var goTo by remember { mutableStateOf<GoTo?>(null) }
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    var rootOff by remember { mutableStateOf(Offset.Zero) } // where this view sits in the root, for the note card's start
+    var tapP by remember { mutableFloatStateOf(0f) } // a tapped portal's squish, before the fly-through
+    var peek by remember { mutableStateOf<Pair<Idea, Offset>?>(null) }
+    val density = LocalDensity.current.density
+    val pxSize = round(2.28f * density).coerceAtLeast(1f)
+    val rx = ringRx(viewSize.width / density, viewSize.height / density)
+    fun startPortal(to: Long) {
+        if (portal != null) return
+        val lobe = lobeList.firstOrNull { it.id == if (to >= 0) to else selectedNow } ?: run { onSelectLobe(to); return }
+        portal = PortalRun(to, lobe)
+    }
+    val selectNow by rememberUpdatedState(onSelectLobe)
+    val openNow by rememberUpdatedState(onOpenIdea)
+    LaunchedEffect(portal) {
+        val run = portal ?: return@LaunchedEffect
+        val p = lobeRingPos(lobeList, run.lobe, rx)
+        // deep enough that the ring's inside covers the whole view
+        val zIn = max(4f, 1.2f * hypot(viewSize.width.toFloat(), viewSize.height.toFloat()) / 2f / pxSize / PORTAL_R)
+        fun flyTo(from: FloatArray, e: Float) {
+            // the zoom grows evenly in steps, the portal slides to the middle evenly on the screen
+            val z = from[2] * (zIn / from[2]).pow(e)
+            val k = (1f - e) * from[2] / z
+            camera.x = p.x - (p.x - from[0]) * k; camera.y = p.y - (p.y - from[1]) * k; camera.scale = z
+            flyP = e
+        }
+        val a = Animatable(0f)
+        val ease = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
+        if (run.to >= 0) {
+            val from = floatArrayOf(camera.x, camera.y, camera.scale)
+            camera.outside = from
+            flyId = run.lobe.id
+            a.animateTo(1f, tween(220, easing = LinearEasing)) { tapP = value } // the tap: a squish and a burst of sparkles first
+            tapP = 0f
+            a.snapTo(0f)
+            a.animateTo(1f, tween(700, easing = ease)) { flyTo(from, value) }
+            worldA = 0f
+            selectNow(run.to)
+            repeat(2) { withFrameNanos { } } // let the world lay itself out unseen
+            flyId = -1L; flyP = 0f
+            a.snapTo(0f)
+            a.animateTo(1f, tween(450, easing = LinearOutSlowInEasing)) { worldA = value }
+        } else {
+            a.animateTo(1f, tween(350, easing = FastOutLinearInEasing)) { worldA = 1f - value }
+            val back = camera.outside ?: camera.overview ?: floatArrayOf(p.x, p.y, camera.home)
+            flyId = run.lobe.id
+            flyTo(back, 1f)
+            selectNow(-1L)
+            repeat(2) { withFrameNanos { } }
+            worldA = 1f
+            a.snapTo(0f)
+            a.animateTo(1f, tween(700, easing = ease)) { flyTo(back, 1f - value) }
+            camera.x = back[0]; camera.y = back[1]; camera.scale = back[2]
+            flyId = -1L; flyP = 0f
+        }
+        portal = null
+        afterPortal?.let { afterPortal = null; openNow(it.id, it.lobeId, it.branchId, rootOff + Offset(viewSize.width / 2f, viewSize.height / 2f)) }
+    }
+    /** One level out: sub brain -> whole map, through the portal. */
     val stepOut: () -> Unit = {
-        if (selectedNow >= 0) onSelectLobe(-1L) else homeTick++
+        if (selectedNow >= 0) startPortal(-1L) else homeTick++
     }
 
+    var menu by remember { mutableStateOf<MenuAt?>(null) }
+    var arrangingRaw by remember { mutableStateOf(false) }
+    val arranging = arrangingRaw && selected == null
     var addingLobe by remember { mutableStateOf(false) }
-    val zoomedIn by remember { derivedStateOf { camera.scale > HOME_ZOOM * 1.5f } }
-    BackHandler(enabled = selected != null || zoomedIn, onBack = stepOut)
-    var adding by remember { mutableStateOf(false) } // the + menu
+    var renamingLobe by remember { mutableStateOf<Lobe?>(null) }
+    val zoomedIn by remember { derivedStateOf { camera.scale > camera.home * 1.5f } }
+    BackHandler(enabled = selected != null || zoomedIn || portal != null || arranging, onBack = {
+        if (portal == null) { if (arranging) arrangingRaw = false else stepOut() }
+    })
     var addingBranch by remember { mutableStateOf(false) }
     var editingBranch by remember { mutableStateOf<Branch?>(null) }
     var deletingBranch by remember { mutableStateOf<Branch?>(null) }
     var deleting by remember { mutableStateOf<Lobe?>(null) }
-    var managing by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
-    var goTo by remember { mutableStateOf<GoTo?>(null) }
 
     // Vault sun: backup / restore. Work runs on appScope so leaving the tab can't cancel a write.
     val last by vault.lastBackupAt.collectAsState()
@@ -1059,25 +1054,78 @@ fun BrainScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            BrainCanvas(
-                lobeList, web, selected?.id ?: -1L, homeTick, camera, sv, sunSel, goTo,
-                topInset = if (selected != null) HEADER_H else TITLE_H,
-                onTapSun = { onSelectLobe(-1L); sunSel = true },
-                onTapLobe = { id -> sunSel = false; onSelectLobe(id) },
-                onDoubleTapLobe = { id -> onOpenIdea(0L, id, null) },
-                onTapBrain = { managing = true },
-                onOpenIdea = { onOpenIdea(it.id, it.lobeId, it.branchId) },
-                onTapBranch = { editingBranch = it },
-                onTapEmpty = { sunSel = false; stepOut() },
-            )
+        Box(
+            Modifier.weight(1f).fillMaxWidth().onSizeChanged { viewSize = it }.onGloballyPositioned { rootOff = it.positionInRoot() }
+                .background(if (portal != null) Color(0xFF0B0618) else Color.Transparent), // the inside of the ring, while the page fades
+        ) {
+            // a world settles in from 1.25x, and shrinks to 0.8x as it fades out
+            Box(Modifier.fillMaxSize().graphicsLayer {
+                val s = if (portal == null || selected == null) 1f else if ((portal?.to ?: -1L) >= 0) 1.25f - 0.25f * worldA else 0.8f + 0.2f * worldA
+                scaleX = s; scaleY = s; alpha = worldA
+            }) {
+                BrainCanvas(
+                    lobeList, branchList, ideaList, showAll, selected?.id ?: -1L, homeTick, camera, sv, sunSel, goTo,
+                    topInset = if (selected != null) HEADER_H else TITLE_H,
+                    locked = portal != null,
+                    arranging = arranging,
+                    flyId = flyId, flyP = flyP, tapP = tapP, rx = rx,
+                    onTapSun = { onSelectLobe(-1L); sunSel = true },
+                    onTapLobe = { id -> sunSel = false; startPortal(id) },
+                    onTapBrain = { at -> if (arranging) arrangingRaw = false else menu = MenuAt(at, null) },
+                    onOpenIdea = { it, at -> onOpenIdea(it.id, it.lobeId, it.branchId, at + rootOff) },
+                    onPeek = { it, at -> peek = it?.let { i -> i to at } },
+                    onTapBranch = { b, at -> menu = MenuAt(at, b) },
+                    onTapEmpty = { sunSel = false; stepOut() }, // only the whole map gets here; a portal page ignores empty space
+                    onMoveLobe = onMoveLobe,
+                )
+            }
             if (selected == null) {
                 ScreenTitle("Brain")
-                if (!searching) PixelButton("SEARCH", { searching = true }, modifier = Modifier.align(Alignment.TopEnd).padding(top = 16.dp, end = 16.dp))
+                Row(
+                    Modifier.align(Alignment.TopEnd).padding(top = 16.dp, end = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (arranging) PixelButton("DONE", { arrangingRaw = false }, primary = true)
+                    else if (!searching) {
+                        ShowAllToggle(showAll, onToggleShowAll)
+                        PixelButton("SEARCH", { searching = true })
+                    }
+                }
             } else {
-                SubBrainHeader(selected, ideaList.count { it.lobeId == selected.id }, Modifier.align(Alignment.TopStart)) { adding = true }
+                SubBrainHeader(selected, ideaList.count { it.lobeId == selected.id }, Modifier.align(Alignment.TopStart), onBack = stepOut)
             }
-            if (searching) SearchPanel(ideaList, lobeList, onPick = { searching = false; goTo = GoTo(it.id) }, onClose = { searching = false })
+            peek?.let { (i, at) -> if (selected != null) PeekBubble(i, at) }
+            menu?.let { m ->
+                val close = { menu = null }
+                val chips: List<Pair<String, () -> Unit>> = when {
+                    m.branch != null -> listOf(
+                        "+ note" to { onOpenIdea(0L, m.branch.lobeId, m.branch.id, m.at + rootOff) },
+                        "Rename" to { editingBranch = m.branch },
+                        "Delete" to { deletingBranch = m.branch },
+                    )
+                    selected != null -> listOf(
+                        "+ group" to { addingBranch = true },
+                        "+ note" to { onOpenIdea(0L, selected.id, null, m.at + rootOff) },
+                        "Rename" to { renamingLobe = selected },
+                        "Delete" to { deleting = selected },
+                    )
+                    else -> listOf("+ sub brain" to { addingLobe = true }, "Arrange" to { arrangingRaw = true })
+                }
+                BrainMenu(m.at, chips, close)
+            }
+            if (portal != null) Box( // nothing underneath answers while the portal runs
+                Modifier.fillMaxSize().pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } } },
+            )
+            if (searching) SearchPanel(
+                ideaList, lobeList, branchList,
+                onPick = { h ->
+                    searching = false
+                    goTo = h.branch?.takeIf { h.idea == null }?.let { GoTo(it.id) }
+                    afterPortal = h.idea
+                    startPortal(h.lobe.id)
+                },
+                onClose = { searching = false },
+            )
         }
         if (sunSel && selected == null) {
             VaultSheet(
@@ -1122,32 +1170,21 @@ fun BrainScreen(
         )
     }
 
-    if (adding && selected != null) {
-        PixelDialog({ adding = false }) {
-            Text("ADD TO ${selected.name.uppercase()}", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, lineHeight = 18.sp, color = Px.Lavender))
-            Spacer(Modifier.height(16.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("GROUP", { adding = false; addingBranch = true })
-                PixelButton("ITEM", { adding = false; onOpenIdea(0L, selected.id, null) }, primary = true)
-            }
-        }
-    }
     if (addingBranch && selected != null) {
         NameDialog("NEW GROUP", "Name it: Read, Watch, Ideas...", onDismiss = { addingBranch = false }, onSubmit = { onAddBranch(selected.id, it) })
     }
     editingBranch?.let { b ->
-        NameDialog(
-            "GROUP", "Name", initial = b.name, submit = "SAVE", onDismiss = { editingBranch = null }, onSubmit = { onRenameBranch(b.id, it) },
-            onDelete = { editingBranch = null; deletingBranch = b },
-            onAddItem = { onOpenIdea(0L, b.lobeId, b.id) },
-        )
+        NameDialog("RENAME GROUP", "Name", initial = b.name, submit = "SAVE", onDismiss = { editingBranch = null }, onSubmit = { onRenameBranch(b.id, it) })
+    }
+    renamingLobe?.let { l ->
+        NameDialog("RENAME SUB BRAIN", "Name", initial = l.name, submit = "SAVE", onDismiss = { renamingLobe = null }, onSubmit = { onRenameLobe(l.id, it) })
     }
     deletingBranch?.let { b ->
         PixelDialog({ deletingBranch = null }) {
             Text("DELETE ${b.name.uppercase()}?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, lineHeight = 18.sp, color = Px.Lavender))
             Spacer(Modifier.height(10.dp))
             Text(
-                "Only the group goes. Its items move directly onto the lobe.",
+                "Only the group goes. Its notes move directly onto the sub brain.",
                 style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim),
             )
             Spacer(Modifier.height(18.dp))
@@ -1161,14 +1198,14 @@ fun BrainScreen(
         }
     }
     if (addingLobe) {
-        NameDialog("NEW LOBE", "Name it: Coding, Business...", onDismiss = { addingLobe = false }, onSubmit = onAddLobe)
+        NameDialog("NEW SUB BRAIN", "Name it: Coding, Business...", onDismiss = { addingLobe = false }, onSubmit = onAddLobe)
     }
     deleting?.let { target ->
         PixelDialog({ deleting = null }) {
             Text("DELETE ${target.name.uppercase()}?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
             Spacer(Modifier.height(10.dp))
             Text(
-                "Its groups and ideas go with it, forever. No undo.",
+                "Its groups and notes go with it, forever. No undo.",
                 style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim),
             )
             Spacer(Modifier.height(18.dp))
@@ -1179,35 +1216,6 @@ fun BrainScreen(
                     onSelectLobe(-1L)
                     onDeleteLobe(target.id)
                 }, primary = true)
-            }
-        }
-    }
-    if (managing) {
-        PixelDialog({ managing = false }) {
-            Text("SUB-BRAINS", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
-            Spacer(Modifier.height(12.dp))
-            if (lobeList.isEmpty()) {
-                Text("No sub-brains yet.", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim))
-            } else {
-                LazyColumn(Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(lobeList, key = { it.id }) { l ->
-                        Row(
-                            Modifier.fillMaxWidth().pixelCard(fill = Px.Bg, shadow = false, notch = 2.dp).padding(start = 12.dp, top = 6.dp, end = 6.dp, bottom = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                l.name.uppercase(), Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = Px.Text),
-                            )
-                            PixelButton("DELETE", { deleting = l })
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("CLOSE", { managing = false })
-                PixelButton("+ ADD", { addingLobe = true }, primary = true)
             }
         }
     }
@@ -1236,43 +1244,167 @@ fun BrainScreen(
     }
 }
 
+/** A held star's note: its title and first two lines (or "empty"), in a small bubble just above the star at [at] (px), or below it near the top. */
+@Composable
+private fun PeekBubble(idea: Idea, at: Offset) {
+    val lines = idea.body.trim().lines().filter { it.isNotBlank() }.let { if (idea.title.isBlank()) it.drop(1) else it }
+    val shape = RoundedCornerShape(12.dp)
+    Layout(
+        content = {
+            Column(
+                Modifier.widthIn(max = 240.dp).clip(shape).background(Color(0xFF140B26)).border(1.dp, Color(0xFF9C84FF), shape)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    ideaLabel(idea).ifBlank { "..." }, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, lineHeight = 22.sp, color = Color(0xFFE6DCFF)),
+                )
+                if (lines.isEmpty()) Text("empty", style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim.copy(alpha = 0.7f)))
+                else Text(
+                    lines.take(2).joinToString("\n"), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, lineHeight = 19.sp, color = Px.TextDim),
+                )
+            }
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) { ms, c ->
+        val p = ms[0].measure(Constraints(maxWidth = c.maxWidth))
+        layout(c.maxWidth, c.maxHeight) {
+            val m = 8.dp.toPx()
+            val above = at.y - 18.dp.toPx() - p.height
+            val x = (at.x - p.width / 2f).coerceIn(m, max(m, c.maxWidth - p.width - m))
+            val y = (if (above >= HEADER_H.toPx()) above else at.y + 18.dp.toPx()).coerceIn(m, max(m, c.maxHeight - p.height - m))
+            p.place(x.roundToInt(), y.roundToInt())
+        }
+    }
+}
 
-/** A request from the search list: glide to this item and open it. A new instance each time, so picking the same one again works. */
-internal class GoTo(val ideaId: Long)
+/** A search pick that is a group: once its dimension is in, the camera centres on group [branchId]. A new instance each time. */
+internal class GoTo(val branchId: Long)
+
+/** A brain's menu, opened by tapping it at [at] (px): the centre brain's (main map or dimension) when [branch] is null, else that group's. */
+private class MenuAt(val at: Offset, val branch: Branch?)
 
 private val HEADER_H = 60.dp
 /** The "Brain" title row of the whole map. */
 private val TITLE_H = 76.dp
 
-/** The pulse that runs to a neuron as it opens: [k] is the item, [t0] when it started and [dur] how long (map seconds). */
-private class SparkRun(val k: Int, val t0: Float, val dur: Float)
+/** A portal in flight: into [lobe]'s world ([to] = its id), or out of it to the whole map ([to] = -1). */
+private class PortalRun(val to: Long, val lobe: Lobe)
 
-/** Top strip of a focused sub brain: its name in its own colour, how many items, and the + menu. */
+/** The show-all toggle beside SEARCH: a little pixel brain with its dots, lit when groups and notes show on the main map. */
 @Composable
-private fun SubBrainHeader(lobe: Lobe, count: Int, modifier: Modifier, onAdd: () -> Unit) {
+private fun ShowAllToggle(on: Boolean, onToggle: () -> Unit) {
+    val c = if (on) Px.Lavender else Px.TextDim
+    Box(
+        Modifier.size(48.dp).pixelCard(fill = if (on) Px.Primary else Px.Elevated, border = if (on) Px.Lavender else Px.Border, shadow = false, notch = 3.dp)
+            .clickable(role = Role.Button, onClickLabel = if (on) "Hide groups and notes" else "Show groups and notes", onClick = onToggle),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(22.dp)) {
+            val u = size.width / 11f
+            fun px(x: Int, y: Int, col: Color = c) = drawRect(col, Offset(x * u, y * u), Size(u, u))
+            // a core with four spokes; with show-all on, dots at the spokes' ends
+            for (x in 4..6) for (y in 4..6) px(x, y)
+            for (i in 1..3) { px(5, 4 - i); px(5, 6 + i); px(4 - i, 5); px(6 + i, 5) }
+            if (on) listOf(0 to 0, 10 to 0, 0 to 10, 10 to 10, 2 to 8, 8 to 2).forEach { (x, y) -> px(x, y, Color.White) }
+        }
+    }
+}
+
+/** Chips in a ring round a tapped brain at [at] (px), over a dim backdrop; a tap outside closes it. Each chip closes it too. */
+@Composable
+private fun BrainMenu(at: Offset, chips: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {
+    BackHandler(true, onDismiss)
+    val pill = RoundedCornerShape(50)
+    Layout(
+        content = {
+            Box(Modifier.fillMaxSize().background(Color(0xB3050210)).pointerInput(Unit) { detectTapGestures { onDismiss() } })
+            chips.forEach { (label, act) ->
+                Text(
+                    label,
+                    Modifier.clip(pill).background(Color(0xFF1A1030)).border(1.dp, Px.Lavender, pill)
+                        .clickable(role = Role.Button) { onDismiss(); act() }.padding(horizontal = 16.dp, vertical = 12.dp),
+                    style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = Color.White),
+                )
+            }
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) { ms, c ->
+        val back = ms[0].measure(Constraints.fixed(c.maxWidth, c.maxHeight))
+        val ps = ms.drop(1).map { it.measure(Constraints()) }
+        layout(c.maxWidth, c.maxHeight) {
+            back.place(0, 0)
+            val r = 84.dp.toPx(); val m = 8.dp.toPx()
+            ps.forEachIndexed { i, p ->
+                val a = -TAU / 4f + i * TAU / ps.size // the first straight up, the rest round the ring
+                val x = (at.x + cos(a) * r - p.width / 2f).coerceIn(m, max(m, c.maxWidth - p.width - m))
+                val y = (at.y + sin(a) * r - p.height / 2f).coerceIn(m, max(m, c.maxHeight - p.height - m))
+                p.place(x.roundToInt(), y.roundToInt())
+            }
+        }
+    }
+}
+
+/** Top strip of a dimension: the trail back, its name in its own shade, and how many notes. */
+@Composable
+private fun SubBrainHeader(lobe: Lobe, count: Int, modifier: Modifier, onBack: () -> Unit) {
     val c = lobeColor(lobe)
     Column(modifier.fillMaxWidth().background(Px.Bg.copy(alpha = 0.86f))) {
         Row(Modifier.fillMaxWidth().height(HEADER_H - 2.dp).padding(start = 18.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(
-                    lobe.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(fontFamily = TitleFont, fontSize = 22.sp, color = c, shadow = Shadow(c.copy(alpha = 0.6f), blurRadius = 10f)),
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // the trail: tapping "< BRAIN >" goes back through the portal
+                    Text(
+                        "< BRAIN >", Modifier.clickable(onClick = onBack).padding(end = 8.dp, top = 4.dp, bottom = 4.dp),
+                        style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.Lavender),
+                    )
+                    Text(
+                        lobe.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(fontFamily = TitleFont, fontSize = 22.sp, color = c, shadow = Shadow(c.copy(alpha = 0.6f), blurRadius = 10f)),
+                    )
+                }
                 Text(
                     if (count == 1) "1 note" else "$count notes",
                     style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim),
                 )
             }
-            PixelButton("+", onAdd, primary = true)
         }
         Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
     }
 }
 
+/** Thin glowing veins from the core's rim to each portal's rim and down to the heart, at full resolution over the low-res frame. */
+private fun DrawScope.drawVeins(L: Layout, renderer: BrainRenderer, pxSize: Float, camX: Float, camY: Float, z: Float, a: Float) {
+    if (a <= 0f) return
+    val u = pxSize * z
+    val ox = renderer.W * pxSize / 2f; val oy = renderer.H * pxSize / 2f
+    val ns = nodeScale(z)
+    val pt = FloatArray(2)
+    val glow = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
+    val core = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
+    fun vein(x2: Float, y2: Float, bend: Float, endGap: Float, c: Color) {
+        val path = Path(); var started = false
+        for (q in 0..32) {
+            veinPoint(pt, 0f, 0f, x2, y2, bend, q / 32f)
+            if (hypot(pt[0], pt[1]) < 37f || hypot(pt[0] - x2, pt[1] - y2) < endGap) continue
+            val px = (pt[0] - camX) * u + ox; val py = (pt[1] - camY) * u + oy
+            if (!started) { path.moveTo(px, py); started = true } else path.lineTo(px, py)
+        }
+        if (!started) return
+        drawPath(path, Color(0xFF8A6CF0).copy(alpha = 0.16f * a), style = glow)
+        drawPath(path, c.copy(alpha = 0.75f * a), style = core)
+    }
+    for (i in 0 until L.nL) vein(L.lx[i], L.ly[i], L.lbend[i], (PORTAL_OUT + 1f) * ns, Color(0xFFB69AFF))
+    vein(SUN_X, SUN_Y - HEART_MID, SUN_BEND, 20f, Color(0xFFD6C8FF))
+}
+
 @Composable
 private fun BrainCanvas(
     lobes: List<Lobe>,
-    web: Web,
+    branches: List<Branch>,
+    ideas: List<Idea>,
+    showAll: Boolean,
     selectedId: Long,
     homeTick: Int,
     cam: BrainCamera,
@@ -1280,42 +1412,76 @@ private fun BrainCanvas(
     sunSel: Boolean,
     goTo: GoTo?,
     topInset: Dp,
+    locked: Boolean,
+    arranging: Boolean,
     onTapSun: () -> Unit,
+    flyId: Long,
+    flyP: Float,
+    tapP: Float,
+    rx: Float,
     onTapLobe: (Long) -> Unit,
-    onDoubleTapLobe: (Long) -> Unit,
-    onTapBrain: () -> Unit,
-    onOpenIdea: (Idea) -> Unit,
-    onTapBranch: (Branch) -> Unit,
+    onTapBrain: (Offset) -> Unit,
+    /** A note's star (or name) was tapped; its star is at px in this view. */
+    onOpenIdea: (Idea, Offset) -> Unit,
+    /** Holding a star shows its note (star at px) until let go (null). */
+    onPeek: (Idea?, Offset) -> Unit,
+    onTapBranch: (Branch, Offset) -> Unit,
     onTapEmpty: () -> Unit,
+    onMoveLobe: (Long, Int) -> Unit,
 ) {
     val density = LocalDensity.current.density
     val pxSize = remember(density) { round(2.28f * density).coerceAtLeast(1f) }
     val core = imageResource(Res.drawable.brain_main)
-    val lobeImg = imageResource(Res.drawable.brain_lobe)
     val heart = imageResource(Res.drawable.vault_heart)
     val heartDead = imageResource(Res.drawable.vault_heart_dead)
-    val renderer = remember { BrainRenderer(core, lobeImg, heart, heartDead) }
-    val layout = remember(lobes, web) { buildLayout(lobes, web) }
-    val selIdx = layout.lobeIds.indexOf(selectedId)
+    val renderer = remember { BrainRenderer(core, heart, heartDead) }
     val measurer = rememberTextMeasurer(cacheSize = 200)
     val pageFont = PageFont; val titleFont = TitleFont; val pixelFont = PixelFont // composable getters, read outside remember
-    val labels = remember(lobes, web, layout, density, pxSize) { BrainLabels(measurer, density, pxSize, pageFont, titleFont, pixelFont, lobes, web, layout) }
     var view by remember { mutableStateOf(IntSize.Zero) }
-    var aim by remember { mutableStateOf<FloatArray?>(null) } // x, y, zoom; a new array glides there
-    var firstRun by remember { mutableStateOf(true) }
-    fun overviewAim() = fitOverview(labels::overviewBoxes, view.width / density, view.height / density, topInset.value, pxSize / density, HOME_ZOOM, MIN_ZOOM)
-    LaunchedEffect(selectedId, homeTick) {
-        if (firstRun) { firstRun = false; return@LaunchedEffect }
-        val lobe = lobes.firstOrNull { it.id == selectedId }
-        aim = if (lobe != null) {
-            // the whole sub brain (lobe, groups, items, rings, names) centred between the header and the bottom bar
-            fitFocus(labels.scene(layout.lobeIds.indexOf(lobe.id)), view.width / density, view.height / density, topInset.value, pxSize / density, 0.8f, FOCUS_MAX_ZOOM)
-        } else overviewAim()
+    // A dimension is laid out for this view (its shape and its name sizes), so it is laid out again when the window changes size.
+    val nameH = remember(measurer, density, LocalDensity.current.fontScale) { nameHeights(measurer, density, pageFont, titleFont, pixelFont) }
+    val frame = if (view.width <= 0) DimFrame(top = topInset.value, pxdp = pxSize / density, itemH = nameH[0], groupH = nameH[1], coreH = nameH[2])
+        else DimFrame(view.width / density, view.height / density, topInset.value, pxSize / density, nameH[0], nameH[1], nameH[2])
+    val web = remember(lobes, branches, ideas, selectedId, if (selectedId >= 0) frame.w to frame.h else null) {
+        placeIdeas(lobes, branches, ideas, selectedId, frame)
     }
+    // With show-all on each portal's stars are its groups and notes, two numbers per lobe in the order of [lobes].
+    val contents = remember(lobes, branches, ideas, showAll) {
+        if (!showAll) null else IntArray(lobes.size * 2).also { c ->
+            lobes.forEachIndexed { i, l -> c[i * 2] = branches.count { it.lobeId == l.id }; c[i * 2 + 1] = ideas.count { it.lobeId == l.id } }
+        }
+    }
+    val layout = remember(lobes, web, rx) { buildLayout(lobes, web, rx = rx) }
+    val selIdx = layout.lobeIds.indexOf(selectedId)
+    val labels = remember(lobes, web, layout, density, pxSize) { BrainLabels(measurer, density, pxSize, pageFont, titleFont, pixelFont, lobes, web, layout) }
+    var aim by remember { mutableStateOf<FloatArray?>(null) } // x, y, zoom; a new array glides there
+    fun overviewAim() = fitOverview(labels::overviewBoxes, view.width / density, view.height / density, topInset.value, pxSize / density, NODE_ZOOM, MIN_ZOOM)
+    // The page swap through the portal sets the camera at once (no glide): a dimension at its top, fitted to the width; the whole map as it opens.
+    var wasPortal by remember { mutableStateOf(false) }
+    LaunchedEffect(selectedId, view.width, view.height, lobes.any { it.id == selectedId }) {
+        if (view.width <= 0) return@LaunchedEffect
+        val lobe = lobes.firstOrNull { it.id == selectedId }
+        val a = if (lobe != null) {
+            wasPortal = true
+            web.dim?.aim
+        } else if (wasPortal) { wasPortal = false; if (locked) null else overviewAim() } else null // a portal flies the camera back itself
+        if (a != null) { aim = null; cam.x = a[0]; cam.y = a[1]; cam.scale = a[2] }
+    }
+    LaunchedEffect(homeTick) { if (homeTick > 0) aim = overviewAim() }
     // Until anyone touches the camera it follows the fitted overview: when the size is known, and again when the lobes load or change
-    // (labels is rebuilt then; at a cold start the lobes arrive after the size, and a fit on none must not count as a touch)
+    // (labels is rebuilt then; at a cold start the lobes arrive after the size, and a fit on none must not count as a touch).
+    // A new window width (a desktop window maximized or resized) always fits it again.
+    var fittedW by remember { mutableStateOf(0) }
     LaunchedEffect(view, labels) {
-        if (selectedId < 0) cam.fitUntouched(view.width, ::overviewAim)
+        if (selectedId < 0) cam.fitUntouched(view.width, force = fittedW > 0 && view.width != fittedW, aim = ::overviewAim)
+        if (view.width > 0) fittedW = view.width
+    }
+    // A searched group: once its dimension is placed, glide to centre it.
+    val doneGoTo = remember { arrayOfNulls<GoTo>(1) } // each pick glides once, not again on a later visit
+    LaunchedEffect(goTo, web) {
+        val g = goTo ?: return@LaunchedEffect
+        if (web.focus < 0 || doneGoTo[0] === g) return@LaunchedEffect
+        web.branches.firstOrNull { it.branch.id == g.branchId }?.let { doneGoTo[0] = g; aim = floatArrayOf(cam.x, max(cam.y, it.pos.y), cam.scale) }
     }
     LaunchedEffect(aim) {
         val a = aim ?: return@LaunchedEffect
@@ -1324,7 +1490,6 @@ private fun BrainCanvas(
             cam.x = x0 + (a[0] - x0) * value; cam.y = y0 + (a[1] - y0) * value; cam.scale = s0 + (a[2] - s0) * value
         }
     }
-    val tapScope = rememberCoroutineScope()
     var time by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) {
         var t0 = 0L
@@ -1335,38 +1500,11 @@ private fun BrainCanvas(
             }
         }
     }
-
-    // Opening a neuron: a pulse runs the veins to it (about a third of a second), then the page slides up. A newer tap replaces it.
-    var spark by remember { mutableStateOf<SparkRun?>(null) }
-    val pending = remember { arrayOfNulls<Job>(1) }
-    val openNow by rememberUpdatedState(onOpenIdea)
-    fun onScreen(w: Offset): Boolean {
-        val sx = (w.x - cam.x) * pxSize * cam.scale + view.width / 2f
-        val sy = (w.y - cam.y) * pxSize * cam.scale + view.height / 2f
-        return sx >= 0f && sx <= view.width && sy >= topInset.value * density && sy <= view.height
+    // Arrange mode: a ring on every place on the ring a sub brain may move to (it swaps with whoever sits there).
+    val slots = remember(layout, arranging) {
+        if (!arranging || layout.nL == 0) null else FloatArray(layout.nL * 2) { if (it % 2 == 0) layout.lx[it / 2] else layout.ly[it / 2] }
     }
-    fun openItem(k: Int, ms: Long = 340L) {
-        val idea = web.items[k].idea
-        pending[0]?.cancel()
-        // off the screen there is nothing to watch: open at once rather than make anyone wait
-        val wait = if (onScreen(web.items[k].pos)) ms else 0L
-        spark = if (wait > 0) SparkRun(k, time, wait * 0.95f / 1000f) else null
-        pending[0] = tapScope.launch { delay(wait); spark = null; openNow(idea) }
-    }
-    LaunchedEffect(goTo) {
-        val g = goTo ?: return@LaunchedEffect
-        val k = web.items.indexOfFirst { it.idea.id == g.ideaId }
-        if (k < 0) return@LaunchedEffect
-        val p = web.items[k].pos
-        val z = max(cam.scale, 2.4f)
-        if (onScreen(p)) {
-            aim = floatArrayOf(p.x, p.y, z) // the camera glides while the pulse runs
-            openItem(k, 400L)
-        } else {
-            cam.x = p.x; cam.y = p.y; cam.scale = z
-            openItem(k)
-        }
-    }
+    fun lobePos(l: Lobe) = layout.lobeIds.indexOf(l.id).let { if (it < 0) Offset.Zero else Offset(layout.lx[it], layout.ly[it]) }
 
     /** Scales by [zoom] around [at] (px in a [size] view) and follows [pan]: the world point under the fingers stays put. */
     fun zoomAt(size: IntSize, at: Offset, pan: Offset, zoom: Float) {
@@ -1403,56 +1541,106 @@ private fun BrainCanvas(
                     }
                 }
             }
-            .pointerInput(lobes, web, layout, selectedId, onTapSun) {
-                // Single taps act at once (waiting for a possible double tap felt laggy). Returns what a
-                // second tap may turn into a double tap: a Lobe.
-                fun handle(tap: Offset): Any? {
-                    pending[0]?.cancel(); spark = null // a new tap beats a neuron still opening
+            .pointerInput(lobes, web, layout, selectedId, locked, arranging, onTapSun) {
+                var peeked = false
+                fun starAt(tap: Offset): Pair<Placed, Offset>? {
+                    if (selectedId < 0) return null
+                    val u = pxSize * cam.scale
+                    val ox = ceil(size.width / pxSize) * pxSize / 2f
+                    val oy = ceil(size.height / pxSize) * pxSize / 2f
+                    return web.items.map { it to Offset((it.pos.x - cam.x) * u + ox, (it.pos.y - cam.y) * u + oy) }
+                        .minByOrNull { (it.second - tap).getDistance() }?.takeIf { (it.second - tap).getDistance() <= 26.dp.toPx() }
+                }
+                detectTapGestures(onPress = { at ->
+                    peeked = false
+                    if (locked) return@detectTapGestures
+                    val star = starAt(at) ?: return@detectTapGestures
+                    // hold ~420 ms on a star to peek; letting go closes it, and that release is no tap
+                    if (withTimeoutOrNull(420) { tryAwaitRelease() } != null) return@detectTapGestures
+                    peeked = true
+                    onPeek(star.first.idea, star.second)
+                    tryAwaitRelease()
+                    onPeek(null, star.second)
+                }, onTap = { tap ->
+                    if (peeked) return@detectTapGestures
+                    if (locked) return@detectTapGestures
                     val z = cam.scale
                     val u = pxSize * z
                     val ox = ceil(size.width / pxSize) * pxSize / 2f
                     val oy = ceil(size.height / pxSize) * pxSize / 2f
                     fun screen(w: Offset) = Offset((w.x - cam.x) * u + ox, (w.y - cam.y) * u + oy)
-                    // Drawn (wobbling) dot position when the renderer has one, else the layout position.
-                    fun ipos(k: Int) = if (renderer.ipx.size > k) Offset(renderer.ipx[k], renderer.ipy[k]) else web.items[k].pos
-                    // In a focused sub brain its groups and items answer at any zoom; otherwise once zoomed in.
-                    fun live(lobeId: Long) = if (selectedId >= 0) lobeId == selectedId else z >= GROUP_ZOOM
                     val reach = 26.dp.toPx()
-                    val g = web.branches.filter { live(it.lobe.id) }.minByOrNull { (screen(it.pos) - tap).getDistance() }
-                    val dg = if (g == null) Float.MAX_VALUE else (screen(g.pos) - tap).getDistance()
-                    val ik = web.items.indices.filter { live(web.items[it].lobe.id) }.minByOrNull { (screen(ipos(it)) - tap).getDistance() }
-                    val di = if (ik == null) Float.MAX_VALUE else (screen(ipos(ik)) - tap).getDistance()
-                    if (g != null && dg <= reach && dg <= di) { onTapBranch(g.branch); return null }
-                    if (ik != null && di <= reach) { openItem(ik); return null }
-                    if (selectedId < 0 && (screen(Offset(SUN_X, SUN_Y - HEART_MID)) - tap).getDistance() <= maxOf(36.dp.toPx(), 18f * u)) {
-                        onTapSun()
-                        return null
+                    val centre = screen(Offset.Zero)
+                    // A world: a star opens its note, the name at the top the sub brain's menu, a group's name or stars its menu.
+                    if (selectedId >= 0) {
+                        val ik = web.items.indices.minByOrNull { (screen(web.items[it].pos) - tap).getDistance() }
+                        val pad = 10.dp.toPx()
+                        fun inBox(at: Offset, b: FloatArray) = tap.x >= at.x + b[0] * density - pad && tap.x <= at.x + b[2] * density + pad &&
+                            tap.y >= at.y + b[1] * density - pad && tap.y <= at.y + b[3] * density + pad
+                        val g = web.branches.indices.firstOrNull { g ->
+                            val stars = web.items.filter { it.parent == g }.map { screen(it.pos) } + listOfNotNull(web.branches[g].ghost?.let(::screen))
+                            inBox(screen(web.branches[g].pos), web.branches[g].name) ||
+                                (stars.isNotEmpty() && tap.x in stars.minOf { it.x } - reach..stars.maxOf { it.x } + reach && tap.y in stars.minOf { it.y } - reach..stars.maxOf { it.y } + reach)
+                        }
+                        val title = web.dim?.coreName
+                        val named = web.items.indices.firstOrNull { inBox(screen(web.items[it].pos), web.items[it].name) }
+                        if (ik != null && (screen(web.items[ik].pos) - tap).getDistance() <= reach) onOpenIdea(web.items[ik].idea, screen(web.items[ik].pos))
+                        else if (named != null) onOpenIdea(web.items[named].idea, screen(web.items[named].pos))
+                        else if (title != null && inBox(centre, title)) onTapBrain(Offset(centre.x, centre.y + (title[1] + title[3]) / 2f * density))
+                        else if (g != null) onTapBranch(web.branches[g].branch, screen(web.branches[g].pos))
+                        return@detectTapGestures
                     }
-                    val lobe = lobes.filter { selectedId < 0 || it.id == selectedId }.minByOrNull { (screen(lobeWorldPos(it.slot)) - tap).getDistance() }
-                    if (lobe != null && (screen(lobeWorldPos(lobe.slot)) - tap).getDistance() <= maxOf(36.dp.toPx(), 14f * u * nodeScale(z))) {
-                        onTapLobe(lobe.id)
-                        return lobe
+                    if ((screen(Offset(SUN_X, SUN_Y - HEART_MID)) - tap).getDistance() <= maxOf(36.dp.toPx(), 18f * u)) {
+                        onTapSun()
+                        return@detectTapGestures
+                    }
+                    // The main map: a portal flies you into its world.
+                    val lobe = lobes.minByOrNull { (screen(lobePos(it)) - tap).getDistance() }
+                    if (lobe != null && (screen(lobePos(lobe)) - tap).getDistance() <= maxOf(36.dp.toPx(), PORTAL_OUT * u * nodeScale(z))) {
+                        if (!arranging) onTapLobe(lobe.id)
+                        return@detectTapGestures
                     }
                     // The main brain is the core at the world origin (inside the r35 ring).
-                    if (selectedId < 0 && tap.minus(screen(Offset.Zero)).getDistance() <= maxOf(36.dp.toPx(), 30f * u)) {
-                        onTapBrain()
-                        return null
+                    if ((centre - tap).getDistance() <= maxOf(36.dp.toPx(), 30f * u)) {
+                        onTapBrain(centre)
+                        return@detectTapGestures
                     }
                     onTapEmpty()
-                    return null
-                }
-                var lastAt = 0L; var lastPos = Offset.Zero; var lastHit: Any? = null
-                detectTapGestures(onTap = { tap ->
-                    val now = System.nanoTime() / 1_000_000 // monotonic ms, like uptimeMillis
-                    val hit = lastHit
-                    if (hit != null && now - lastAt <= viewConfiguration.doubleTapTimeoutMillis && (tap - lastPos).getDistance() <= 48.dp.toPx()) {
-                        // Second tap on the same target (the camera may be gliding toward a just-selected lobe).
-                        lastHit = null
-                        if (hit is Lobe) onDoubleTapLobe(hit.id)
-                    } else {
-                        lastAt = now; lastPos = tap; lastHit = handle(tap)
-                    }
                 })
+            }
+            .pointerInput(lobes, layout, arranging) {
+                // Arrange mode: drag a sub brain onto another slot. Innermost, so a drag that starts on a sub brain wins over panning.
+                if (!arranging) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val u = pxSize * cam.scale
+                    val ox = ceil(size.width / pxSize) * pxSize / 2f
+                    val oy = ceil(size.height / pxSize) * pxSize / 2f
+                    fun world(p: Offset) = Offset((p.x - ox) / u + cam.x, (p.y - oy) / u + cam.y)
+                    val w0 = world(down.position)
+                    val lobe = lobes.minByOrNull { (lobePos(it) - w0).getDistance() }
+                        ?.takeIf { (lobePos(it) - w0).getDistance() * u <= maxOf(36.dp.toPx(), 14f * u * nodeScale(cam.scale)) }
+                        ?: return@awaitEachGesture
+                    val start = lobePos(lobe)
+                    var moved = false
+                    while (true) {
+                        val c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                        if (!c.pressed) break
+                        val delta = c.position - down.position
+                        if (!moved && delta.getDistance() > viewConfiguration.touchSlop) moved = true
+                        if (moved) {
+                            c.consume()
+                            renderer.dragIdx = layout.lobeIds.indexOf(lobe.id)
+                            renderer.dragX = start.x + delta.x / u; renderer.dragY = start.y + delta.y / u
+                        }
+                    }
+                    if (moved) {
+                        val drop = Offset(renderer.dragX, renderer.dragY)
+                        val to = lobes.filter { it.id != lobe.id }.minByOrNull { (lobePos(it) - drop).getDistance() }
+                        if (to != null && (lobePos(to) - drop).getDistance() * u <= 48.dp.toPx()) onMoveLobe(lobe.id, to.slot)
+                    }
+                    renderer.dragIdx = -1
+                }
             },
     ) {
         val vw = size.width.toInt()
@@ -1460,11 +1648,15 @@ private fun BrainCanvas(
         if (vw <= 0 || vh <= 0) return@Canvas
         val px = pxSize.toInt()
         renderer.resize(ceil(vw / pxSize).toInt(), ceil(vh / pxSize).toInt())
-        val sp = spark
-        renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel, sp?.k ?: -1, if (sp == null) 0f else ((time - sp.t0) / sp.dur).coerceIn(0f, 1f))
+        renderer.slots = slots
+        renderer.contents = contents
+        renderer.flyIdx = layout.lobeIds.indexOf(flyId); renderer.flyP = flyP; renderer.tapP = tapP
+        renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel)
         drawIntoCanvas { renderer.blit(it, px) }
 
-        labels.draw(this, renderer, cam.x, cam.y, cam.scale, selIdx, sunSel, sunSv)
+        val fade = (1f - flyP * 4f).coerceIn(0f, 1f)
+        if (selIdx < 0) drawVeins(layout, renderer, pxSize, cam.x, cam.y, cam.scale, (if (sunSel) 0.45f else 1f) * fade)
+        labels.draw(this, renderer, cam.x, cam.y, cam.scale, selIdx, sunSel, sunSv, fade = fade)
     }
 }
 
@@ -1489,7 +1681,7 @@ private fun VaultSheet(
     Column(
         Modifier
             .fillMaxWidth()
-            .pixelCard(fill = Px.Surface, border = Color(0xFFF596E1), shadow = false, notch = 4.dp)
+            .pixelCard(fill = Px.Surface, border = Px.Lavender, shadow = false, notch = 4.dp)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         if (canBackup) {
@@ -1511,7 +1703,7 @@ private fun VaultSheet(
             else -> "last sync ${java.time.Instant.ofEpochMilli(sync.lastSyncAt).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("d MMM HH:mm"))}"
         }
         Text(line, Modifier.padding(top = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim))
-        sync.error?.let { Text(it, Modifier.padding(top = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Color(0xFFF596E1))) }
+        sync.error?.let { Text(it, Modifier.padding(top = 4.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.Lavender)) }
         if (sync.available) {
             Spacer(Modifier.height(12.dp))
             val idle = sync.working == null
@@ -1546,10 +1738,10 @@ private fun PassphraseDialog(create: Boolean, onDismiss: () -> Unit, onSubmit: (
             style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim),
         )
         Spacer(Modifier.height(14.dp))
-        PixelField(pass, { pass = it }, if (create) "$MIN_PASSPHRASE+ characters, 4+ words" else "Passphrase", password = true, onDone = ::submit)
+        PixelField(pass, { pass = it }, if (create) "$MIN_PASSPHRASE+ characters, 4+ words" else "Passphrase", password = true, onDone = ::submit, cursor = Px.Lavender)
         if (create) {
             Spacer(Modifier.height(10.dp))
-            PixelField(again, { again = it }, "Same again", password = true, onDone = ::submit)
+            PixelField(again, { again = it }, "Same again", password = true, onDone = ::submit, cursor = Px.Lavender)
         }
         Spacer(Modifier.height(18.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
@@ -1574,13 +1766,14 @@ internal fun PixelField(
     onDone: (() -> Unit)? = null,
     password: Boolean = false,
     plain: Boolean = false, // no capitals or corrections, for links
+    cursor: Color = Px.Magenta,
 ) {
     BasicTextField(
         value = value,
         onValueChange = onChange,
         singleLine = singleLine,
         textStyle = TextStyle(fontFamily = PixelFont, fontSize = 11.sp, lineHeight = 18.sp, color = Px.Text),
-        cursorBrush = SolidColor(Px.Magenta),
+        cursorBrush = SolidColor(cursor),
         visualTransformation = if (password) PasswordVisualTransformation('*') else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(
             capitalization = if (password || plain) KeyboardCapitalization.None else KeyboardCapitalization.Sentences,
@@ -1613,8 +1806,6 @@ private fun NameDialog(
     onSubmit: (String) -> Unit,
     initial: String = "",
     submit: String = "GROW",
-    onDelete: (() -> Unit)? = null,
-    onAddItem: (() -> Unit)? = null,
 ) {
     var text by remember { mutableStateOf(initial) }
     fun submit() {
@@ -1624,11 +1815,9 @@ private fun NameDialog(
     PixelDialog(onDismiss) {
         Text(title, style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
         Spacer(Modifier.height(16.dp))
-        PixelField(text, { text = it.take(24) }, hint, onDone = ::submit)
+        PixelField(text, { text = it.take(24) }, hint, onDone = ::submit, cursor = Px.Lavender)
         Spacer(Modifier.height(18.dp))
         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            onDelete?.let { PixelButton("DELETE", it) }
-            onAddItem?.let { PixelButton("ITEM", { it(); onDismiss() }) }
             PixelButton("CANCEL", onDismiss)
             PixelButton(submit, ::submit, primary = true)
         }

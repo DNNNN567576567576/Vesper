@@ -323,7 +323,7 @@ fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit) {
                     Modifier.defaultMinSize(48.dp, 48.dp).clickable(role = Role.Button, onClickLabel = "Burn", onClick = { burning = true }).padding(horizontal = 14.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("burn", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = Px.Magenta, textDecoration = TextDecoration.Underline))
+                    Text("burn", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = Px.Lavender, textDecoration = TextDecoration.Underline))
                 }
             }
         }
@@ -389,7 +389,7 @@ private fun IdeaLinkLine(link: String, onChange: (String) -> Unit, enabled: Bool
                 Text("edit", Modifier.clickable(role = Role.Button) { editing = true }.padding(start = 16.dp, top = 12.dp, bottom = 12.dp), style = style.copy(color = Px.TextDim))
             }
         }
-        if (failed) Text("This link can't be opened.", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.Magenta))
+        if (failed) Text("This link can't be opened.", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.Lavender))
     }
 }
 

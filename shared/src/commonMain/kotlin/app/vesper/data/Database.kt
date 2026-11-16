@@ -174,6 +174,13 @@ interface BrainDao {
     @Query("DELETE FROM lobes WHERE id = :id")
     suspend fun deleteLobe(id: Long)
 
+    @Query("UPDATE lobes SET name = :name WHERE id = :id")
+    suspend fun renameLobe(id: Long, name: String)
+
+    /** Lobe [id] takes [slot]; a lobe already on [slot] takes [from], the moved one's old slot. */
+    @Query("UPDATE lobes SET slot = CASE WHEN id = :id THEN :slot ELSE :from END WHERE id = :id OR slot = :slot")
+    suspend fun moveLobe(id: Long, slot: Int, from: Int)
+
     @Query("SELECT EXISTS(SELECT 1 FROM lobes WHERE id = :id)")
     suspend fun lobeExists(id: Long): Boolean
 

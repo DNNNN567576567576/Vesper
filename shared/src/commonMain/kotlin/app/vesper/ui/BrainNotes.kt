@@ -37,6 +37,8 @@ import app.vesper.data.Lobe
 import androidx.compose.ui.geometry.Size
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -68,222 +70,136 @@ internal fun ringCount(title: String, body: String): Int {
     return if (n <= 100) 1 else if (n <= 400) 2 else 3
 }
 
-/** Items touched in the last 48 hours glow magenta. */
+/** Items touched in the last 48 hours count as recent (Layout.irecent; no longer drawn differently). */
 internal const val RECENT_MS = 48 * 3_600_000L
 
-/** Every item whose title or body holds [query], ignoring case (Georgian capitals too); nothing for a blank query. */
+/** Every item whose title, body or link holds [query], ignoring case (Georgian capitals too); nothing for a blank query. */
 internal fun searchIdeas(ideas: List<Idea>, query: String): List<Idea> {
     val q = query.trim().lowercase()
     if (q.isEmpty()) return emptyList()
-    return ideas.filter { it.title.lowercase().contains(q) || it.body.lowercase().contains(q) }
+    return ideas.filter { it.title.lowercase().contains(q) || it.body.lowercase().contains(q) || it.link.orEmpty().lowercase().contains(q) }
 }
 
-/**
- * Boxes (x0, y0, x1, y1 in world units) that rot holes keep out of: each lobe with its name, each group with its name,
- * each item with its label, and the vault with its name.
- */
-internal fun keepOutBoxes(lx: FloatArray, ly: FloatArray, bx: FloatArray, by: FloatArray, ix: FloatArray, iy: FloatArray, sunX: Float, sunY: Float): FloatArray {
-    val out = ArrayList<Float>()
-    fun box(x: Float, y: Float, l: Float, t: Float, r: Float, b: Float) { out.add(x - l); out.add(y - t); out.add(x + r); out.add(y + b) }
-    for (i in lx.indices) box(lx[i], ly[i], 15f, 15f, 15f, 27f)
-    for (i in bx.indices) box(bx[i], by[i], 12f, 9f, 12f, 14f)
-    for (i in ix.indices) box(ix[i], iy[i], 8f, 6f, 8f, 11f)
-    box(sunX, sunY, 14f, 15f, 14f, 27f)
-    return out.toFloatArray()
-}
+/** A search result: a sub brain, a group (with [branch]) or a note (with [idea]), named [label], living at [where]. */
+internal class Hit(val kind: String, val label: String, val where: String, val lobe: Lobe, val branch: Branch? = null, val idea: Idea? = null)
 
-/** One box around a focused sub brain's whole tree and the screen around it (rot holes drew pink-rimmed blocks at its edges), so rot holes keep off all of it. */
-internal fun focusKeepOutBoxes(lx: Float, ly: Float, bx: List<Float>, by: List<Float>, ix: List<Float>, iy: List<Float>): FloatArray {
-    val xs = bx + ix + lx; val ys = by + iy
-    return floatArrayOf(xs.min() - 30f, ly - 60f, xs.max() + 30f, (ys.maxOrNull() ?: ly) + 60f)
-}
-
-/** Whether a hole of radius [r] (rim included) at ([x], [y]) stays [gap] clear of every box. */
-internal fun holeClears(x: Float, y: Float, r: Float, boxes: FloatArray, gap: Float = 0f): Boolean {
-    var i = 0
-    while (i < boxes.size) {
-        if (hypot(x - x.coerceIn(boxes[i], boxes[i + 2]), y - y.coerceIn(boxes[i + 1], boxes[i + 3])) < r + gap) return false
-        i += 4
-    }
-    return true
-}
-
-/** Where a hole of radius [r] can sit once pushed clear of the [boxes] (always the same answer for the same input); null = no room, leave it out. */
-internal fun clearHole(x: Float, y: Float, r: Float, boxes: FloatArray): FloatArray? {
-    var px = x
-    var py = y
-    val rr = r + 2f
-    repeat(8) {
-        var moved = false
-        var i = 0
-        while (i < boxes.size) {
-            val nx = px.coerceIn(boxes[i], boxes[i + 2]); val ny = py.coerceIn(boxes[i + 1], boxes[i + 3])
-            val d = hypot(px - nx, py - ny)
-            if (d < rr) {
-                if (d < 1e-3f) { // the centre is inside the box: leave by the nearest side
-                    val l = px - boxes[i]; val rt = boxes[i + 2] - px; val t = py - boxes[i + 1]; val b = boxes[i + 3] - py
-                    when (min(min(l, rt), min(t, b))) {
-                        l -> px = boxes[i] - rr
-                        rt -> px = boxes[i + 2] + rr
-                        t -> py = boxes[i + 1] - rr
-                        else -> py = boxes[i + 3] + rr
-                    }
-                } else {
-                    px = nx + (px - nx) / d * (rr + 0.1f); py = ny + (py - ny) / d * (rr + 0.1f)
-                }
-                moved = true
-            }
-            i += 4
+/** The whole library: sub brains and groups by name, then notes by [searchIdeas], ignoring case; nothing for a blank query. */
+internal fun searchLibrary(lobes: List<Lobe>, branches: List<Branch>, ideas: List<Idea>, query: String): List<Hit> {
+    val q = query.trim().lowercase()
+    if (q.isEmpty()) return emptyList()
+    val lobeOf = lobes.associateBy { it.id }
+    val branchOf = branches.associateBy { it.id }
+    return lobes.filter { it.name.lowercase().contains(q) }.map { Hit("sub brain", it.name, "Brain", it) } +
+        branches.mapNotNull { b -> lobeOf[b.lobeId]?.takeIf { b.name.lowercase().contains(q) }?.let { Hit("group", b.name, it.name, it, b) } } +
+        searchIdeas(ideas, q).mapNotNull { i ->
+            val l = lobeOf[i.lobeId] ?: return@mapNotNull null
+            val b = i.branchId?.let { branchOf[it] }
+            Hit("note", ideaLabel(i).ifBlank { "..." }, if (b != null) "${l.name} > ${b.name}" else l.name, l, b, i)
         }
-        if (!moved) return floatArrayOf(px, py)
-    }
-    return null
 }
 
-/** Where a focused sub brain's groups and items sit: [loose] on the lobe, a node per group, and each group's [items]. World units. */
-internal class Formation(val loose: List<Offset>, val groups: List<Offset>, val items: List<List<Offset>>)
+internal const val PORTAL_ITEM_W = 120f // dp, a note's name at most
+internal const val PORTAL_GROUP_W = 140f // dp, a group's name at most
+internal const val NAME_PAD = 2f // dp of air counted around a name when placing it
+internal const val STAR_R = 6f // dp, a star's reach (its twinkle), what names keep off
+internal const val WORLD_ZOOM = 1f // a world is drawn at this zoom: one world unit, one low-res pixel
 
-// A family tree: the lobe on top, its groups side by side below it, each group's neurons hanging under it in its own column.
-// World units, made for zoom 2 (where nodes reach full size, 1 unit = about 4.7 dp), so the tree is about as wide as a phone.
-internal const val TREE_W = 70f
-private const val FORM_REF_DP = 4.7f
-private const val FORM_GROUP_Y = 24.5f // the lobe to a row of groups (their rings 3 dp apart)
-private const val FORM_BELOW_GROUP = 19f // a group to the bottom of its name
-
-/** A neuron's reach in units (its rings, with the dot's wobble), by ring count: 17, 23, 28.6 and 33.8 dp. */
-private fun reachU(rings: Int) = (floatArrayOf(17f, 23f, 28.6f, 33.8f)[rings.coerceIn(0, 3)] + 1f) / FORM_REF_DP
-
-/** Columns in the widest row of a focused sub brain: its groups, plus one for loose items, at most 3 to a row. */
-internal fun focusCols(looseN: Int, groupN: Int): Int {
-    val c = groupN + if (looseN > 0) 1 else 0
-    if (c <= 3) return max(1, c)
-    return (c + (c + 2) / 3 - 1) / ((c + 2) / 3) // rows = ceil(c / 3), spread evenly
-}
-/** How many neurons side by side inside one column: a lone column or a pair may hold two, a grid of loose items up to 3. */
-internal fun focusSub(looseN: Int, groupN: Int) = if (groupN == 0) looseN.coerceIn(1, 3) else if (focusCols(looseN, groupN) <= 2) 2 else 1
-/** How far apart [sub] neurons sit across a [width] wide column: a pair a bit wider than half each, so the names have room. */
-private fun subStep(width: Float, sub: Int) = width * (if (sub == 2) 0.54f else 1f / sub)
-/** dp a neuron's name may be wide, and a group's name. */
-internal fun focusItemWidth(cols: Int, sub: Int) = (subStep(TREE_W / cols, sub) * FORM_REF_DP - 16f).coerceIn(64f, 140f)
-internal fun focusGroupWidth(cols: Int) = (TREE_W / cols * FORM_REF_DP - 12f).coerceIn(70f, 150f)
-
-/**
- * The lobe at [lobe]; the groups in rows of up to 3, evenly spread and level, each with its neurons straight below in its own
- * column (two side by side for 1 or 2 columns); loose items a column of their own beside the groups, or a grid with no groups.
- * Only the ring counts of the items go in (so every device draws the same tree), and each row of neurons is as far from the
- * next as its rings and a two-line name need. [loose] and each of [groups] list their items' ring counts.
- */
-internal fun focusFormation(lobe: Offset, loose: List<Int>, groups: List<List<Int>>): Formation {
-    val perRow = focusCols(loose.size, groups.size); val sub = focusSub(loose.size, groups.size)
-    val colW = TREE_W / perRow
-    val outLoose = ArrayList<Offset>(); val outGroups = ArrayList<Offset>(); val outItems = groups.map { ArrayList<Offset>() }
-    /** Puts a column's neurons in rows of [per] from [first] down, [step] apart across; returns where the last name ends. */
-    fun column(cx: Float, rings: List<Int>, per: Int, first: Float, step: Float, out: ArrayList<Offset>): Float {
-        var y = first; var prev = 0f; var bottom = first
-        rings.chunked(per).forEachIndexed { r, row ->
-            val reach = row.maxOf { reachU(it) }
-            if (r > 0) y += prev + reach + 11.3f
-            val pair = per > 1 && row.size > 1
-            row.indices.forEach { c ->
-                val x = if (per == 1) cx + (if (r % 2 == 0) -0.6f else 0.6f) else cx + (c - (row.size - 1) / 2f) * step
-                out.add(Offset(x, lobe.y + y + (if (pair && c % 2 == 1) 2.5f else 0f))) // the right one hangs a little lower
-            }
-            prev = reach
-            bottom = y + reach + 10.4f + (if (pair) 2.5f else 0f)
-        }
-        return bottom
-    }
-    if (groups.isEmpty()) {
-        if (loose.isNotEmpty()) column(lobe.x, loose, sub, 17f + loose.take(sub).maxOf { reachU(it) }, subStep(TREE_W, sub), outLoose)
-        return Formation(outLoose, outGroups, outItems)
-    }
-    val cols = (if (loose.isNotEmpty()) listOf(loose) else emptyList()) + groups // a column per entry; loose is first when it exists
-    val g0 = if (loose.isNotEmpty()) 1 else 0
-    var y = FORM_GROUP_Y
-    cols.indices.chunked(perRow).forEach { row ->
-        var bottom = y + FORM_BELOW_GROUP
-        row.forEachIndexed { p, ci ->
-            val cx = lobe.x + (p - (row.size - 1) / 2f) * colW
-            val isLoose = ci < g0; val rs = cols[ci]
-            if (!isLoose) outGroups.add(Offset(cx, lobe.y + y))
-            if (rs.isEmpty()) return@forEachIndexed
-            val first = y + (if (isLoose) 2f else 19.6f) + reachU(rs[0])
-            val per = if (sub == 2 && rs.size >= 2) 2 else 1
-            bottom = max(bottom, column(cx, rs, per, first, subStep(colW, 2), if (isLoose) outLoose else outItems[ci - g0]))
-        }
-        y = bottom + 10f
-    }
-    return Formation(outLoose, outGroups, outItems)
-}
-
-/** What a focused sub brain is made of, for placing names: world positions, each name's size in dp, rings per item. The lobe's own name is not drawn: the header has it. */
-internal class FocusScene(
-    val lobe: Offset,
-    val groups: List<Offset>, val groupNames: List<Size>,
-    val items: List<Offset>, val rings: IntArray, val itemNames: List<Size>,
-    val itemGroup: IntArray, // index into [groups] of each item's group, -1 = on the lobe
+/** The view a world is laid out for, in dp: its size, the header over its top, dp per low-res pixel, and how tall the names get. */
+internal class DimFrame(
+    val w: Float = 411f, val h: Float = 700f, val top: Float = 60f, val pxdp: Float = 2.286f,
+    val itemH: Float = 46f, val groupH: Float = 20f, val coreH: Float = 48f,
 )
 
-/** Names placed for one zoom: where each name's top-left sits from its node (dp), null = no room. [box] is l, t, r, b (dp, world * scale) around everything drawn. */
-internal class FocusPlan(val groups: List<Offset?>, val items: List<Offset?>, val box: FloatArray, val discs: List<FloatArray>)
-
-private const val NAME_GAP = 3f
+/**
+ * A laid-out world. Positions are world units; the sub brain's name sits at the top, its box [coreName] (l, t, r, b, dp) from (0, 0).
+ * Each group is a constellation: [groups] is the spot its name hangs from, [items] its stars. Loose notes come in one or more
+ * unnamed constellations, [loose]. Name boxes are l, t, r, b in dp from their spot. [aim] is the camera (x, y, zoom), from the top.
+ */
+internal class Dimension(
+    val groups: List<Offset>, val groupNames: List<FloatArray>,
+    val loose: List<List<Offset>>, val looseNames: List<List<FloatArray>>,
+    val items: List<List<Offset>>, val itemNames: List<List<FloatArray>>,
+    val coreName: FloatArray, val aim: FloatArray,
+    /** Per group: an empty one's ghost star (world) and its "empty" box (dp from it), else null. */
+    val ghosts: List<Pair<Offset, FloatArray>?> = emptyList(),
+)
 
 /**
- * Puts every name straight under its node, centred. If that is on another node, its rings or another name it is dropped (null),
- * or with [force] kept there anyway, so a crowded tree still shows every name. [pxdp] is dp per low-res pixel.
+ * A world laid out for the view [f]: the name at the top, then constellations in columns. Columns come in pairs, stars near the
+ * pair's middle and names on the outer side; a tall screen gets one pair (constellations alternate left and right), a wide one as
+ * many as fit. Each constellation goes where its column ends highest, so both sides stay even; loose notes come first, split over
+ * the columns when there are many. Stars swing a little either side of their column; every name box starts past the widest swing,
+ * so no line between stars reaches a name, and boxes are sized for the largest name BrainLabels draws. A long page scrolls down.
  */
-internal fun planFocus(s: FocusScene, z: Float, pxdp: Float, force: Boolean = false): FocusPlan {
-    val k = pxdp * z
-    val c = min(z, NODE_ZOOM) * pxdp // a node's size in dp: it stops growing at NODE_ZOOM
-    val discs = ArrayList<FloatArray>() // x, y, r in dp
-    discs.add(floatArrayOf(s.lobe.x * k, s.lobe.y * k, 15f * c + 2f))
-    s.groups.forEach { discs.add(floatArrayOf(it.x * k, it.y * k, 8f * c + 2f)) }
-    val dot = max(2, rnd(2f * min(z, 2.8f) / 1.4f)) * 0.9f
-    s.items.forEachIndexed { i, p ->
-        val n = s.rings[i]
-        val reach = (if (n > 0) dot + 3f + (n - 1) * 2.2f + 1f else dot + 1.5f) + 1.5f * min(z, NODE_ZOOM) // rings, and the dot's wobble
-        discs.add(floatArrayOf(p.x * k, p.y * k, reach * pxdp))
-    }
-    val placed = ArrayList<FloatArray>() // l, t, r, b
-    fun place(d: FloatArray, size: Size): Offset? {
-        val l = d[0] - size.width / 2f; val t = d[1] + d[2] + NAME_GAP; val r = l + size.width; val b = t + size.height
-        val hit = discs.any { hypot(it[0] - it[0].coerceIn(l, r), it[1] - it[1].coerceIn(t, b)) < it[2] - 0.01f } ||
-            placed.any { l < it[2] + 2f && r > it[0] - 2f && t < it[3] + 2f && b > it[1] - 2f }
-        if (hit && !force) return null
-        placed.add(floatArrayOf(l, t, r, b))
-        return Offset(l - d[0], t - d[1])
-    }
-    val groupAt = s.groups.mapIndexed { g, _ -> place(discs[1 + g], s.groupNames[g]) }
-    val itemAt = s.items.mapIndexed { i, _ -> place(discs[1 + s.groups.size + i], s.itemNames[i]) }
+internal fun dimensionLayout(loose: Int, groups: List<Int>, f: DimFrame): Dimension {
+    val m = 12f
+    val zig = 14f; val gap = 24f // a star column sits [gap] from its pair's middle; stars swing up to [zig] off it
+    val half = f.w / 2f - m
+    // shortcut: below ~340 dp wide names are cut narrower than BrainLabels draws them; upgrade with a one-column layout if that ever matters
+    val iw = min(PORTAL_ITEM_W + NAME_PAD, half - gap - zig - 10f)
+    val reach = gap + zig + 10f + iw
+    val gw = min(PORTAL_GROUP_W + NAME_PAD, reach - gap + 6f) // a group's name ends where its notes' names do
+    val pairGap = 20f
+    val rowStep = f.itemH + 8f
+    val blockGap = 28f
+    val parts = if (loose == 0) 0 else max(1, min((loose + 3) / 4, 2 * max(1, ((2f * half + pairGap) / (2f * reach + pairGap)).toInt())))
+    val blocks = parts + groups.size
+    val pairs = max(1, min(((2f * half + pairGap) / (2f * reach + pairGap)).toInt(), (blocks + 1) / 2))
+    val px = FloatArray(pairs) { (it - (pairs - 1) / 2f) * (2f * reach + pairGap) }
+    val cols = 2 * pairs
+    // the middle pairs first, left before right
+    val order = (0 until cols).sortedWith(compareBy({ abs(px[it / 2]) }, { it / 2 }, { it % 2 }))
+    val coreName = floatArrayOf(-half, 0f, half, f.coreH)
+    val bottom = FloatArray(cols) { f.coreH + 22f }
+    val swing = floatArrayOf(0f, 1f, -0.5f, 0.6f, -1f, 0.3f, -0.8f)
 
-    var x0 = Float.MAX_VALUE; var y0 = Float.MAX_VALUE; var x1 = -Float.MAX_VALUE; var y1 = -Float.MAX_VALUE
-    discs.forEach { x0 = min(x0, it[0] - it[2]); x1 = max(x1, it[0] + it[2]); y0 = min(y0, it[1] - it[2]); y1 = max(y1, it[1] + it[2]) }
-    placed.forEach { x0 = min(x0, it[0]); x1 = max(x1, it[2]); y0 = min(y0, it[1]); y1 = max(y1, it[3]) }
-    return FocusPlan(groupAt, itemAt, floatArrayOf(x0, y0, x1, y1), discs)
+    // one constellation of [n] stars in the column that ends highest; [head] = room for a group name above it
+    // an empty group still takes one row: its ghost star
+    fun place(n: Int, head: Float): Triple<Offset, List<Offset>, List<FloatArray>> {
+        val c = order.minBy { bottom[it] }
+        val s = c % 2
+        val x = px[c / 2] + (if (s == 0) -gap else gap)
+        val y0 = bottom[c]
+        val stars = List(if (head > 0f) max(n, 1) else n) { j -> Offset(x + zig * swing[j % swing.size], y0 + head + f.itemH / 2f + j * rowStep) }
+        val near = zig + 10f
+        val names = stars.map { p ->
+            if (s == 1) floatArrayOf(x + near - p.x, -f.itemH / 2f, x + near + iw - p.x, f.itemH / 2f)
+            else floatArrayOf(x - near - iw - p.x, -f.itemH / 2f, x - near - p.x, f.itemH / 2f)
+        }
+        bottom[c] = y0 + head + stars.size * rowStep - (if (stars.isNotEmpty()) 8f else 0f) + blockGap
+        return Triple(Offset(x, y0 + f.groupH / 2f), stars, names)
+    }
+    val looseParts = (0 until parts).map { p -> place(loose / parts + (if (p < loose % parts) 1 else 0), 0f) }
+    val gs = groups.map { n -> place(n, f.groupH + 8f) }
+    // a group's name starts just inside its star column and reads outward
+    val gNames = gs.map { (at, _, _) ->
+        if (at.x > px.minBy { abs(it - at.x) }) floatArrayOf(-6f, -f.groupH / 2f, gw - 6f, f.groupH / 2f) else floatArrayOf(6f - gw, -f.groupH / 2f, 6f, f.groupH / 2f)
+    }
+
+    // the camera: across, the middle; down, from the top
+    val k = f.pxdp * WORLD_ZOOM
+    val camY = -m - f.top + f.h / 2f
+    fun w(o: Offset) = Offset(o.x / k, o.y / k)
+    return Dimension(
+        gs.map { w(it.first) }, gNames,
+        looseParts.map { p -> p.second.map(::w) }, looseParts.map { it.third },
+        gs.mapIndexed { g, p -> if (groups[g] == 0) emptyList() else p.second.map(::w) }, gs.mapIndexed { g, p -> if (groups[g] == 0) emptyList() else p.third },
+        coreName, floatArrayOf(0f, camY / k, WORLD_ZOOM),
+        gs.mapIndexed { g, p -> if (groups[g] == 0) w(p.second[0]) to p.third[0] else null },
+    )
 }
 
-/**
- * Camera aim (x, y, zoom) for a focused sub brain, [w] x [h] dp: the largest zoom within [minZ]..[maxZ] at which the tree
- * (lobe, groups, items, rings and names) fits the part of the view below [top], with [margin] to spare. It is centred across on
- * the lobe, so the lobe sits at the top centre; a tree shorter than the view is not stretched, and sits a little above the middle.
- */
-internal fun fitFocus(s: FocusScene, w: Float, h: Float, top: Float, pxdp: Float, minZ: Float, maxZ: Float, margin: Float = 10f): FloatArray {
-    fun inView(p: FocusPlan, z: Float): Boolean { val b = p.box; val m = s.lobe.x * pxdp * z; return 2 * max(m - b[0], b[2] - m) <= w - 2 * margin && b[3] - b[1] <= h - top - 2 * margin }
-    // every name must have found its place under its node, so a smaller zoom that squeezes names together does not count
-    fun fits(z: Float) = planFocus(s, z, pxdp).let { p -> p.groups.none { it == null } && p.items.none { it == null } && inView(p, z) }
-    // names do not shrink with the zoom, so "fits" is not monotonic: step down from the top
-    var z = maxZ
-    while (z > minZ && !fits(z)) z = max(minZ, z * 0.98f)
-    if (!fits(z)) { // too crowded for every name: at least keep the whole tree in view
-        z = maxZ
-        while (z > minZ && !inView(planFocus(s, z, pxdp, force = true), z)) z = max(minZ, z * 0.98f)
+/** Whether the segment ([x1], [y1])-([x2], [y2]) crosses the box [l], [t], [r], [b] (Liang-Barsky). */
+internal fun segmentHitsBox(x1: Float, y1: Float, x2: Float, y2: Float, l: Float, t: Float, r: Float, b: Float): Boolean {
+    var t0 = 0f; var t1 = 1f
+    fun clip(p: Float, q: Float): Boolean {
+        if (p == 0f) return q >= 0f
+        val u = q / p
+        if (p < 0f) { if (u > t1) return false; if (u > t0) t0 = u } else { if (u < t0) return false; if (u < t1) t1 = u }
+        return true
     }
-    val b = planFocus(s, z, pxdp, force = true).box
-    val k = pxdp * z
-    val spare = (h - top - 2 * margin - (b[3] - b[1])).coerceAtLeast(0f)
-    val boxTop = top + margin + 0.4f * spare // where the tree's top lands on screen
-    return floatArrayOf(s.lobe.x, (b[1] + h / 2f - boxTop) / k, z)
+    val dx = x2 - x1; val dy = y2 - y1
+    return clip(-dx, x1 - l) && clip(dx, r - x1) && clip(-dy, y1 - t) && clip(dy, b - y1) && t0 <= t1
 }
 
 /** The heart's box around (SUN_X, SUN_Y), in world units: l, t, r, b. Names keep off it. */
@@ -291,34 +207,55 @@ internal val HEART_BOX = floatArrayOf(-14f, -34f, 14f, 3f)
 
 /**
  * Where each lobe's name sits, as its top-left from the camera at the world origin, in the units of [sizes] ([k] of them per world unit),
- * null = no name (only a lobe with no name). Under its lobe if that keeps clear of the heart, other sprites and the names already placed
- * (in slot order, so every device agrees), else above, beside, or further out; with no clear spot, the least overlapping one. [ns] is [nodeScale].
+ * null = no name (only a lobe with no name). Under its lobe if that keeps clear of the heart, other sprites, the names already placed
+ * (in slot order, so every device agrees) and every vein, else above, further out, beside or aslant. With no clear spot:
+ * the least overlapping one, and of those the one crossed by the fewest veins. [ns] is [nodeScale].
  */
 internal fun lobeNames(layout: Layout, sizes: List<Size?>, k: Float, ns: Float): List<Offset?> {
     val out = arrayOfNulls<Offset>(layout.nL)
     val taken = ArrayList<FloatArray>()
     taken.add(floatArrayOf((SUN_X + HEART_BOX[0]) * k, (SUN_Y + HEART_BOX[1]) * k, (SUN_X + HEART_BOX[2]) * k, (SUN_Y + HEART_BOX[3]) * k))
+    // every vein (core to lobe, core to heart) as short straight pieces (x1, y1, x2, y2, pad), in the units of [sizes]
+    val lines = ArrayList<FloatArray>()
+    val pt = FloatArray(2)
+    fun curve(x1: Float, y1: Float, x2: Float, y2: Float, bend: Float, pad: Float) {
+        var px = x1; var py = y1
+        for (q in 1..8) {
+            veinPoint(pt, x1, y1, x2, y2, bend, q / 8f)
+            lines.add(floatArrayOf(px * k, py * k, pt[0] * k, pt[1] * k, pad * k)); px = pt[0]; py = pt[1]
+        }
+    }
+    for (i in 0 until layout.nL) {
+        curve(0f, 0f, layout.lx[i], layout.ly[i], layout.lbend[i], 4f) // three strands about 2.6 apart, and their wobble
+    }
+    curve(0f, 0f, SUN_X, SUN_Y - HEART_MID, SUN_BEND, 3f)
     for (i in (0 until layout.nL).sortedBy { layout.lslot[it] }) {
         val n = sizes[i] ?: continue
         val cx = layout.lx[i] * k - n.width / 2f
-        val below = (layout.ly[i] + 12f * ns) * k
-        val above = (layout.ly[i] - 12f * ns) * k - n.height
+        val below = (layout.ly[i] + (PORTAL_OUT + 1f) * ns) * k
+        val above = (layout.ly[i] - (PORTAL_OUT + 1f) * ns) * k - n.height
         val heartSide = if (layout.lx[i] >= SUN_X) taken[0][2] + 2f else taken[0][0] - 2f - n.width // clear of the heart, still under the lobe
-        val side = 16f * ns * k; val mid = layout.ly[i] * k - n.height / 2f
+        val side = (PORTAL_OUT + 3f) * ns * k; val mid = layout.ly[i] * k - n.height / 2f
         val tries = listOf(
             Offset(cx, below), Offset(cx, above), Offset(heartSide, below),
-            Offset(layout.lx[i] * k + side, mid), Offset(layout.lx[i] * k - side - n.width, mid), // beside the lobe
             Offset(cx, below + n.height), Offset(cx, above - n.height), // one line further out
+            Offset(layout.lx[i] * k + side, mid), Offset(layout.lx[i] * k - side - n.width, mid), // beside the lobe
+            Offset(layout.lx[i] * k + side, below), Offset(layout.lx[i] * k - side - n.width, below), // aslant
+            Offset(layout.lx[i] * k + side, above), Offset(layout.lx[i] * k - side - n.width, above),
         )
-        // other lobes' sprites count as taken too (not this lobe's own, which the name hangs from)
+        // other portals count as taken too (not this one's own, which the name hangs from)
         val sprites = (0 until layout.nL).filter { it != i }.map { j ->
-            floatArrayOf((layout.lx[j] - 12f * ns) * k, (layout.ly[j] - 10f * ns) * k, (layout.lx[j] + 12f * ns) * k, (layout.ly[j] + 10f * ns) * k)
+            floatArrayOf((layout.lx[j] - PORTAL_OUT * ns) * k, (layout.ly[j] - PORTAL_OUT * ns) * k, (layout.lx[j] + PORTAL_OUT * ns) * k, (layout.ly[j] + PORTAL_OUT * ns) * k)
         }
         fun overlap(t: Offset) = (taken + sprites).sumOf { b ->
             (minOf(t.x + n.width, b[2]) - maxOf(t.x, b[0])).coerceAtLeast(0f).toDouble() * (minOf(t.y + n.height, b[3]) - maxOf(t.y, b[1])).coerceAtLeast(0f)
         }
-        // a name is never dropped: with no clear spot it takes the one that overlaps least (the first of equals)
-        val at = tries.firstOrNull { overlap(it) == 0.0 } ?: tries.minByOrNull { overlap(it) }!!
+        fun crossed(t: Offset, from: Int, to: Int) = (from until to).count { q -> val it = lines[q]
+            segmentHitsBox(it[0], it[1], it[2], it[3], t.x - it[4], t.y - it[4], t.x + n.width + it[4], t.y + n.height + it[4]) }
+        // a name is never dropped: with no clear spot it takes the one that overlaps least, then is crossed by the fewest veins (the first of equals).
+        val at = tries.withIndex().minWithOrNull(compareBy<IndexedValue<Offset>>(
+            { overlap(it.value) }, { crossed(it.value, 0, lines.size) },
+        ))!!.value
         taken.add(floatArrayOf(at.x, at.y, at.x + n.width, at.y + n.height))
         out[i] = at
     }
@@ -326,8 +263,8 @@ internal fun lobeNames(layout: Layout, sizes: List<Size?>, k: Float, ns: Float):
 }
 
 /**
- * Every box (l, t, r, b, dp from the camera at the world origin) of the whole map at zoom [z]: core, lobes with their names, groups,
- * items with their rings, the heart and its name. [lobeNames] are the names' sizes in dp (null = no name), [vaultName] too.
+ * Every box (l, t, r, b, dp from the camera at the world origin) of the whole map at zoom [z]: core, portals with their names,
+ * the heart and its name. [lobeNames] are the names' sizes in dp (null = no name), [vaultName] too.
  */
 internal fun overviewBoxes(layout: Layout, lobeNames: List<Size?>, vaultName: Size, z: Float, pxdp: Float): List<FloatArray> {
     val k = pxdp * z
@@ -335,13 +272,10 @@ internal fun overviewBoxes(layout: Layout, lobeNames: List<Size?>, vaultName: Si
     val out = ArrayList<FloatArray>()
     fun around(x: Float, y: Float, r: Float) = out.add(floatArrayOf(x * k - r, y * k - r, x * k + r, y * k + r))
     around(0f, 0f, 36f * k)
-    val s = max(2, rnd(2f * min(z, 2.8f) / 1.4f))
     val names = lobeNames(layout, lobeNames, k, ns)
     for (i in 0 until layout.nL) {
-        around(layout.lx[i], layout.ly[i], 16f * ns * k)
+        around(layout.lx[i], layout.ly[i], PORTAL_OUT * ns * k)
         names[i]?.let { out.add(floatArrayOf(it.x, it.y, it.x + lobeNames[i]!!.width, it.y + lobeNames[i]!!.height)) }
-        for (g in layout.bstart[i] until layout.bstart[i + 1]) around(layout.bx[g], layout.by[g], 9f * ns * k)
-        for (n in layout.istart[i] until layout.istart[i + 1]) around(layout.ix[n], layout.iy[n], max(7f * ns * k, (s * 0.9f + 3f + layout.irings[n] * 2.2f) * pxdp) + 1.5f * ns * k)
     }
     out.add(floatArrayOf((SUN_X + HEART_BOX[0]) * k, (SUN_Y + HEART_BOX[1]) * k, (SUN_X + HEART_BOX[2]) * k, (SUN_Y + HEART_BOX[3]) * k))
     out.add(floatArrayOf(SUN_X * k - vaultName.width / 2f, (SUN_Y + 12f) * k, SUN_X * k + vaultName.width / 2f, (SUN_Y + 12f) * k + vaultName.height))
@@ -349,12 +283,12 @@ internal fun overviewBoxes(layout: Layout, lobeNames: List<Size?>, vaultName: Si
 }
 
 /**
- * Camera aim (x, y, zoom) for the whole map, [w] x [h] dp with the title row above [top]: the home zoom [homeZ] if every box of
- * [boxesAt] fits with [margin] to spare, else the largest zoom down to [minZ] that does (then the rest is simply cut off).
- * Names do not shrink with the zoom, but the gaps do, so stepping down from [homeZ] finds the first fit. The map is centred in the free area.
+ * Camera aim (x, y, zoom) for the whole map, [w] x [h] dp with the title row above [top]: the largest zoom from [maxZ] down to [minZ]
+ * at which every box of [boxesAt] fits with [margin] to spare, so the map fills the view (at [minZ] the rest is simply cut off).
+ * Names do not shrink with the zoom, but the gaps do, so stepping down from [maxZ] finds the first fit. The map is centred in the free area.
  */
-internal fun fitOverview(boxesAt: (Float) -> List<FloatArray>, w: Float, h: Float, top: Float, pxdp: Float, homeZ: Float, minZ: Float, margin: Float = 10f): FloatArray {
-    var z = homeZ
+internal fun fitOverview(boxesAt: (Float) -> List<FloatArray>, w: Float, h: Float, top: Float, pxdp: Float, maxZ: Float, minZ: Float, margin: Float = 10f): FloatArray {
+    var z = maxZ
     while (true) {
         val b = boxesAt(z)
         val x0 = b.minOf { it[0] }; val x1 = b.maxOf { it[2] }; val y0 = b.minOf { it[1] }; val y1 = b.maxOf { it[3] }
@@ -370,38 +304,37 @@ internal fun fitOverview(boxesAt: (Float) -> List<FloatArray>, w: Float, h: Floa
 // Search + share picker
 // ---------------------------------------------------------------------------------------------
 
-/** Full-map search: type, see matching items with their sub brain, tap one to go to it. */
+/** Whole-library search: type, see matching sub brains, groups and notes with where they live, tap one to go to it. */
 @Composable
-internal fun SearchPanel(ideas: List<Idea>, lobes: List<Lobe>, onPick: (Idea) -> Unit, onClose: () -> Unit) {
+internal fun SearchPanel(ideas: List<Idea>, lobes: List<Lobe>, branches: List<Branch>, onPick: (Hit) -> Unit, onClose: () -> Unit) {
     var q by remember { mutableStateOf("") }
-    val hits = remember(q, ideas) { searchIdeas(ideas, q).take(50) }
+    val hits = remember(q, ideas, lobes, branches) { searchLibrary(lobes, branches, ideas, q).take(80) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
     BackHandler(true, onClose)
     Column(Modifier.fillMaxSize().background(Px.Bg.copy(alpha = 0.96f)).imePadding().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PixelField(q, { q = it }, "Search every item", Modifier.weight(1f).focusRequester(focus))
+            PixelField(q, { q = it }, "Search sub brains, groups, notes", Modifier.weight(1f).focusRequester(focus), cursor = Px.Lavender)
             PixelButton("CLOSE", onClose)
         }
         Spacer(Modifier.height(14.dp))
         val dim = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim)
         when {
-            q.isBlank() -> Text("Type to search titles and text.", style = dim)
+            q.isBlank() -> Text("Type to search names, titles, text and links.", style = dim)
             hits.isEmpty() -> Text("Nothing found.", style = dim)
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(hits, key = { it.id }) { i ->
-                    val lobe = lobes.firstOrNull { it.id == i.lobeId }
+                items(hits, key = { "${it.kind}${it.idea?.id ?: it.branch?.id ?: it.lobe.id}" }) { h ->
                     Column(
                         Modifier.fillMaxWidth().pixelCard(fill = Px.Elevated, shadow = false, notch = 2.dp)
-                            .clickable(role = Role.Button) { onPick(i) }.padding(horizontal = 14.dp, vertical = 10.dp),
+                            .clickable(role = Role.Button) { onPick(h) }.padding(horizontal = 14.dp, vertical = 10.dp),
                     ) {
                         Text(
-                            ideaLabel(i).ifBlank { "..." }, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            h.label, maxLines = 2, overflow = TextOverflow.Ellipsis,
                             style = TextStyle(fontFamily = PageFont, fontSize = 19.sp, lineHeight = 22.sp, color = Px.Text),
                         )
                         Text(
-                            lobe?.name.orEmpty().uppercase(), Modifier.padding(top = 4.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = lobe?.let { lobeColor(it) } ?: Px.TextDim),
+                            "${h.kind} · ${h.where}".uppercase(), Modifier.padding(top = 4.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = lobeColor(h.lobe)),
                         )
                     }
                 }

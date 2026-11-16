@@ -52,6 +52,25 @@ import org.robolectric.annotation.GraphicsMode
  * 2.5.3: every frame with a lobe selected changed on purpose (selectedZoom, selectedFar, groupDeep, recentSpark, small, blit3): the core, its
  * aura and big rings, and every other lobe (sprites, groups, items, threads, glows) are no longer drawn at all, where 2.5.2 left them at 0.2.
  * overview, beatFresh, staleHeart and glowLabel are untouched.
+ * 2.5.5 (portal page): every frame with a lobe selected changed on purpose again (selectedZoom, selectedFar, groupDeep, recentSpark, small, blit3):
+ * the selected lobe is drawn as a big core in its own colour (glow, two rings, bigger sprite), and no rot holes or drips of other owners are drawn.
+ * overview, beatFresh, staleHeart and glowLabel are untouched.
+ * 2.5.6 (purple dimensions): every map frame changed on purpose (overview, beatFresh, staleHeart, selectedZoom, selectedFar, groupDeep,
+ * small, blit3): no pink anywhere (purple shades per sub brain, tinted sprites, purple heart), the neuron veins and threads in purple, traveling sparks,
+ * notes as plain dots, groups as dots on the main map and small brains in a dimension. recentSpark is gone (no recent glow or open pulse);
+ * dimension is new. glowLabel is untouched.
+ * 2.5.8 (clean map, readable dimensions): overview, beatFresh and staleHeart changed on purpose (no rot holes or their drips; the vault
+ * heart is the original art again, untinted, as the user asked); selectedZoom, selectedFar, groupDeep and dimension changed on purpose (a
+ * dimension's dots barely wobble, group brains have a smaller, softer glow; dimension also gets the new column layout, its hub knot and
+ * straight lines). small, blit3 and glowLabel are untouched.
+ * 2.5.9 (one brain, many worlds): every map frame changed on purpose (overview, beatFresh, staleHeart, selectedZoom, selectedFar, small,
+ * blit3, dimension): sub brains are drawn as portals, the main map places no groups or notes, and a selected lobe draws its world of
+ * constellations inside an edge ring. groupDeep is gone; showAll (stars in portals) and flyIn (a portal grown past the zoom cap) are new.
+ * glowLabel is untouched.
+ * 2.5.10 (polish): overview, beatFresh, staleHeart, showAll and flyIn changed on purpose: portals sit evenly on one ring, the heart
+ * moved below it, the thick pixel veins left the low-res frame (thin veins are drawn at full resolution now), the core pulses as a
+ * spark leaves, and the heart fades out during a fly-through. dimension changed on purpose: the empty group gets a ghost star and the
+ * done note a dim grey one. selectedZoom, selectedFar, small, blit3 and glowLabel are untouched.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -76,7 +95,7 @@ class BrainPixelTest {
         setResourceReaderAndroidContext(RuntimeEnvironment.getApplication()) // Robolectric doesn't start CMP's context provider
         val env = getSystemResourceEnvironment()
         suspend fun img(r: DrawableResource) = getDrawableResourceBytes(env, r).decodeToImageBitmap()
-        BrainRenderer(img(core), img(Res.drawable.brain_lobe), img(Res.drawable.vault_heart), img(Res.drawable.vault_heart_dead))
+        BrainRenderer(img(core), img(Res.drawable.vault_heart), img(Res.drawable.vault_heart_dead))
     }
     private fun pixels(r: BrainRenderer): IntArray = IntArray(r.W * r.H).also { r.pix.bmp.readPixels(it) }
     private fun blitPixels(r: BrainRenderer, px: Int): IntArray {
@@ -117,27 +136,29 @@ class BrainPixelTest {
         check("selectedZoom", pixels(r), E["selectedZoom"])
         r.draw(11.9f, -40f, 20f, 0.6f, layout, 3, 0.25f, false)
         check("selectedFar", pixels(r), E["selectedFar"])
-        // deep in a group: nodes stopped growing, neurons ringed by how much is written (the empty ones have a dim core, no rings)
-        val g = placeIdeas(lobes, branches, ideas).branches.first { it.branch.uid == "read" }.pos
-        r.draw(5.2f, g.x, g.y, 6f, layout, 1, 0f, false)
-        check("groupDeep", pixels(r), E["groupDeep"])
-        // now = 5100 makes the lobe-2 ideas "touched this week": magenta cores, and a pulse half way along the veins to the first of them
-        val recent = buildLayout(lobes, placeIdeas(lobes, branches, ideas), now = 5100L)
-        r.draw(5.2f, g.x, g.y, 6f, recent, 1, 0f, false, spark = recent.istart[1], sparkP = 0.5f)
-        check("recentSpark", pixels(r), E["recentSpark"])
-        // idea positions handed to the label pass
-        assertEquals(layout.nI, (0 until layout.nI).count { r.ipx[it] != 0f || r.ipy[it] != 0f })
+        // show-all on: each portal's stars are its groups and notes
+        r.contents = intArrayOf(0, 12, 2, 3, 0, 0, 0, 1)
+        r.draw(5.2f, 0f, 0f, 0.85f, layout, -1, 0f, false)
+        check("showAll", pixels(r), E["showAll"])
+        r.contents = null
+        // half way through flying into portal 1: it grows past the zoom cap
+        r.flyIdx = 1; r.flyP = 0.5f
+        r.draw(5.2f, layout.lx[1], layout.ly[1], 5f, layout, -1, 0f, false)
+        check("flyIn", pixels(r), E["flyIn"])
+        r.flyIdx = -1
+        // lobe 2's world: a group's constellation of three stars inside a ring of its shade
+        val dim = buildLayout(lobes, placeIdeas(lobes, branches, ideas, focus = 2))
+        r.draw(5.2f, 0f, 40f, 1f, dim, 1, 0f, false)
+        check("dimension", pixels(r), E["dimension"])
     }
 
     @Test fun focusedMapShowsNothingOfTheCoreOrOtherLobes() {
         val a = newRenderer(); a.resize(180, 390)
         a.draw(2.3f, 0f, -20f, 1f, layout, 0, 0.5f, false)
         val base = pixels(a)
-        // the same frame with the core sprite swapped and every other lobe, group and item moved: nothing may change
+        // the same frame with the core sprite swapped and every other lobe moved: nothing may change
         val moved = buildLayout(lobes, placeIdeas(lobes, branches, ideas))
         for (i in 1 until moved.nL) moved.lx[i] += 9f
-        for (k in moved.istart[1] until moved.nI) { moved.ix[k] += 9f; moved.iy[k] -= 7f }
-        for (g in moved.bstart[1] until moved.bx.size) moved.bx[g] -= 8f
         val b = newRenderer(core = Res.drawable.brain_lobe); b.resize(180, 390)
         b.draw(2.3f, 0f, -20f, 1f, moved, 0, 0.5f, false)
         assertTrue("a focused map still draws the core or another lobe", base.contentEquals(pixels(b)))
@@ -173,9 +194,7 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "overview" to 758967779, "beatFresh" to -1150375059, "staleHeart" to 1815780094,
-            "selectedZoom" to -435333907, "selectedFar" to -712783238, "small" to -759929085,
-            "blit3" to 1107575967, "recentSpark" to 955282786, "glowLabel" to -66391980, "groupDeep" to 96563426,
+            "beatFresh" to -919076428, "blit3" to 1235799470, "dimension" to -189178725, "flyIn" to -2110394125, "glowLabel" to -66391980, "overview" to -2086053561, "selectedFar" to -55927002, "selectedZoom" to -1787436881, "showAll" to 1064181201, "small" to -940769502, "staleHeart" to 435219629,
         )
     }
 }

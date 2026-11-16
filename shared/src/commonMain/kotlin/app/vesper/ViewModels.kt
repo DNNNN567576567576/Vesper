@@ -38,6 +38,7 @@ enum class NoteSort { EDITED, ADDED, MANUAL }
 
 private const val KEY_NOTE_SORT = "noteSort"
 private const val KEY_TASK_NEWEST = "taskNewestFirst"
+private const val KEY_BRAIN_SHOW_ALL = "brainShowAll"
 
 
 /** `null` = the first database emission has not arrived yet. */
@@ -308,6 +309,31 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
                 launch(Dispatchers.Main) { onAdded(id) }
             } catch (e: Exception) { notebook.reportError("add lobe", e) }
         }
+    }
+
+    fun renameLobe(id: Long, name: String) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        notebook.appScope.launch {
+            try { dao.renameLobe(id, clean) } catch (e: Exception) { notebook.reportError("rename lobe", e) }
+        }
+    }
+
+    /** Moves lobe [id] to [slot]; a lobe already there swaps into its old slot. */
+    fun moveLobe(id: Long, slot: Int) {
+        val from = lobes.value?.firstOrNull { it.id == id }?.slot ?: return
+        if (from == slot) return
+        notebook.appScope.launch {
+            try { dao.moveLobe(id, slot, from) } catch (e: Exception) { notebook.reportError("move lobe", e) }
+        }
+    }
+
+    /** Main map: every group and note shown (true) or only the sub brains. Remembered across restarts. */
+    val showAll by lazy { MutableStateFlow(notebook.settings.getBoolean(KEY_BRAIN_SHOW_ALL, true)) } // lazy: read only by the Brain tab
+
+    fun toggleShowAll() {
+        showAll.value = !showAll.value
+        notebook.settings.putBoolean(KEY_BRAIN_SHOW_ALL, showAll.value)
     }
 
     /** Permanent, and takes the lobe's ideas with it. The caller confirms first. */
