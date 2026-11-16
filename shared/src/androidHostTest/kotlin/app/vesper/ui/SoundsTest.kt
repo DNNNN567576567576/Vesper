@@ -13,7 +13,7 @@ class SoundsTest {
             assertEquals("$s length", (sfxSeconds(s) * SFX_RATE).roundToInt(), pcm.size)
             assertTrue("$s is under half a second", pcm.size <= SFX_RATE / 2)
             val peak = pcm.maxOf { abs(it.toInt()) }
-            assertTrue("$s is silent", peak > 1000)
+            assertTrue("$s is silent", peak > 300)
             assertTrue("$s peak $peak is too loud", peak <= (0.25f * 32767).toInt())
             assertTrue("$s clips", pcm.none { it == Short.MAX_VALUE || it == Short.MIN_VALUE })
             assertTrue("$s must start and end at rest (no click)", abs(pcm.first().toInt()) < 200 && abs(pcm.last().toInt()) < 200)

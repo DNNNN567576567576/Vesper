@@ -40,8 +40,8 @@ internal fun sfxSeconds(s: Sfx) = when (s) {
 
 /** Peak of each sound as a part of full scale: all quiet, the closing ones quieter. */
 internal fun sfxPeak(s: Sfx) = when (s) {
-    Sfx.WhooshIn -> 0.08f
-    Sfx.WhooshOut -> 0.055f
+    Sfx.WhooshIn -> 0.015f // noise sounds far louder than a chime at the same peak
+    Sfx.WhooshOut -> 0.015f
     Sfx.Open -> 0.065f
     Sfx.Close -> 0.045f
     Sfx.Tick -> 0.035f
