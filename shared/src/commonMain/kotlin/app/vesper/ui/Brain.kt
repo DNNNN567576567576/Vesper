@@ -1075,7 +1075,7 @@ fun BrainScreen(
     val goalList = goals.orEmpty()
     val stepList = steps.orEmpty()
     val learnOpen = learnAt >= -1
-    val learnPos = remember(lobeList, rx) { learnSpot(lobeList.map { lobeRingPos(lobeList, it, rx) }) }
+    val learnPos = remember(lobeList, rx) { learnSpot(lobeList.map { lobeRingPos(lobeList, it, rx) }, lobeList.map { it.name.length }) }
     var learnFlyP by remember { mutableFloatStateOf(0f) }
     var focusStep by remember { mutableStateOf(-1L) } // a step the today strip opened its goal at
     val learnGoal = remember { longArrayOf(-1L) } // the page a learn fly-in opens: -1 the learn view, else a goal

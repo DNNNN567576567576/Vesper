@@ -123,21 +123,56 @@ internal fun dayLabel(day: Long, today: Long): String = when (day) {
     else -> LocalDate.ofEpochDay(day).let { it.month.getDisplayName(DateTextStyle.SHORT, Locale.ENGLISH) + " " + it.dayOfMonth }
 }
 
+/** Names are sized in dp, so their world size depends on the zoom; the map never settles below this many dp per world unit on a phone. */
+internal const val LEARN_K = 1.8f
+private const val LEARN_BRAIN_R = 17.5f // the dotted ring, the moons' orbit (16) and a moon's dot
+internal const val LEARN_LABEL_W = 48f // dp: "learn" at 18sp with its glow
+internal const val LEARN_LABEL_H = 24f // dp
+internal const val NAME_CHAR_DP = 11f // dp per letter of a 20sp name, a sub brain's or the vault's
+
+/** The learn brain with its orbit (l, t, r, b, world) at [p]. */
+internal fun learnBrainBox(p: Offset) = floatArrayOf(p.x - LEARN_BRAIN_R, p.y - LEARN_BRAIN_R, p.x + LEARN_BRAIN_R, p.y + LEARN_BRAIN_R)
+/** The "learn" label under the brain at [p] (l, t, r, b, world) when a world unit is [k] dp. */
+internal fun learnLabelBox(p: Offset, k: Float) = floatArrayOf(p.x - LEARN_LABEL_W / 2f / k, p.y + 17f, p.x + LEARN_LABEL_W / 2f / k, p.y + 17f + LEARN_LABEL_H / k)
+
+/** Signed gap between two boxes: negative when they overlap. */
+private fun boxGap(a: FloatArray, b: FloatArray): Float {
+    val gx = max(a[0] - b[2], b[0] - a[2]); val gy = max(a[1] - b[3], b[1] - a[3])
+    return if (gx > 0f && gy > 0f) hypot(gx, gy) else max(gx, gy)
+}
+
 /**
- * Where the learn brain sits on the main map: lower right of the core, below the today strip's line under it and right of the
- * heart's nerve, as far as it can get from every portal (world [portals]) and the name under each.
+ * Where the learn brain sits on the main map: beside the vault heart at heart height, left or right, at the spot with the most room
+ * round the brain, its orbit and its "learn" label. Everything else on the map counts as taken: the core, the today strip, the heart's
+ * nerve, the heart and its name, every portal with its glow (world [portals]) and the name above and under it ([nameLens] letters each,
+ * in the portals' order). The first spot with 6 units to spare wins, nearest the heart, so the answer only depends on the map.
  */
-internal fun learnSpot(portals: List<Offset>): Offset {
-    var best = Offset.Zero
-    var score = Float.NEGATIVE_INFINITY
-    for (deg in 30..85 step 5) for (r in floatArrayOf(56f, 62f, 68f, 74f)) {
-        val a = Math.toRadians(deg.toDouble())
-        val x = (cos(a) * r).toFloat(); val y = (sin(a) * r).toFloat()
-        var s = min(y - 52f, x - 16f)
-        for (p in portals) s = min(s, min(hypot(x - p.x, y - p.y) - 30f, hypot(x - p.x, y - p.y - 24f) - 22f))
-        if (s > score) { score = s; best = Offset(x, y) }
+internal fun learnSpot(portals: List<Offset>, nameLens: List<Int> = emptyList()): Offset {
+    val k = LEARN_K
+    val taken = ArrayList<FloatArray>()
+    taken.add(floatArrayOf(-36f, -36f, 36f, 36f)) // the core and its ring
+    taken.add(floatArrayOf(-150f / k, 22f, 150f / k, 22f + 28f / k)) // the today strip, as wide as it gets
+    taken.add(floatArrayOf(-11f, 36f, 11f, SUN_Y - HEART_MID)) // the heart's nerve and its wobble
+    taken.add(floatArrayOf(SUN_X + HEART_BOX[0], SUN_Y + HEART_BOX[1], SUN_X + HEART_BOX[2], SUN_Y + HEART_BOX[3]))
+    val vw = 5 * NAME_CHAR_DP / k / 2f + 3f
+    taken.add(floatArrayOf(SUN_X - vw, SUN_Y + 12f, SUN_X + vw, SUN_Y + 12f + LEARN_LABEL_H / k))
+    portals.forEachIndexed { i, p ->
+        val g = PORTAL_OUT * 1.7f // the glow's reach
+        taken.add(floatArrayOf(p.x - g, p.y - g, p.x + g, p.y + g))
+        val w = min(150f, nameLens.getOrElse(i) { 0 } * NAME_CHAR_DP + 8f) / k // twice the half width: crowded names slide sideways under or over their portal
+        if (w > 8f / k) {
+            val h = LEARN_LABEL_H / k
+            taken.add(floatArrayOf(p.x - w, p.y + PORTAL_OUT + 1f, p.x + w, p.y + PORTAL_OUT + 1f + h)) // under
+            taken.add(floatArrayOf(p.x - w, p.y - PORTAL_OUT - 1f - h, p.x + w, p.y - PORTAL_OUT - 1f)) // above
+        }
     }
-    return best
+    val cands = ArrayList<Offset>()
+    for (y in floatArrayOf(144f, 136f, 152f, 160f)) for (x in 30..76 step 2) { cands.add(Offset(x.toFloat(), y)); cands.add(Offset(-x.toFloat(), y)) }
+    fun room(c: Offset): Float {
+        val b = learnBrainBox(c); val l = learnLabelBox(c, k)
+        return min(6f, taken.minOf { min(boxGap(b, it), boxGap(l, it)) })
+    }
+    return cands.withIndex().maxWith(compareBy<IndexedValue<Offset>>({ room(it.value) }, { -it.index })).value // earlier = nearer the heart, then the right side
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -327,7 +362,7 @@ internal fun TodayStrip(due: List<Step>, goals: List<Goal>, today: Long, cam: Br
         val ox = ceil(view.width / pxSize) * pxSize / 2f; val oy = ceil(view.height / pxSize) * pxSize / 2f
         val cx = -cam.x * u + ox
         val y = (24f * ns - cam.y) * u + oy + 4.dp.toPx() // just under the core sprite
-        // the learn brain sits below this line (see [learnSpot]), so the strip may be wide
+        // the learn brain sits beside the heart (see [learnSpot]), so the strip may be wide
         val maxW = min(300.dp.toPx(), c.maxWidth - 16.dp.toPx()).toInt().coerceAtLeast(0)
         val p = ms[0].measure(Constraints(maxWidth = maxW))
         layout(c.maxWidth, c.maxHeight) {

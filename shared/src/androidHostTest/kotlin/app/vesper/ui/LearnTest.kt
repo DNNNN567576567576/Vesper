@@ -1,6 +1,11 @@
 package app.vesper.ui
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import app.vesper.data.Goal
+import app.vesper.data.Lobe
+import kotlin.math.abs
+import kotlin.math.min
 import app.vesper.data.Step
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -68,13 +73,48 @@ class LearnTest {
         assertEquals("Nov 16", dayLabel(today - 1, today))
     }
 
-    /** Lower right of the core, below the today strip, clear of every portal, for any ring the app can draw. */
-    @Test fun learnSpotKeepsClearOfPortalsAndTheCore() {
-        for (rx in listOf(58f, 63f, 100f, 190f)) for (n in 0..9) {
-            val portals = (0 until n).map { ringPos(it, n, rx) }
-            val p = learnSpot(portals)
-            assertTrue("rx $rx n $n: $p", p.x >= 14f && p.y >= 50f) // lower right, below the today strip, clear of the heart's nerve
-            for (q in portals) assertTrue("rx $rx n $n: $p too close to $q", hypot(p.x - q.x, p.y - q.y) >= 26f)
+    private fun overlaps(a: FloatArray, b: FloatArray) = a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+
+    /**
+     * The learn brain, its orbit and its label touch nothing: no portal with its glow, no portal name (placed by the real [lobeNames]),
+     * not the core, today strip, heart, its nerve or its name, for any portal count and the zooms the map settles at (phone to wide).
+     */
+    private fun assertClear(names: List<String>, rx: Float, k: Float) {
+        val n = names.size
+        val lobes = names.mapIndexed { i, s -> Lobe(id = i + 1L, name = s, colorIndex = i, slot = i, uid = "l$i") }
+        val layout = buildLayout(lobes, Web(emptyList(), emptyList()), rx = rx)
+        val portals = (0 until n).map { Offset(layout.lx[it], layout.ly[it]) }
+        val p = learnSpot(portals, names.map { it.length })
+        val ctx = "n $n rx $rx k $k spot $p"
+        val sizes = names.map { Size(min(150f, it.length * NAME_CHAR_DP + 8f), LEARN_LABEL_H) }
+        val labels = lobeNames(layout, sizes, k, 1f)
+        fun dp(b: FloatArray) = floatArrayOf(b[0] * k, b[1] * k, b[2] * k, b[3] * k)
+        val mine = listOf(dp(learnBrainBox(p)), dp(learnLabelBox(p, k)))
+        val others = ArrayList<Pair<String, FloatArray>>()
+        others.add("core" to floatArrayOf(-36f, -36f, 36f, 36f).let(::dp))
+        others.add("strip" to floatArrayOf(-150f / k, 24f, 150f / k, 24f + 25f / k).let(::dp))
+        others.add("nerve" to floatArrayOf(-8f, 36f, 8f, SUN_Y - HEART_MID).let(::dp))
+        others.add("heart" to floatArrayOf(SUN_X + HEART_BOX[0], SUN_Y + HEART_BOX[1], SUN_X + HEART_BOX[2], SUN_Y + HEART_BOX[3]).let(::dp))
+        val vw = 5 * NAME_CHAR_DP / 2f
+        others.add("vault" to floatArrayOf(SUN_X * k - vw, (SUN_Y + 12f) * k, SUN_X * k + vw, (SUN_Y + 12f) * k + LEARN_LABEL_H))
+        for (i in 0 until n) {
+            val g = PORTAL_OUT * 1.7f
+            others.add("portal $i" to dp(floatArrayOf(portals[i].x - g, portals[i].y - g, portals[i].x + g, portals[i].y + g)))
+            labels[i]?.let { others.add("name $i" to floatArrayOf(it.x, it.y, it.x + sizes[i].width, it.y + sizes[i].height)) }
         }
+        for ((what, b) in others) for (m in mine) assertTrue("$ctx overlaps $what ${b.toList()} mine ${m.toList()}", !overlaps(m, b))
+    }
+
+    @Test fun learnSpotKeepsClearOfEverythingForAnyPortalCount() {
+        for (rx in listOf(58f, 63f, 100f, 190f)) for (k in listOf(1.8f, 2.3f, 3f)) for (n in 0..12)
+            assertClear(List(n) { "Sub brain ${"x".repeat(it % 5)}$it" }, rx, k)
+    }
+
+    /** The owner's phone: seven portals, the learn brain used to sit on Coding. */
+    @Test fun learnSpotOnTheSevenPortalPhoneMap() {
+        val names = listOf("Music/Dances", "Learn", "Poetry", "My Father", "Personal", "Tasks", "Coding")
+        for (k in listOf(1.8f, 2.3f, 2.6f)) assertClear(names, 58f, k)
+        val p = learnSpot((0 until 7).map { ringPos(it, 7, 58f) }, names.map { it.length })
+        assertTrue("beside the heart: $p", abs(p.y - (SUN_Y - HEART_MID)) <= 10f && abs(p.x) >= 30f)
     }
 }

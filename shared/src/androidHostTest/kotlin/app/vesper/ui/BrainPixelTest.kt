@@ -81,7 +81,7 @@ import org.robolectric.annotation.GraphicsMode
  * 2.5.18: overview, beatFresh and showAll changed on purpose (the vault heart is purple again); selectedZoom, selectedFar, dimension, small and blit3
  * changed on purpose (the portal arc is pinned at the top of the screen, drawn over the world, so the page scrolls under it; the test renderer
  * now sets arcTopDp = 60). staleHeart, flyIn and glowLabel are untouched.
- * Learn brain: learnBrain is new (the small learn brain with three moons beside the core). Every other frame is untouched: the
+ * Learn brain: learnBrain is new (the small learn brain with three moons, beside the vault heart since 2.6.1). Every other frame is untouched: the
  * renderer draws it only when [BrainRenderer.learn] is set.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -218,7 +218,7 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "beatFresh" to -1355989786, "blit3" to -417458193, "dimension" to -1725325892, "flyIn" to -1287240568, "glowLabel" to 1509847742, "learnBrain" to 1539578251, "overview" to 1714630548, "selectedFar" to -1088837572, "selectedZoom" to -1813238531, "showAll" to 1955788307, "small" to -1724423207, "staleHeart" to -1729973114,
+            "beatFresh" to -1355989786, "blit3" to -417458193, "dimension" to -1725325892, "flyIn" to -1287240568, "glowLabel" to 1509847742, "learnBrain" to -448927150, "overview" to 1714630548, "selectedFar" to -1088837572, "selectedZoom" to -1813238531, "showAll" to 1955788307, "small" to -1724423207, "staleHeart" to -1729973114,
         )
     }
 }
