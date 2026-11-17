@@ -208,13 +208,13 @@ fun PixelButton(text: String, onClick: () -> Unit, primary: Boolean = false, mod
 // Bottom navigation
 // ---------------------------------------------------------------------------------------------
 
-private class NavItem(val icon: DrawableResource, val label: String, val zoom: Float = 1f, val small: Boolean = false)
+private class NavItem(val icon: DrawableResource, val label: String, val zoom: Float = 1f)
 
 private val NAV_ITEMS = listOf(
     NavItem(Res.drawable.tab_brain, "Brain"),
     NavItem(Res.drawable.tab_grimoire, "Grimoire"),
     NavItem(Res.drawable.tab_moons, "Moons", 1.35f), // the moon art sits on a coarser grid, so it reads smaller than the others
-    NavItem(Res.drawable.tab_calc, "Calc", small = true), // a small extra tab: narrower slot, smaller icon
+    NavItem(Res.drawable.tab_calc, "Calc"),
 )
 
 @Composable
@@ -223,7 +223,7 @@ fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
         Row(Modifier.fillMaxWidth().navigationBarsPadding().height(72.dp)) {
             NAV_ITEMS.forEachIndexed { i, n ->
-                NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.weight(if (n.small) 0.55f else 1f), n.zoom, n.small)
+                NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.weight(1f), n.zoom)
             }
         }
     }
@@ -235,7 +235,7 @@ fun PixelNavRail(selected: Int, onSelect: (Int) -> Unit) {
     Row(Modifier.fillMaxHeight().width(88.dp)) {
         Column(Modifier.weight(1f).fillMaxHeight().background(Px.Surface)) {
             NAV_ITEMS.forEachIndexed { i, n ->
-                NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.fillMaxWidth().height(if (n.small) 52.dp else 72.dp), n.zoom, n.small)
+                NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.fillMaxWidth().height(72.dp), n.zoom)
             }
         }
         Box(Modifier.width(2.dp).fillMaxHeight().background(Px.Border))
@@ -250,7 +250,6 @@ private fun NavTab(
     onClick: () -> Unit,
     modifier: Modifier,
     zoom: Float = 1f,
-    small: Boolean = false,
 ) {
     val navScale by animateFloatAsState(
         targetValue = if (active) 1f else 0f,
@@ -264,12 +263,12 @@ private fun NavTab(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Box(Modifier.size(34.dp), contentAlignment = Alignment.BottomCenter) { // a small icon sits on the same baseline as the big ones
+        Box(Modifier.size(34.dp), contentAlignment = Alignment.BottomCenter) {
             Image(
                 bitmap = imageResource(icon),
                 contentDescription = null,
                 modifier = Modifier
-                    .size(if (small) 22.dp else 34.dp)
+                    .size(34.dp)
                     .graphicsLayer {
                         val k = (0.84f + 0.16f * navScale) * zoom
                         scaleX = k
