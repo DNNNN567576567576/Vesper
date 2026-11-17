@@ -264,19 +264,21 @@ private fun NavTab(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Image(
-            bitmap = imageResource(icon),
-            contentDescription = null,
-            modifier = Modifier
-                .size(if (small) 22.dp else 34.dp)
-                .graphicsLayer {
-                    val k = (0.84f + 0.16f * navScale) * zoom
-                    scaleX = k
-                    scaleY = k
-                    alpha = if (active) 1f else 0.38f
-                },
-            filterQuality = FilterQuality.None,
-        )
+        Box(Modifier.size(34.dp), contentAlignment = Alignment.BottomCenter) { // a small icon sits on the same baseline as the big ones
+            Image(
+                bitmap = imageResource(icon),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(if (small) 22.dp else 34.dp)
+                    .graphicsLayer {
+                        val k = (0.84f + 0.16f * navScale) * zoom
+                        scaleX = k
+                        scaleY = k
+                        alpha = if (active) 1f else 0.38f
+                    },
+                filterQuality = FilterQuality.None,
+            )
+        }
         Text(
             label,
             modifier = Modifier.padding(top = 5.dp),

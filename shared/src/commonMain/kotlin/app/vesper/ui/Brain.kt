@@ -1735,6 +1735,21 @@ private fun BrainCanvas(
     }
     fun lobePos(l: Lobe) = layout.lobeIds.indexOf(l.id).let { if (it < 0) Offset.Zero else Offset(layout.lx[it], layout.ly[it]) }
 
+    /** In a world the page may not leave: the top stays where it rests, and it scrolls only until the last name reaches the bottom area. */
+    fun clampWorldY(size: IntSize, oy: Float) {
+        val w = webNow; val dim = w.dim
+        if (w.focus < 0 || dim == null) return
+        val u = pxSize * cam.scale
+        val rest = (0f - dim.aim[1]) * pxSize * dim.aim[2] + oy // screen y of the sub brain's spot when the page rests
+        val minY = (oy - rest) / u
+        var bottom = 0f // lowest name edge, screen px below the spot at this zoom
+        fun edge(p: Offset, name: FloatArray?) { bottom = max(bottom, p.y * u + (name?.get(3) ?: 0f) * density) }
+        w.items.forEach { edge(it.pos, it.name) }
+        w.branches.forEach { edge(it.pos, it.name); it.ghost?.let { g -> edge(g, it.ghostName) } }
+        val maxY = (bottom + oy - (size.height - 80f * density)) / u
+        cam.y = cam.y.coerceIn(minY, max(minY, maxY))
+    }
+
     /** Scales by [zoom] around [at] (px in a [size] view) and follows [pan]: the world point under the fingers stays put. */
     fun zoomAt(size: IntSize, at: Offset, pan: Offset, zoom: Float) {
         val ox = ceil(size.width / pxSize) * pxSize / 2f
@@ -1748,6 +1763,7 @@ private fun BrainCanvas(
         cam.scale = next
         cam.x = wx - (rx + pan.x) / (pxSize * next)
         cam.y = wy - (ry + pan.y) / (pxSize * next)
+        clampWorldY(size, oy)
     }
 
     Canvas(

@@ -145,6 +145,8 @@ internal fun learnSpot(portals: List<Offset>): Offset {
 // ---------------------------------------------------------------------------------------------
 
 private val MoonInk = Color(0xFFE6DCFF)
+private const val MOON_N = 14 // a goal moon, low-res px across
+private const val MOON_STEPS = 16
 
 @Composable
 internal fun LearnView(goals: List<Goal>, steps: List<Step>, topInset: Dp, onTapBrain: (Offset) -> Unit, onOpenGoal: (Long) -> Unit) {
@@ -163,6 +165,8 @@ internal fun LearnView(goals: List<Goal>, steps: List<Step>, topInset: Dp, onTap
         val now = System.currentTimeMillis()
         goals.map { g -> pathOf(steps, g.id).let { s -> goalProgress(s) to goalBrightness(goalTouchedAt(g, s), now) } }
     }
+    val moons = remember { Array(MOON_STEPS + 1) { moonPhase(0.5 * it / MOON_STEPS, MOON_N, 0xC9B0FF, 0xE6DCFF, 0x8F6BD0, 0x2A1A44) } } // phases 0..100 %, reusing the Moons tab renderer
+    val moonPaint = remember { pixPaint() }
     val spots = remember { arrayOf(FloatArray(0)) } // moon centres (px) as drawn last frame, then the brain's centre
     Canvas(
         Modifier.fillMaxSize().pointerInput(goals) {
@@ -232,16 +236,17 @@ internal fun LearnView(goals: List<Goal>, steps: List<Step>, topInset: Dp, onTap
             val an = t * TAU / (260f + 90f * k) + j * TAU / onRing + k * 2.4f // rings start apart, so moons don't line up
             val mx = cx + cos(an) * r; val my = cy + sin(an) * r * ORBIT_Y
             val (prog, b) = info.getOrElse(i) { 0f to 1f }
-            pix.glow(mx, my, 11f, 0x8A6CF0, 0.35f * b)
-            val dots = 56
-            for (q in 0 until dots) {
+            pix.glow(mx, my, 13f, 0x8A6CF0, 0.35f * b)
+            val dots = 64
+            for (q in 0 until dots) { // a thin ring: bright for the done part
                 val f = (q + 0.5f) / dots
                 val an2 = -TAU / 4f + f * TAU
-                val lit = f < prog
-                for (rr in floatArrayOf(8f, 9f)) pix.dot(rotRnd(mx + cos(an2) * rr), rotRnd(my + sin(an2) * rr), 1, 1, if (lit) 0xD6C8FF else 0x3A2860, b)
+                pix.dot(rotRnd(mx + cos(an2) * 9.5f), rotRnd(my + sin(an2) * 9.5f), 1, 1, if (f < prog) 0xB69AFF else 0x4A3478, 0.7f * b)
             }
-            pix.disc(mx, my, 4.6f, 0x9C84FF, b)
-            pix.dot(rotRnd(mx - 2f), rotRnd(my - 2f), 1, 1, 0xE6DCFF, b)
+            // the phase is the progress: new moon at 0, half at 50 %, full at 100 %, waxing
+            moonPaint.alpha = b
+            val mb = moons[(prog * MOON_STEPS).roundToInt().coerceIn(0, MOON_STEPS)]
+            pix.canvas.drawImageRect(mb, IntOffset.Zero, IntSize(MOON_N, MOON_N), IntOffset(rotRnd(mx - MOON_N / 2f), rotRnd(my - MOON_N / 2f)), IntSize(MOON_N, MOON_N), moonPaint)
             out[i * 2] = mx * pxSize; out[i * 2 + 1] = my * pxSize
         }
         out[n * 2] = cx * pxSize; out[n * 2 + 1] = cy * pxSize
@@ -252,10 +257,10 @@ internal fun LearnView(goals: List<Goal>, steps: List<Step>, topInset: Dp, onTap
         for (i in 0 until n) {
             val b = info.getOrElse(i) { 0f to 1f }.second
             val tl = measurer.measure(
-                goals[i].name, TextStyle(fontFamily = font, fontSize = 18.sp, lineHeight = 19.sp, color = MoonInk.copy(alpha = 0.35f + 0.65f * b)),
+                goals[i].name, TextStyle(fontFamily = font, fontSize = 18.sp, lineHeight = 19.sp, color = MoonInk.copy(alpha = b)),
                 maxLines = 1, overflow = TextOverflow.Ellipsis, constraints = Constraints(maxWidth = (120f * density).toInt()),
             )
-            drawText(tl, topLeft = Offset(out[i * 2] - tl.size.width / 2f, out[i * 2 + 1] + 10f * pxSize))
+            drawText(tl, topLeft = Offset(out[i * 2] - tl.size.width / 2f, out[i * 2 + 1] + 12f * pxSize))
         }
         if (n == 0) {
             val hint = measurer.measure("TAP THE BRAIN TO ADD A GOAL", TextStyle(fontFamily = pixelFont, fontSize = 9.sp, color = Px.TextDim))

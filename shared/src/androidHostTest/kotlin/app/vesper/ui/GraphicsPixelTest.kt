@@ -119,8 +119,8 @@ class GraphicsPixelTest {
     companion object {
         // Recorded on the old android.graphics code.
         val E: Map<String, Int> = mapOf(
-            "backdrop0" to -1187918123,
-            "backdrop1" to -263793011,
+            "backdrop0" to 765384719,
+            "backdrop1" to 57798715,
             "cardBehind3" to -1263291550,
             "cardBehind77" to 1369065320,
             "cardFront3/0" to 812448584,

@@ -183,6 +183,14 @@ private val KEYPAD = listOf(
     listOf("0", ".", "="),
 )
 
+
+/** Operator glyphs as pixel art, so + − × ÷ all have the same size (the pixel font draws them at different sizes). */
+private val OP_GLYPHS = mapOf(
+    "+" to listOf("...X...", "...X...", "...X...", "XXXXXXX", "...X...", "...X...", "...X..."),
+    "−" to listOf(".......", ".......", ".......", "XXXXXXX", ".......", ".......", "......."),
+    "×" to listOf("X.....X", ".X...X.", "..X.X..", "...X...", "..X.X..", ".X...X.", "X.....X"),
+    "÷" to listOf("...X...", ".......", ".......", "XXXXXXX", ".......", ".......", "...X..."),
+)
 private val CalcSaver = listSaver<CalcState, String>(
     save = { listOf(it.expr, it.result ?: "\u0000") },
     restore = { CalcState(it[0], it[1].takeIf { r -> r != "\u0000" }) },
@@ -275,6 +283,8 @@ private fun RowScope.CalcKey(label: String, press: (Char) -> Unit) {
             .clickable(interactionSource = src, indication = null, role = Role.Button) { press(label[0]) },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, style = TextStyle(fontFamily = PixelFont, fontSize = 18.sp, color = if (eq) Px.Bg else Px.Text))
+        val glyph = OP_GLYPHS[label]
+        if (glyph != null) PixelIcon(glyph, Px.Text, 3.dp)
+        else Text(label, style = TextStyle(fontFamily = PixelFont, fontSize = 18.sp, color = if (eq) Px.Bg else Px.Text))
     }
 }

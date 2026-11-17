@@ -102,7 +102,7 @@ internal fun AlarmsCard(ui: AlarmUi) {
             .padding(horizontal = 14.dp, vertical = 12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("ALARMS", Modifier.weight(1f), style = TextStyle(fontFamily = TitleFont, fontSize = 26.sp, color = Px.Lavender))
+            Text("Alarms", Modifier.weight(1f), style = TextStyle(fontFamily = TitleFont, fontSize = 32.sp, color = Px.Lavender))
             PixelButton("+ ALARM", { editing = Alarm(hour = 7, minute = 0) })
         }
         ui.problem?.let { p ->

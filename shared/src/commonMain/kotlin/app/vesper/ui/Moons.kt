@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -146,8 +147,10 @@ private fun moonFrac(day: LocalDate): Double {
 // Crater centres (unit-disc coords) and radii; each shows only where the moon is lit.
 private val CRATERS = floatArrayOf(0.28f, 0.28f, 0.1f, 0.5f, -0.1f, 0.09f, -0.1f, 0.58f, 0.1f)
 
-internal fun moonBitmap(day: LocalDate, n: Int, lit: Int, hi: Int, crater: Int, dark: Int = 0x1A0F26): ImageBitmap {
-    val frac = moonFrac(day)
+internal fun moonBitmap(day: LocalDate, n: Int, lit: Int, hi: Int, crater: Int, dark: Int = 0x1A0F26): ImageBitmap = moonPhase(moonFrac(day), n, lit, hi, crater, dark)
+
+/** The moon at [frac] of its cycle: 0 new, 0.25 half (waxing), 0.5 full. */
+internal fun moonPhase(frac: Double, n: Int, lit: Int, hi: Int, crater: Int, dark: Int = 0x1A0F26): ImageBitmap {
     val t = cos(frac * 2 * PI)
     val px = IntArray(n * n)
     val rad = n / 2.0 - 0.5
@@ -537,10 +540,8 @@ private fun MenuRow(text: String, color: Color, onClick: () -> Unit) {
 
 @Composable
 private fun MoonsHeader(month: YearMonth, onPrev: () -> Unit, onNext: () -> Unit, onPick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = 22.dp, end = 6.dp, top = 20.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    // the title, then the month picker under it, so the picker stays clear of the big moon at the top right
+    Column(Modifier.fillMaxWidth().padding(start = 22.dp, end = 6.dp, top = 20.dp, bottom = 4.dp)) {
         Text(
             "Moons",
             style = TextStyle(
@@ -550,19 +551,20 @@ private fun MoonsHeader(month: YearMonth, onPrev: () -> Unit, onNext: () -> Unit
                 shadow = Shadow(Color(0xFF441F6E), Offset(3f, 3f), 0f),
             ),
         )
-        Spacer(Modifier.weight(1f))
-        ArrowButton(CHEV_L, "Previous month", onPrev, Alignment.CenterEnd)
-        Text(
-            monthTitle(month),
-            maxLines = 1,
-            softWrap = false,
-            modifier = Modifier
-                .clickable(role = Role.Button, onClick = onPick)
-                .semantics { contentDescription = "Pick month" }
-                .padding(vertical = 12.dp),
-            style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = MoonsMonth),
-        )
-        ArrowButton(CHEV_R, "Next month", onNext, Alignment.CenterStart)
+        Row(Modifier.offset(x = (-8).dp), verticalAlignment = Alignment.CenterVertically) {
+            ArrowButton(CHEV_L, "Previous month", onPrev, Alignment.CenterEnd)
+            Text(
+                monthTitle(month),
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier
+                    .clickable(role = Role.Button, onClick = onPick)
+                    .semantics { contentDescription = "Pick month" }
+                    .padding(vertical = 12.dp),
+                style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = MoonsMonth),
+            )
+            ArrowButton(CHEV_R, "Next month", onNext, Alignment.CenterStart)
+        }
     }
 }
 
@@ -831,7 +833,7 @@ private val CLOUD_OFF = floatArrayOf(0.1f, 0.5f, 0.8f)
 private fun MoonsBackdrop(time: FloatState, pxSize: Float, today: LocalDate) {
     val pix = remember { Pix(1, 1) }
     val px = pxSize.toInt().coerceAtLeast(1)
-    val bigMoon = remember(today) { dayMoon(today, 56) }
+    val bigMoon = remember(today) { dayMoon(today, 34) }
     val clouds = remember { arrayOf(cloudBitmap(44, 14, 1), cloudBitmap(60, 18, 2), cloudBitmap(50, 15, 3)) }
     Canvas(Modifier.fillMaxSize()) {
         val t = time.floatValue
@@ -850,14 +852,14 @@ private val moonPaint by lazy { hardPaint().apply { filterQuality = FilterQualit
 internal fun drawMoonsBackdrop(pix: Pix, t: Float, w: Int, h: Int, bigMoon: ImageBitmap, clouds: Array<ImageBitmap>) {
     pix.resize(w, h)
     pix.fill(MoonsBase)
-    val mx = w - 34
-    val my = 40
+    val mx = w - 24
+    val my = 22
     pix.glow(mx.toFloat(), my.toFloat(), 64f, 0x7540B8, 0.4f, add = false)
     for (i in 0 until 90) {
         val a = 0.25f + 0.5f * max(0f, sin(t * 1.2f + hf(i, 5) * 6.28f))
         pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, if (i % 5 == 4) 0x935AD4 else 0xCDB8FF, a)
     }
-    pix.canvas.drawImage(bigMoon, Offset((mx - 28).toFloat(), (my - 28).toFloat()), moonPaint)
+    pix.canvas.drawImage(bigMoon, Offset((mx - bigMoon.width / 2).toFloat(), (my - bigMoon.height / 2).toFloat()), moonPaint)
     for (i in 0 until 3) {
         val c = clouds[i]
         val span = w + c.width
