@@ -1,0 +1,161 @@
+package app.vesper
+
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings as AndroidSettings
+import android.util.Log
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import app.vesper.data.Alarm
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import java.time.ZoneId
+
+/** Intent actions and extras shared by the alarm receiver, service and ringing screen. */
+internal object AlarmKeys {
+    const val RING = "app.vesper.alarm.RING"
+    const val SNOOZE_RING = "app.vesper.alarm.SNOOZE_RING"
+    const val STOP = "app.vesper.alarm.STOP"
+    const val SNOOZE = "app.vesper.alarm.SNOOZE"
+    const val ID = "id"
+    const val HOUR = "hour"
+    const val MINUTE = "minute"
+    const val LABEL = "label"
+    const val ONCE = "once"
+    const val CHANNEL = "alarms"
+    const val SNOOZE_MS = 10 * 60_000L
+    const val RING_MS = 10 * 60_000L
+
+    /** A one-time alarm missed while the phone was off still rings (shortly after boot) if it is no later than this. */
+    const val GRACE_MS = 10 * 60_000L
+
+    fun ensureChannel(ctx: Context) {
+        val ch = NotificationChannel(CHANNEL, "Alarms", NotificationManager.IMPORTANCE_HIGH).apply {
+            description = "Ringing alarms"
+            setSound(null, null) // the service plays the alarm sound itself
+            enableVibration(false)
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+        }
+        ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+    }
+}
+
+/** Arms alarms with AlarmManager.setAlarmClock. Ring and snooze are separate PendingIntents so a snooze never replaces the next real ring. */
+class AndroidAlarmScheduler(private val app: NotebookApp) : AlarmScheduler {
+    override val supported = true
+    private val am get() = app.getSystemService(AlarmManager::class.java)
+    private val zone get() = ZoneId.systemDefault()
+
+    private fun pi(id: Long, snooze: Boolean) = PendingIntent.getBroadcast(
+        app, 0,
+        Intent(app, AlarmReceiver::class.java)
+            .setAction(if (snooze) AlarmKeys.SNOOZE_RING else AlarmKeys.RING)
+            .setData(Uri.parse("vesper-alarm://$id"))
+            .putExtra(AlarmKeys.ID, id),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    private fun setAt(id: Long, at: Long, snooze: Boolean) {
+        val show = PendingIntent.getActivity(app, 0, Intent(app, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        try {
+            am.setAlarmClock(AlarmManager.AlarmClockInfo(at, show), pi(id, snooze))
+        } catch (e: SecurityException) {
+            Log.e("Vesper", "exact alarms not allowed", e) // problem() tells the Moons hint
+        }
+    }
+
+    override fun schedule(alarm: Alarm) {
+        am.cancel(pi(alarm.id, true))
+        val at = AlarmLogic.nextTrigger(alarm, System.currentTimeMillis(), zone)
+        if (at == null) am.cancel(pi(alarm.id, false)) else setAt(alarm.id, at, false)
+    }
+
+    override fun cancel(id: Long) {
+        am.cancel(pi(id, false))
+        am.cancel(pi(id, true))
+    }
+
+    fun snooze(id: Long) = setAt(id, System.currentTimeMillis() + AlarmKeys.SNOOZE_MS, true)
+
+    /**
+     * Re-arms every active alarm (app start, boot, clock or zone change; AlarmManager forgets them on reboot).
+     * [afterGap]: the phone may have been off, so a one-time alarm missed by a little still rings; older ones go to the history.
+     */
+    suspend fun rescheduleAll(afterGap: Boolean) {
+        val now = System.currentTimeMillis()
+        val dao = app.db.alarmDao()
+        for (a in dao.observeActive().first()) {
+            val at = AlarmLogic.nextTrigger(a, now, zone)
+            when {
+                !a.enabled -> cancel(a.id)
+                at == null -> {}
+                at > now -> setAt(a.id, at, false)
+                now - at <= AlarmKeys.GRACE_MS -> if (afterGap) setAt(a.id, now + 3000, false)
+                else -> { dao.update(a.copy(firedAt = now)); cancel(a.id) }
+            }
+        }
+    }
+
+    override fun problem(): AlarmProblem? = when {
+        Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms() -> AlarmProblem.Exact
+        !NotificationManagerCompat.from(app).areNotificationsEnabled() -> AlarmProblem.Notifications
+        else -> null
+    }
+
+    override fun requestPermissions() {
+        if (Build.VERSION.SDK_INT >= 33 && !NotificationManagerCompat.from(app).areNotificationsEnabled()) app.askNotifications?.invoke()
+    }
+
+    override fun openSettings(problem: AlarmProblem) {
+        val intent = when (problem) {
+            AlarmProblem.Exact ->
+                if (Build.VERSION.SDK_INT >= 31) Intent(AndroidSettings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${app.packageName}")) else return
+            AlarmProblem.Notifications ->
+                Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, app.packageName)
+        }
+        try { app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { app.reportError("open settings", e) }
+    }
+}
+
+/** Alarm times arriving, and the system events that wipe or move them (boot, app update, clock, time zone). */
+class AlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val app = context.applicationContext as NotebookApp
+        val pending = goAsync()
+        app.appScope.launch {
+            try {
+                when (intent.action) {
+                    AlarmKeys.RING -> ring(app, intent.getLongExtra(AlarmKeys.ID, -1), snoozed = false)
+                    AlarmKeys.SNOOZE_RING -> ring(app, intent.getLongExtra(AlarmKeys.ID, -1), snoozed = true)
+                    else -> app.alarms.rescheduleAll(afterGap = true) // BOOT_COMPLETED, MY_PACKAGE_REPLACED, TIME_SET, TIMEZONE_CHANGED
+                }
+            } catch (e: Exception) {
+                Log.e("Vesper", "alarm receiver", e)
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    private suspend fun ring(app: NotebookApp, id: Long, snoozed: Boolean) {
+        val a = app.db.alarmDao().get(id) ?: return
+        val once = a.repeatDays and AlarmLogic.WEEK == 0
+        if (!snoozed) {
+            if (!a.enabled || a.firedAt != null) return
+            if (!once) app.alarms.schedule(a) // the next occurrence; a one-time alarm goes to history when it is stopped
+        }
+        ContextCompat.startForegroundService(
+            app,
+            Intent(app, AlarmService::class.java).setAction(AlarmKeys.RING)
+                .putExtra(AlarmKeys.ID, a.id).putExtra(AlarmKeys.HOUR, a.hour).putExtra(AlarmKeys.MINUTE, a.minute)
+                .putExtra(AlarmKeys.LABEL, a.label).putExtra(AlarmKeys.ONCE, once),
+        )
+    }
+}

@@ -2,7 +2,10 @@ package app.vesper
 
 import android.content.Intent
 import android.graphics.Color as AndroidColor
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -26,11 +29,18 @@ class MainActivity : ComponentActivity() {
         // Only a fresh launch acts on the intent; a rotation must not ask again.
         if (savedInstanceState == null) intent?.let(::handle)
         val host = application as NotebookApp
+        val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+        host.askNotifications = { if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS) }
         setContent {
             PixelTheme {
                 App(host, shared = shared, onSharedHandled = { shared = null })
             }
         }
+    }
+
+    override fun onDestroy() {
+        (application as NotebookApp).askNotifications = null
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

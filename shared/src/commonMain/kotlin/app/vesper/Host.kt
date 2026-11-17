@@ -25,6 +25,9 @@ interface VesperHost {
     val shrineMedia: ShrineMedia
     val vault: Vault
     val sync: SyncManager
+
+    /** Rings alarms; only Android does (see [AlarmScheduler.supported]). */
+    val alarms: AlarmScheduler get() = NoAlarms
 }
 
 /** What Drive sync needs from the platform. Blocking calls run off the main thread. */

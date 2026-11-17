@@ -21,6 +21,8 @@ class NotebookApp : Application(), VesperHost {
     override fun onCreate() {
         super.onCreate()
         app.vesper.ui.initSounds(this)
+        AlarmKeys.ensureChannel(this)
+        appScope.launch { try { alarms.rescheduleAll(afterGap = false) } catch (e: Exception) { Log.e("Vesper", "alarm reschedule", e) } }
         // One-time safety net before the v3 -> v4 migration: runs before the lazy [db] is ever opened.
         backupRawDatabaseOnce()
         // Once the DB is open (and migrated), also dump the user's data as readable JSON.
@@ -52,6 +54,10 @@ class NotebookApp : Application(), VesperHost {
     }
     override val shrineMedia: ShrineMedia by lazy { AndroidShrineMedia(this) }
     override val vault: Vault by lazy { AndroidVault(this) }
+    override val alarms by lazy { AndroidAlarmScheduler(this) }
+
+    /** Set by MainActivity while it is open: shows the Android 13+ notification permission dialog. */
+    var askNotifications: (() -> Unit)? = null
     override val sync by lazy { SyncManager(db, appScope, AndroidSyncPlatform(this), ::reportError) }
 
     override fun reportError(what: String, e: Throwable) {

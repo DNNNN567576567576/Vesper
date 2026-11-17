@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -41,6 +42,7 @@ import app.vesper.ui.BrainCamera
 import app.vesper.ui.BrainScreen
 import app.vesper.ui.NoteCard
 import app.vesper.ui.MoonsScreen
+import app.vesper.ui.AlarmUi
 import app.vesper.ui.CalculatorScreen
 import app.vesper.ui.PixelNavBar
 import app.vesper.ui.Px
@@ -78,6 +80,10 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     val plans by moonsVm.plans.collectAsStateWithLifecycle()
     val focus by moonsVm.focus.collectAsStateWithLifecycle()
     val moonsReset = remember { mutableIntStateOf(0) }
+    val alarms by moonsVm.alarms.collectAsStateWithLifecycle()
+    val alarmHistory by moonsVm.alarmHistory.collectAsStateWithLifecycle()
+    var alarmProblem by remember { mutableStateOf(host.alarms.problem()) }
+    LaunchedEffect(alarms) { alarmProblem = host.alarms.problem() }
     val posts by shrineVm.posts.collectAsStateWithLifecycle()
     val lobes by brainVm.lobes.collectAsStateWithLifecycle()
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
@@ -94,6 +100,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START) host.sync.setForeground(true)
+            if (event == Lifecycle.Event.ON_RESUME) alarmProblem = host.alarms.problem()
             if (event == Lifecycle.Event.ON_STOP) host.sync.setForeground(false)
         }
         lifecycle.addObserver(observer)
@@ -165,6 +172,16 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     goals = goals,
                     steps = steps,
                     onSetStepDone = { st, done -> learnVm.setStepDone(st, done) },
+                    alarmUi = if (host.alarms.supported) AlarmUi(
+                        alarms = alarms,
+                        history = alarmHistory,
+                        problem = alarmProblem,
+                        onFix = { alarmProblem?.let(host.alarms::openSettings) },
+                        onSave = { a -> if (a.id == 0L) host.alarms.requestPermissions(); moonsVm.saveAlarm(a) },
+                        onDelete = moonsVm::deleteAlarm,
+                        onEnabled = moonsVm::setAlarmEnabled,
+                        onClearHistory = moonsVm::clearAlarmHistory,
+                    ) else null,
                 )
             } else {
                 BrainScreen(

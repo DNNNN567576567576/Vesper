@@ -688,6 +688,40 @@ class MoonsViewModel(private val notebook: VesperHost) : ViewModel() {
             } catch (e: Exception) { notebook.reportError("update focus", e) }
         }
     }
+
+    // ---- Alarms (phone only; see AlarmScheduler). The DB row is the truth, the scheduler is told after every change. ----
+    private val alarmDao get() = notebook.db.alarmDao()
+
+    val alarms: StateFlow<List<app.vesper.data.Alarm>> = alarmDao.observeActive()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val alarmHistory: StateFlow<List<app.vesper.data.Alarm>> = alarmDao.observeHistory()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Inserts (id 0) or updates [a], then arms or disarms it. */
+    fun saveAlarm(a: app.vesper.data.Alarm) {
+        notebook.appScope.launch {
+            try {
+                val id = if (a.id == 0L) alarmDao.insert(a) else { alarmDao.update(a); a.id }
+                notebook.alarms.schedule(a.copy(id = id))
+            } catch (e: Exception) { notebook.reportError("save alarm", e) }
+        }
+    }
+
+    fun setAlarmEnabled(a: app.vesper.data.Alarm, on: Boolean) = saveAlarm(a.copy(enabled = on))
+
+    /** Permanent. The caller confirms first. */
+    fun deleteAlarm(id: Long) {
+        notebook.appScope.launch {
+            try { notebook.alarms.cancel(id); alarmDao.delete(id) } catch (e: Exception) { notebook.reportError("delete alarm", e) }
+        }
+    }
+
+    /** Permanent: removes every rung alarm from the history. The caller confirms first. */
+    fun clearAlarmHistory() {
+        notebook.appScope.launch {
+            try { for (a in alarmHistory.value) alarmDao.delete(a.id) } catch (e: Exception) { notebook.reportError("clear alarm history", e) }
+        }
+    }
 }
 
 /** The learn brain's goals and their steps. Days are `LocalDate.toEpochDay()`. `null` = first emission pending. */

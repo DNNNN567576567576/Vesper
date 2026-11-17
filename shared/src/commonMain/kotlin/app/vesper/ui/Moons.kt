@@ -94,22 +94,22 @@ import kotlin.math.sqrt
 // The Moons tab: a month calendar where every day wears its real moon phase, with Brain focus and plans per day.
 
 private const val MoonsBase = 0x06030C
-private val MoonsText = Color(0xFFC9BCD9)
+internal val MoonsText = Color(0xFFC9BCD9)
 private val MoonsOutside = Color(0xFF3A2C48)
 private val MoonsToday = Color(0xFFFFC8EF)
-private val MoonsDim = Color(0xFF6F6080)
-private val MoonsLabel = Color(0xFF7A6A8C)
+internal val MoonsDim = Color(0xFF6F6080)
+internal val MoonsLabel = Color(0xFF7A6A8C)
 private val MoonsMonth = Color(0xFFA99AB9)
-private val MoonsArrow = Color(0xFFB69AFF)
-private val MoonsSelBg = Color(0xFF1C1128)
-private val MoonsSelLine = Color(0xFF7540B8)
-private val MoonsSheetBg = Color(0xFF120A19)
-private val MoonsSheetLine = Color(0xFF2A1A38)
-private val MoonsBarBg = Color(0xFF0E0814)
-private val MoonsBarLine = Color(0xFF241532)
-private val MoonsMenuBg = Color(0xFF160D1F)
-private val MoonsMenuLine = Color(0xFF3A2450)
-private val MoonsInk = Color(0xFFEDE4F7)
+internal val MoonsArrow = Color(0xFFB69AFF)
+internal val MoonsSelBg = Color(0xFF1C1128)
+internal val MoonsSelLine = Color(0xFF7540B8)
+internal val MoonsSheetBg = Color(0xFF120A19)
+internal val MoonsSheetLine = Color(0xFF2A1A38)
+internal val MoonsBarBg = Color(0xFF0E0814)
+internal val MoonsBarLine = Color(0xFF241532)
+internal val MoonsMenuBg = Color(0xFF160D1F)
+internal val MoonsMenuLine = Color(0xFF3A2450)
+internal val MoonsInk = Color(0xFFEDE4F7)
 private val MoonsDelete = Color(0xFFE07AB0)
 private val PlanDot = Color(0xFFF0E8FA)
 
@@ -210,6 +210,7 @@ fun MoonsScreen(
     goals: List<Goal>? = null,
     steps: List<Step>? = null,
     onSetStepDone: (Step, Boolean) -> Unit = { _, _ -> },
+    alarmUi: AlarmUi? = null,
 ) {
     val time = rememberRotTime()
     val pxSize = rememberRotPxSize()
@@ -414,13 +415,17 @@ fun MoonsScreen(
                     // Wide: calendar left, selected-day sheet right.
                     Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                         Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) { gridPart() }
-                        Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) { sheetPart() }
+                        Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                            sheetPart()
+                            alarmUi?.let { Spacer(Modifier.height(12.dp)); AlarmsCard(it) }
+                        }
                     }
                 } else {
                     Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
                         gridPart()
                         Spacer(Modifier.height(12.dp))
                         sheetPart()
+                        alarmUi?.let { Spacer(Modifier.height(12.dp)); AlarmsCard(it) }
                         Spacer(Modifier.height(16.dp))
                     }
                 }
@@ -521,7 +526,7 @@ private fun monthTitle(m: YearMonth): String =
     m.month.getDisplayName(DateTextStyle.FULL, Locale.ENGLISH) + " " + m.year
 
 @Composable
-private fun SheetLabel(text: String) {
+internal fun SheetLabel(text: String) {
     Text(text, style = TextStyle(fontFamily = PageFont, fontSize = 15.sp, letterSpacing = 1.sp, color = MoonsLabel))
 }
 
@@ -810,7 +815,7 @@ internal fun DayPicker(day: Long?, onDismiss: () -> Unit, onPick: (Long?) -> Uni
 }
 
 @Composable
-private fun MenuRowInline(text: String, color: Color, onClick: () -> Unit) {
+internal fun MenuRowInline(text: String, color: Color, onClick: () -> Unit) {
     Text(
         text,
         modifier = Modifier.clickable(role = Role.Button, onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp),
