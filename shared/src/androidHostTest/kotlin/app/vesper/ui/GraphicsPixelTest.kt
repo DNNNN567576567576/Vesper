@@ -15,7 +15,7 @@ import org.robolectric.annotation.GraphicsMode
 import java.time.LocalDate
 
 /**
- * Golden hashes for the pixel renderers in Moons, Screens (sigil/match) and Shrine (burned paper).
+ * Golden hashes for the pixel renderers in Moons, Screens (sigil) and Shrine (burned paper).
  * Expected values were captured from the pre-port android.graphics code (M2 part 2).
  * 2.5.14: sigilBack changed on purpose: the back button's ring dots (and its press ring) are purple only, no pink.
  */
@@ -44,7 +44,7 @@ class GraphicsPixelTest {
         for ((i, d) in listOf(d1, d2, d3).withIndex()) {
             for (n in listOf(11, 12, 56)) check("moon$i/$n", px(dayMoon(d, n)), E["moon$i/$n"])
         }
-        check("moonPink", px(moonBitmap(d1, 12, 0xFF9AD8, 0xFFD0F0, 0xD45AAB)), E["moonPink"])
+        check("moonViolet", px(moonBitmap(d1, 12, 0xC99AFF, 0xE6D0FF, 0x935AD4)), E["moonViolet"])
         check("cloud1", px(cloudBitmap(44, 14, 1)), E["cloud1"])
         check("cloud2", px(cloudBitmap(60, 18, 2)), E["cloud2"])
         check("cloud3", px(cloudBitmap(50, 15, 3)), E["cloud3"])
@@ -60,14 +60,12 @@ class GraphicsPixelTest {
         check("backdrop1", px(pix), E["backdrop1"])
     }
 
-    @Test fun sigilAndMatch() {
+    @Test fun sigil() {
         val p = Pix(41, 41)
         drawSigil(p, 1.7f, 0f, -10f, back = false, quill = false); check("sigilPlus", px(p), E["sigilPlus"])
         drawSigil(p, 2.4f, 1f, 2.3f, back = false, quill = false); check("sigilPressed", px(p), E["sigilPressed"])
         drawSigil(p, 0.6f, 0f, -10f, back = true, quill = false); check("sigilBack", px(p), E["sigilBack"])
         drawSigil(p, 3.1f, 0.3f, -10f, back = false, quill = true); check("sigilQuill", px(p), E["sigilQuill"])
-        drawMatch(p, 1.7f, 0f); check("match", px(p), E["match"])
-        drawMatch(p, 2.9f, 1f); check("matchPressed", px(p), E["matchPressed"])
     }
 
     /** Sigil blitted to a size that is not a multiple of 41, as on a phone with density 2.625. */
@@ -121,14 +119,14 @@ class GraphicsPixelTest {
     companion object {
         // Recorded on the old android.graphics code.
         val E: Map<String, Int> = mapOf(
-            "backdrop0" to -74743178,
-            "backdrop1" to -43940180,
+            "backdrop0" to -1187918123,
+            "backdrop1" to -263793011,
             "cardBehind3" to -1263291550,
             "cardBehind77" to 1369065320,
-            "cardFront3/0" to -1323597290,
-            "cardFront3/1" to 1459581486,
-            "cardFront77/0" to -1755686277,
-            "cardFront77/1" to -2100281103,
+            "cardFront3/0" to 812448584,
+            "cardFront3/1" to -1237966164,
+            "cardFront77/0" to 154454089,
+            "cardFront77/1" to 488894771,
             "cloud1" to 1931935413,
             "cloud2" to 1416066433,
             "cloud3" to 1847094619,
@@ -138,8 +136,6 @@ class GraphicsPixelTest {
             "mask1234" to -950500830,
             "mask3" to 534253699,
             "mask77" to 813130004,
-            "match" to -851864434,
-            "matchPressed" to -1176749081,
             "moon0/11" to 1720026238,
             "moon0/12" to -720933297,
             "moon0/56" to -1651511682,
@@ -149,7 +145,7 @@ class GraphicsPixelTest {
             "moon2/11" to 1808052492,
             "moon2/12" to 1061382977,
             "moon2/56" to -1898309417,
-            "moonPink" to -1502372867,
+            "moonViolet" to 353763919,
             "paper1234" to 1553940161,
             "paper3" to 1383095980,
             "paper77" to 1645454144,
@@ -157,10 +153,10 @@ class GraphicsPixelTest {
             "scorch3" to 949875924,
             "scorch77" to -1088830581,
             "sigilBack" to -870467572,
-            "sigilBlit215" to 1791923250,
-            "sigilPlus" to 289087112,
-            "sigilPressed" to 2080739057,
-            "sigilQuill" to 737037646,
+            "sigilBlit215" to 1652359648,
+            "sigilPlus" to 2112567514,
+            "sigilPressed" to 903550798,
+            "sigilQuill" to -1933208703,
         )
     }
 }

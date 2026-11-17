@@ -47,7 +47,7 @@ object Px {
     val Elevated = Color(0xFF241432)
     val Primary = Color(0xFF7540B8)
     val Lavender = Color(0xFFB69AFF)
-    val Magenta = Color(0xFFD45AAB)
+    val Violet = Color(0xFF935AD4)
     val Text = Color(0xFFF0E8FA)
     val TextDim = Color(0xFFA99AB9)
     val Border = Color(0xFF39234C)
@@ -69,7 +69,7 @@ fun PixelTheme(content: @Composable () -> Unit) {
         primary = Px.Primary,
         onPrimary = Px.Text,
         secondary = Px.Lavender,
-        tertiary = Px.Magenta,
+        tertiary = Px.Violet,
         background = Px.Bg,
         onBackground = Px.Text,
         surface = Px.Surface,
@@ -154,78 +154,6 @@ fun PixelArt(
 @Composable
 fun PixelIcon(grid: List<String>, tint: Color, pixel: Dp = 3.dp, modifier: Modifier = Modifier) =
     PixelArt(grid, mapOf('X' to tint), pixel, modifier)
-
-object Icons {
-    /** Tab icon: X = flesh, o = highlight. */
-    val Brain = listOf(
-        "...oooooo...",
-        "..oXXoXXXo..",
-        ".oXXoXXoXXo.",
-        ".XXoXXXXoXX.",
-        ".XoXXoXXXoX.",
-        ".XXoXXoXXXX.",
-        "..XXoXXXoX..",
-        "...XXXXXX...",
-        ".....XX.....",
-        ".....XX.....",
-    )
-    val Scrolls = listOf(
-        "..oooooooo..",
-        ".oXooooooXo.",
-        ".oXXXXXXXXo.",
-        "..o......o..",
-        "..o.XXXX.o..",
-        "..o......o..",
-        "..o.XXX..o..",
-        "..o......o..",
-        ".oXXXXXXXXo.",
-        ".oXooooooXo.",
-        "..oooooooo..",
-    )
-    val Flames = listOf(
-        ".....X......",
-        "....XX......",
-        "....XoX.....",
-        "...XooX.....",
-        "..XXoooX....",
-        "..XooooX....",
-        ".XoooooXX...",
-        ".XooXooooX..",
-        ".XooXXoooX..",
-        "..XoooooX...",
-        "...XXXXX....",
-    )
-    val Plus = listOf(
-        "...XX...",
-        "...XX...",
-        "...XX...",
-        "XXXXXXXX",
-        "XXXXXXXX",
-        "...XX...",
-        "...XX...",
-        "...XX...",
-    )
-    val Back = listOf(
-        ".....XX",
-        "....XX.",
-        "...XX..",
-        "..XX...",
-        ".XX....",
-        "..XX...",
-        "...XX..",
-        "....XX.",
-        ".....XX",
-    )
-    val Star = listOf(
-        "...X...",
-        "...X...",
-        "..XXX..",
-        "XXXXXXX",
-        "..XXX..",
-        "...X...",
-        "...X...",
-    )
-}
 
 /** Single tap fires at once on finger-up; a second tap within the double-tap timeout/slop fires [onDoubleTap] too. */
 fun Modifier.tapOrDoubleTap(role: androidx.compose.ui.semantics.Role? = null, onDoubleTap: () -> Unit, onTap: () -> Unit): Modifier = composed {

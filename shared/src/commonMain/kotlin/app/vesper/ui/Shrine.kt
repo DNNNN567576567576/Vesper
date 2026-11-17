@@ -31,7 +31,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -41,14 +40,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -101,7 +97,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import app.vesper.ShrineMedia
 import app.vesper.data.Post
 import java.time.Instant
@@ -111,8 +106,6 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
-import kotlin.math.cos
-import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -127,13 +120,9 @@ private val ShrineDim = Color(0xFF6F6080)
 private val ShrineTime = Color(0xFF7A6A8C)
 private val ShrineDayInk = Color(0xFF9A84C8)
 private val ShrineDayBg = Color(0xD91A0F22)
-private val ShrineBarBg = Color(0xFF0E0814)
-private val ShrineBarLine = Color(0xFF241532)
 private val ShrineBtnBg = Color(0xFF160D1F)
 private val ShrineBtnLine = Color(0xFF2A1A38)
-private val ShrineMenuLine = Color(0xFF3A2450)
 private val ShrineIconDim = Color(0xFF8A7A9A)
-private val ShrineDelete = Color(0xFFE07AB0)
 
 private val ATT = listOf(
     ".XXXXXXXX.", "X........X", "X.XX.....X", "X.XX.....X", "X......X.X",
@@ -331,7 +320,7 @@ private fun ShrineHeader() {
                 fontFamily = TitleFont,
                 fontSize = 42.sp,
                 color = Px.Lavender,
-                shadow = Shadow(Color(0xFF6E1F5A), Offset(3f, 3f), 0f),
+                shadow = Shadow(Color(0xFF441F6E), Offset(3f, 3f), 0f),
             ),
         )
     }
@@ -402,7 +391,7 @@ private fun ArcMenu(
                         .semantics { contentDescription = label },
                     contentAlignment = Alignment.Center,
                 ) {
-                    PixelArt(grid, if (grid === FLAME) mapOf('X' to Px.Magenta, 'o' to Px.Lavender) else mapOf('X' to Px.Lavender, 'M' to Px.Magenta), 2.dp)
+                    PixelArt(grid, if (grid === FLAME) mapOf('X' to Px.Violet, 'o' to Px.Lavender) else mapOf('X' to Px.Lavender, 'M' to Px.Violet), 2.dp)
                 }
             }
         }
@@ -433,7 +422,7 @@ private fun WritingPage(
                 Spacer(Modifier.weight(1f))
                 if (media.canAttach) {
                     BarButton(
-                        ATT, if (photo != null) Px.Magenta else ShrineIconDim,
+                        ATT, if (photo != null) Px.Violet else ShrineIconDim,
                         fill = ShrineBtnBg, line = ShrineBtnLine, description = "Attach photo or video",
                     ) { pick() }
                     Spacer(Modifier.width(8.dp))
@@ -450,7 +439,7 @@ private fun WritingPage(
                         .padding(start = 18.dp, top = 8.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color(0xFF1C1128))
-                        .border(2.dp, Px.Magenta, RoundedCornerShape(10.dp))
+                        .border(2.dp, Px.Violet, RoundedCornerShape(10.dp))
                         .clickable(role = Role.Button, onClickLabel = "Remove attachment") { onPhoto(null) }
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -461,7 +450,7 @@ private fun WritingPage(
                     }
                     Text(if (media.isVideo(photo)) "video attached" else "photo attached", style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = ShrineText))
                     Spacer(Modifier.width(8.dp))
-                    PixelIcon(CROSS, Px.Magenta, pixel = 2.dp)
+                    PixelIcon(CROSS, Px.Violet, pixel = 2.dp)
                 }
             }
             BasicTextField(
@@ -579,9 +568,9 @@ private fun PostCard(
     }
 }
 
-private const val EMBER_LO = 0xFF3A1430.toInt()
-private const val EMBER_MID = 0xFF5A1E48.toInt()
-private const val EMBER_HI = 0xFF7A2A5E.toInt()
+private const val EMBER_LO = 0xFF26143A.toInt()
+private const val EMBER_MID = 0xFF3A1E5A.toInt()
+private const val EMBER_HI = 0xFF4F2A7A.toInt()
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

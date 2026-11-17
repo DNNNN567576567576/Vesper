@@ -31,7 +31,6 @@ import app.vesper.data.Branch
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -45,7 +44,7 @@ import org.robolectric.annotation.GraphicsMode
  * Alt version (Brain as the whole app): every map frame was re-captured on purpose, because neurons are now a core dot with
  * rings by length of text (no done ember any more), and rot holes are pushed clear of nodes and labels. glowLabel is untouched.
  * Vault heart replaces the skull: overview, beatFresh (was flareFresh), staleHeart (was staleSun) and selectedFar re-captured.
- * recentSpark is new: magenta recent cores and the open pulse.
+ * recentSpark is new: violet recent cores and the open pulse.
  * 2.5.1: overview, beatFresh, staleHeart, small and blit3 changed because rot holes now clear ring-sized areas around neurons
  * (item keep-out boxes 5.5 -> 8 wide); selectedZoom and selectedFar changed for that and because a focused sub brain dims the
  * rest of the map to 0.2 instead of 0.45, and hides the heart, its glow and its vein completely. groupDeep, recentSpark and glowLabel are untouched.
@@ -201,7 +200,7 @@ class BrainPixelTest {
         val ctx = RuntimeEnvironment.getApplication()
         val density = Density(2.625f)
         val measurer = TextMeasurer(createFontFamilyResolver(ctx), density, LayoutDirection.Ltr)
-        val c = Color(0xFFD45AAB)
+        val c = Color(0xFF935AD4)
         val style = TextStyle(fontSize = 20.sp, color = c, shadow = Shadow(c.copy(alpha = 0.7f), blurRadius = 12f * 2.625f))
         fun render(): IntArray {
             val g = GlowText(measurer.measure("Marrow", style, maxLines = 1))
@@ -219,7 +218,7 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "beatFresh" to -1355989786, "blit3" to -417458193, "dimension" to -1725325892, "flyIn" to -1287240568, "glowLabel" to -66391980, "learnBrain" to 1539578251, "overview" to 1714630548, "selectedFar" to -1088837572, "selectedZoom" to -1813238531, "showAll" to 1955788307, "small" to -1724423207, "staleHeart" to -1729973114,
+            "beatFresh" to -1355989786, "blit3" to -417458193, "dimension" to -1725325892, "flyIn" to -1287240568, "glowLabel" to 1509847742, "learnBrain" to 1539578251, "overview" to 1714630548, "selectedFar" to -1088837572, "selectedZoom" to -1813238531, "showAll" to 1955788307, "small" to -1724423207, "staleHeart" to -1729973114,
         )
     }
 }

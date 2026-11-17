@@ -2,7 +2,6 @@ package app.vesper.ui
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import kotlin.math.hypot
 import app.vesper.data.Branch
 import app.vesper.data.Idea
 import app.vesper.data.Lobe

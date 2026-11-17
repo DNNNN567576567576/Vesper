@@ -7,7 +7,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 
 /** Why alarms might not ring right now; the Moons alarms section shows a one-line hint for it. */
-enum class AlarmProblem { Exact, Notifications }
+enum class AlarmProblem { Exact, Notifications, FullScreen }
 
 /** Rings alarms. Only Android does; elsewhere [supported] is false and the alarms section stays hidden. */
 interface AlarmScheduler {

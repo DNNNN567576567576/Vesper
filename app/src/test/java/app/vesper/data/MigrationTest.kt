@@ -2,7 +2,6 @@ package app.vesper.data
 
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
-import androidx.core.content.contentValuesOf
 import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.test.core.app.ApplicationProvider

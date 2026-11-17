@@ -108,7 +108,11 @@ internal fun AlarmsCard(ui: AlarmUi) {
         ui.problem?.let { p ->
             Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (p == AlarmProblem.Exact) "alarms need the exact alarm permission." else "alarms need notifications turned on.",
+                    when (p) {
+                        AlarmProblem.Exact -> "alarms need the exact alarm permission."
+                        AlarmProblem.Notifications -> "alarms need notifications turned on."
+                        AlarmProblem.FullScreen -> "alarms need full-screen notifications to show over the lock screen."
+                    },
                     Modifier.weight(1f),
                     style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, lineHeight = 19.sp, color = Px.Lavender),
                 )

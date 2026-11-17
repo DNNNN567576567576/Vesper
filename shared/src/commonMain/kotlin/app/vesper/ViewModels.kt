@@ -12,7 +12,6 @@ import androidx.room.useWriterConnection
 import app.vesper.data.Idea
 import app.vesper.data.Note
 import app.vesper.data.Post
-import app.vesper.data.Task
 import app.vesper.sync.copyTitle
 import app.vesper.sync.copyUid
 import app.vesper.ui.SharedText
@@ -24,7 +23,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -34,96 +32,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-enum class NoteSort { EDITED, ADDED, MANUAL }
-
-private const val KEY_NOTE_SORT = "noteSort"
-private const val KEY_TASK_NEWEST = "taskNewestFirst"
 private const val KEY_BRAIN_SHOW_ALL = "brainShowAll"
 private const val KEY_BRAIN_SOUNDS = "brainSounds"
 
-
-/** `null` = the first database emission has not arrived yet. */
-class NotesViewModel(private val notebook: VesperHost) : ViewModel() {
-    val sort = MutableStateFlow(NoteSort.entries.firstOrNull { it.name == notebook.settings.getString(KEY_NOTE_SORT) } ?: NoteSort.EDITED)
-
-    // The DAO delivers "recently edited" order; the other modes re-sort it here.
-    private val all = notebook.db.noteDao().observeAll()
-
-    // Only top-level scrolls are listed; pages live inside their main scroll.
-    val notes: StateFlow<List<Note>?> = combine(all, sort) { all, mode ->
-        val list = all.filter { it.parentId == null }
-        when (mode) {
-            NoteSort.EDITED -> list
-            NoteSort.ADDED -> list.sortedByDescending { it.id }
-            NoteSort.MANUAL -> list.sortedWith(compareBy<Note> { it.position }.thenByDescending { it.id })
-        }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
-
-    /** Main scroll id -> number of pages. */
-    val pageCounts: StateFlow<Map<Long, Int>> = all.map { l -> l.mapNotNull { it.parentId }.groupingBy { it }.eachCount() }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
-
-    fun cycleSort() {
-        val next = NoteSort.entries[(sort.value.ordinal + 1) % NoteSort.entries.size]
-        sort.value = next
-        notebook.settings.putString(KEY_NOTE_SORT, next.name)
-    }
-
-    /** Saves a hand-made order (top to bottom). */
-    fun move(ids: List<Long>) {
-        notebook.appScope.launch {
-            try {
-                // One write transaction (BEGIN IMMEDIATE): all positions land together or none do.
-                notebook.db.useWriterConnection { c -> c.immediateTransaction { ids.forEachIndexed { i, id -> notebook.db.noteDao().setPosition(id, i) } } }
-            } catch (e: Exception) { notebook.reportError("reorder notes", e) }
-        }
-    }
-
-    /** Permanent, with no trash and no history — the caller confirms first. */
-    fun delete(id: Long) {
-        notebook.appScope.launch {
-            try { notebook.db.noteDao().delete(id) } catch (e: Exception) { notebook.reportError("delete note", e) }
-        }
-    }
-}
-
-class TasksViewModel(private val notebook: VesperHost) : ViewModel() {
-    private val dao get() = notebook.db.taskDao()
-
-    val newestFirst = MutableStateFlow(notebook.settings.getBoolean(KEY_TASK_NEWEST, false))
-
-    val tasks: StateFlow<List<Task>?> = combine(dao.observeLit(), newestFirst) { list, newest -> if (newest) list.asReversed() else list }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-
-    fun toggleOrder() {
-        newestFirst.value = !newestFirst.value
-        notebook.settings.putBoolean(KEY_TASK_NEWEST, newestFirst.value)
-    }
-
-    val snuffed: StateFlow<List<Task>> = dao.observeSnuffed()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
-    fun add(text: String) {
-        val clean = text.trim()
-        if (clean.isEmpty()) return
-        notebook.appScope.launch {
-            try { dao.insert(Task(text = clean)) } catch (e: Exception) { notebook.reportError("add task", e) }
-        }
-    }
-
-    /** Checking a task snuffs it: it moves to the ash ledge and is kept forever. */
-    fun complete(id: Long) {
-        notebook.appScope.launch {
-            try { dao.snuff(id, System.currentTimeMillis()) } catch (e: Exception) { notebook.reportError("snuff task", e) }
-        }
-    }
-
-    fun relight(id: Long) {
-        notebook.appScope.launch {
-            try { dao.relight(id) } catch (e: Exception) { notebook.reportError("relight task", e) }
-        }
-    }
-}
 
 /**
  * Editing session for one note. [noteId] == null means a brand-new note, which is only
@@ -218,22 +129,9 @@ class NoteEditorViewModel(private val notebook: VesperHost, noteId: Long?, newPa
         return notebook.appScope.launch { persist() }
     }
 
-    /** Like [flush], but also stores a still-blank new scroll so a page has a parent to hang from. */
-    fun flushForPage(): Job {
-        saveJob?.cancel()
-        return notebook.appScope.launch { persist(force = true) }
-    }
-
     private fun loadParentTitle(pid: Long) {
         viewModelScope.launch {
             try { parentTitle = dao.get(pid)?.title.orEmpty() } catch (e: Exception) { notebook.reportError("open note", e) }
-        }
-    }
-
-    /** Burns one page of this scroll (and nothing else). */
-    fun deletePage(pageId: Long) {
-        notebook.appScope.launch {
-            try { dao.delete(pageId) } catch (e: Exception) { notebook.reportError("delete note", e) }
         }
     }
 

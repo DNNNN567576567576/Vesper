@@ -106,6 +106,7 @@ class AndroidAlarmScheduler(private val app: NotebookApp) : AlarmScheduler {
     override fun problem(): AlarmProblem? = when {
         Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms() -> AlarmProblem.Exact
         !NotificationManagerCompat.from(app).areNotificationsEnabled() -> AlarmProblem.Notifications
+        Build.VERSION.SDK_INT >= 34 && !app.getSystemService(NotificationManager::class.java).canUseFullScreenIntent() -> AlarmProblem.FullScreen
         else -> null
     }
 
@@ -119,6 +120,8 @@ class AndroidAlarmScheduler(private val app: NotebookApp) : AlarmScheduler {
                 if (Build.VERSION.SDK_INT >= 31) Intent(AndroidSettings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${app.packageName}")) else return
             AlarmProblem.Notifications ->
                 Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, app.packageName)
+            AlarmProblem.FullScreen ->
+                if (Build.VERSION.SDK_INT >= 34) Intent(AndroidSettings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${app.packageName}")) else return
         }
         try { app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { app.reportError("open settings", e) }
     }

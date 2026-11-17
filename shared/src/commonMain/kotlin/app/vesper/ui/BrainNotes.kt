@@ -36,13 +36,8 @@ import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import androidx.compose.ui.geometry.Size
 import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
 
 // ---------------------------------------------------------------------------------------------
 // Pure helpers (tested in BrainNotesTest)

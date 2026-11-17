@@ -9,14 +9,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -96,27 +94,25 @@ import kotlin.math.sqrt
 private const val MoonsBase = 0x06030C
 internal val MoonsText = Color(0xFFC9BCD9)
 private val MoonsOutside = Color(0xFF3A2C48)
-private val MoonsToday = Color(0xFFFFC8EF)
+private val MoonsToday = Color(0xFFE2C8FF)
 internal val MoonsDim = Color(0xFF6F6080)
 internal val MoonsLabel = Color(0xFF7A6A8C)
 private val MoonsMonth = Color(0xFFA99AB9)
 internal val MoonsArrow = Color(0xFFB69AFF)
+internal val MoonsBarBg = Color(0xFF0E0814)
 internal val MoonsSelBg = Color(0xFF1C1128)
 internal val MoonsSelLine = Color(0xFF7540B8)
 internal val MoonsSheetBg = Color(0xFF120A19)
 internal val MoonsSheetLine = Color(0xFF2A1A38)
-internal val MoonsBarBg = Color(0xFF0E0814)
-internal val MoonsBarLine = Color(0xFF241532)
 internal val MoonsMenuBg = Color(0xFF160D1F)
 internal val MoonsMenuLine = Color(0xFF3A2450)
 internal val MoonsInk = Color(0xFFEDE4F7)
-private val MoonsDelete = Color(0xFFE07AB0)
+private val MoonsDelete = Color(0xFFAA7AE0)
 private val PlanDot = Color(0xFFF0E8FA)
 
 
 private val CHEV_L = listOf("...X", "..X.", ".X..", "X...", ".X..", "..X.", "...X")
 private val CHEV_R = listOf("X...", ".X..", "..X.", "...X", "..X.", ".X..", "X...")
-private val PLUS = listOf("...XX...", "...XX...", "...XX...", "XXXXXXXX", "XXXXXXXX", "...XX...", "...XX...", "...XX...")
 private val RING = listOf(
     "..XXXXX..", ".X.....X.", "X.......X", "X.......X", "X.......X",
     "X.......X", "X.......X", ".X.....X.", "..XXXXX..",
@@ -127,7 +123,7 @@ private val RING_DONE: List<String> = run {
     g.map { String(it) }
 }
 private val RingOpen = mapOf('X' to Color(0xFFB69AFF))
-private val RingShut = mapOf('X' to Color(0xFF5F5070), 'C' to Color(0xFFD45AAB))
+private val RingShut = mapOf('X' to Color(0xFF5F5070), 'C' to Color(0xFF935AD4))
 private val StepShut = mapOf('X' to Color(0xFF5F5070), 'C' to Color(0xFFB69AFF))
 /** A day's learn steps: a small hollow square beside the plan dot, lavender while one is undone. */
 private val StepMark = Color(0xFFB69AFF)
@@ -551,7 +547,7 @@ private fun MoonsHeader(month: YearMonth, onPrev: () -> Unit, onNext: () -> Unit
                 fontFamily = TitleFont,
                 fontSize = 40.sp,
                 color = Px.Lavender,
-                shadow = Shadow(Color(0xFF6E1F5A), Offset(3f, 3f), 0f),
+                shadow = Shadow(Color(0xFF441F6E), Offset(3f, 3f), 0f),
             ),
         )
         Spacer(Modifier.weight(1f))
@@ -660,9 +656,9 @@ private fun DayCell(
 // Month picker ("night sky")
 // ---------------------------------------------------------------------------------------------
 
-private const val PINK_LIT = 0xFFC8EF
-private const val PINK_HI = 0xFFF0FF
-private const val PINK_CRATER = 0xD88AC0
+private const val MOON_LIT = 0xE2C8FF
+private const val MOON_HI = 0xFFF0FF
+private const val MOON_CRATER = 0xAE8AD8
 
 @Composable
 private fun MonthPicker(monthIdx: Int, onDismiss: () -> Unit, onPick: (Int) -> Unit) {
@@ -671,7 +667,7 @@ private fun MonthPicker(monthIdx: Int, onDismiss: () -> Unit, onPick: (Int) -> U
     val moons = remember(year, monthIdx) {
         Array(12) {
             val d = LocalDate.of(year, it + 1, 15)
-            (if (year * 12 + it == monthIdx) moonBitmap(d, 12, PINK_LIT, PINK_HI, PINK_CRATER) else dayMoon(d, 12))
+            (if (year * 12 + it == monthIdx) moonBitmap(d, 12, MOON_LIT, MOON_HI, MOON_CRATER) else dayMoon(d, 12))
         }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -726,8 +722,8 @@ private fun MonthPicker(monthIdx: Int, onDismiss: () -> Unit, onPick: (Int) -> U
                                     Modifier.size(29.dp).then(
                                         if (!cur) Modifier else Modifier.drawBehind {
                                             val a = 0.2f + 0.14f * sin(time.floatValue * 3f)
-                                            drawCircle(Color(0xFFFFC8EF).copy(alpha = a * 0.6f), size.minDimension * 0.95f)
-                                            drawCircle(Color(0xFFFFC8EF).copy(alpha = a), size.minDimension * 0.65f)
+                                            drawCircle(Color(0xFFE2C8FF).copy(alpha = a * 0.6f), size.minDimension * 0.95f)
+                                            drawCircle(Color(0xFFE2C8FF).copy(alpha = a), size.minDimension * 0.65f)
                                         },
                                     ),
                                 ) {
@@ -859,7 +855,7 @@ internal fun drawMoonsBackdrop(pix: Pix, t: Float, w: Int, h: Int, bigMoon: Imag
     pix.glow(mx.toFloat(), my.toFloat(), 64f, 0x7540B8, 0.4f, add = false)
     for (i in 0 until 90) {
         val a = 0.25f + 0.5f * max(0f, sin(t * 1.2f + hf(i, 5) * 6.28f))
-        pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, if (i % 5 == 4) 0xD45AAB else 0xCDB8FF, a)
+        pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, if (i % 5 == 4) 0x935AD4 else 0xCDB8FF, a)
     }
     pix.canvas.drawImage(bigMoon, Offset((mx - 28).toFloat(), (my - 28).toFloat()), moonPaint)
     for (i in 0 until 3) {

@@ -1,6 +1,5 @@
 ﻿package app.vesper.ui
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -25,20 +24,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.text.style.TextOverflow
-import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -47,14 +38,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -72,25 +59,11 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.draw.drawBehind
 import kotlin.math.ceil
 import androidx.compose.ui.window.Dialog
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.text.style.TextAlign
-import kotlin.math.sin
-import kotlin.math.abs
-import kotlin.math.pow
-import kotlin.math.PI
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.text.TextLayoutResult
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import app.vesper.NoteEditorViewModel
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalUriHandler
@@ -115,119 +88,6 @@ private val ListGap = VisualTransformation { text ->
         }
     }
     TransformedText(out, OffsetMapping.Identity)
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun NoteEditorScreen(vm: NoteEditorViewModel, onClose: () -> Unit, onOpenPage: (parent: Long, page: Long?) -> Unit) {
-    val focusManager = LocalFocusManager.current
-    val titleFocus = remember { FocusRequester() }
-    val closeNow by rememberUpdatedState(onClose)
-    val scope = rememberCoroutineScope()
-    val pages by vm.pages.collectAsState()
-    var burnPage by remember { mutableStateOf<Long?>(null) }
-    val canAddPage = vm.loaded && vm.parentId == null
-
-    /** Page = null opens a fresh page. The parent's text is saved first so its editor reloads it intact. */
-    fun openPage(page: Long?) {
-        scope.launch {
-            vm.flushForPage().join()
-            val parent = vm.noteId ?: return@launch
-            focusManager.clearFocus(); onOpenPage(parent, page)
-        }
-    }
-
-    fun leave() {
-        vm.flush()
-        focusManager.clearFocus()
-        closeNow()
-    }
-
-    // Wide layout: the editor is a side pane; a top-level scroll has no back (only a page returns to its parent).
-    val wide = LocalWide.current
-    BackHandler(enabled = !wide || vm.parentId != null) { leave() }
-    // Desktop: clicking another scroll or closing the window replaces this editor without leave().
-    DisposableEffect(vm) { onDispose { if (saveOnDispose) vm.flush() } }
-
-    // Persist whenever the app leaves the foreground (home button, app switch, screen off).
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) vm.flush()
-        }
-        lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer) }
-    }
-
-    // A brand-new note starts with the cursor in the title and the keyboard up.
-    LaunchedEffect(Unit) { if (!vm.exists) titleFocus.requestFocus() }
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .imePadding()
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(58.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (!wide || vm.parentId != null) SigilFab("Back", ::leave, back = true)
-            if (vm.parentId != null) {
-                Text(
-                    "${vm.parentTitle.trim().ifEmpty { "untitled" }} / ${vm.title.trim().ifEmpty { "untitled" }}",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 8.dp, end = 14.dp),
-                    style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim.copy(alpha = 0.7f)),
-                )
-            }
-            if (canAddPage) {
-                Spacer(Modifier.weight(1f))
-                SigilFab("New page", { openPage(null) })
-            }
-        }
-
-        PageTitleField(vm.title, vm::onTitle, vm.loaded, Modifier.focusRequester(titleFocus)) { focusManager.moveFocus(FocusDirection.Down) }
-        PageDivider()
-
-        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-            val minH = maxHeight
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                PageBodyField(vm.content, vm::onContent, vm.loaded, Modifier.heightIn(min = if (pages.isNotEmpty()) 52.dp else minH))
-                if (pages.isNotEmpty()) {
-                    Text(
-                        "pages",
-                        modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 4.dp),
-                        style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim.copy(alpha = 0.7f)),
-                    )
-                    val rowStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 26.sp, color = Px.Lavender)
-                    pages.forEach { p ->
-                        Text(
-                            p.title.trim().ifEmpty { "untitled" },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth()
-                                .combinedClickable(onClick = { openPage(p.id) }, onLongClick = { burnPage = p.id })
-                                .padding(horizontal = 20.dp, vertical = 8.dp),
-                            style = rowStyle,
-                        )
-                    }
-                    Spacer(Modifier.height(24.dp))
-                }
-            }
-        }
-    }
-
-    burnPage?.let { pid ->
-        TornNoteDialog(
-            title = "Burn \"${(pages.firstOrNull { it.id == pid }?.title ?: "").trim().ifEmpty { "Untitled page" }}\"?",
-            body = "No undo.",
-            onKeep = { burnPage = null },
-            onBurn = { burnPage = null; vm.deletePage(pid) },
-        )
-    }
 }
 
 /** The title line of a page: PageFont 26sp, one line, Next moves on. Shared by the scroll editor and the Brain item page. */
@@ -286,7 +146,7 @@ internal fun PageBodyField(value: String, onChange: (String) -> Unit, enabled: B
 }
 
 /**
- * One Brain item on a full page, laid out like [NoteEditorScreen] (same wall, header, title, divider and body) with an
+ * One Brain item on a full page, laid out like a scroll page (same wall, header, title, divider and body) with an
  * optional link line under the body and a burn word top right. Saves like a scroll does: 500 ms after typing stops, when
  * the app stops, when the page leaves composition (desktop) and on back.
  */
@@ -425,7 +285,7 @@ fun TornNoteDialog(title: String, body: String, onKeep: () -> Unit, onBurn: () -
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Word("keep", ink, onKeep)
-                Word("burn", Color(0xFF5A1E48), onBurn)
+                Word("burn", Color(0xFF3A1E5A), onBurn)
             }
         }
     }
@@ -442,94 +302,5 @@ fun PixelDialog(onDismiss: () -> Unit, content: @Composable () -> Unit) {
                 .padding(20.dp),
             content = { content() },
         )
-    }
-}
-
-/** "Smoke words": a big flickering flame over a bare text field on a dark scrim. Done lights it; tapping outside or back cancels. */
-@Composable
-fun AddTaskDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
-    var text by remember { mutableStateOf("") }
-    val focus = remember { FocusRequester() }
-    fun submit() {
-        if (text.isNotBlank()) onAdd(text)
-        onDismiss()
-    }
-    LaunchedEffect(Unit) { focus.requestFocus() }
-    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-    var clock by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(Unit) { while (true) clock = withFrameNanos { it } }
-    Dialog(onDismissRequest = onDismiss, properties = edgeToEdgeDialog()) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color(0xFF05020A).copy(alpha = 0.88f))
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss)
-                .imePadding(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Column(Modifier.fillMaxWidth(0.7f), horizontalAlignment = Alignment.CenterHorizontally) {
-                    BasicTextField(
-                        value = text,
-                        // wraps instead of scrolling so the caret rect (and the flame) stays on screen; Enter is Done, not a newline
-                        onValueChange = { text = it.replace('\n', ' ') },
-                        maxLines = 4,
-                        textStyle = TextStyle(
-                            fontFamily = PageFont, fontSize = 26.sp, color = Color(0xFFE6DCFF), textAlign = TextAlign.Center,
-                            shadow = Shadow(Color(0xFFB69AFF).copy(alpha = 0.8f), Offset.Zero, 14f),
-                        ),
-                        cursorBrush = SolidColor(Color.Transparent),
-                        onTextLayout = { layout = it },
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { submit() }),
-                        modifier = Modifier.fillMaxWidth().focusRequester(focus).semantics { contentDescription = "New flame" },
-                        decorationBox = { inner ->
-                            // end padding = flame width so text + flame sit centred together
-                            Box(Modifier.fillMaxWidth().padding(end = if (text.isEmpty()) 0.dp else (CW * CELL_DP).dp), contentAlignment = Alignment.Center) {
-                                if (text.isEmpty()) Text("\u2026", style = TextStyle(fontFamily = PageFont, fontSize = 26.sp, color = Color(0xFFE6DCFF).copy(alpha = 0.3f)))
-                                Box(Modifier.drawWithContent {
-                                    drawContent()
-                                    // caret is always at the end (plain String value)
-                                    val r = layout?.getCursorRect(text.length) ?: return@drawWithContent
-                                    val left = if (text.isEmpty()) r.left - CW * CELL_DP / 2 * density else r.right + 1.dp.toPx()
-                                    drawSpiritFlame(left, r.bottom, clock / 1e9f)
-                                }) { inner() }
-                            }
-                        },
-                    )
-                    Box(
-                        Modifier.fillMaxWidth().height(2.dp)
-                            .background(Brush.horizontalGradient(listOf(Color.Transparent, Color(0xFF9A6BE0), Color.Transparent)))
-                    )
-                }
-            }
-        }
-    }
-}
-
-private val FLAME_PAL = intArrayOf(
-    0, 0xFF140628.toInt(), 0xFF280A4B.toInt(), 0xFF3E126E.toInt(), 0xFF551E96.toInt(), 0xFF6E32B9.toInt(),
-    0xFF8C50D2.toInt(), 0xFFAA78EB.toInt(), 0xFFC8A5FA.toInt(), 0xFFE6D7FF.toInt(), 0xFFFAF5FF.toInt(),
-).map { Color(it) }
-
-private const val CW = 8
-private const val CH = 12
-private const val CELL_DP = 2.5f
-
-/** Pixel spirit flame (CW x CH cells, cell = CELL_DP) with its bottom-left at (left, bottom); t in seconds. */
-private fun DrawScope.drawSpiritFlame(left: Float, bottom: Float, t: Float) {
-    val cell = CELL_DP * density
-    val top = bottom - CH * cell
-    for (y in 0 until CH) {
-        val b = (y + 0.5f) / CH
-        val cx = CW / 2f + sin(t * 2 + y * 0.3f) * 1.5f * (1 - b)
-        val hw = sin(b * PI.toFloat() * 0.95f) * CW * 0.32f * b.pow(0.4f) * (0.9f + 0.1f * sin(t * 5 + y))
-        if (hw <= 0f) continue
-        for (x in 0 until CW) {
-            var v = (1 - abs(x + 0.5f - cx) / hw + sin(x + t * 6) * 0.12f * (1 - b)) * 10 * minOf(1f, b * 1.5f)
-            if (b > 0.75f) v += 2
-            val i = minOf(10, v.toInt())
-            if (v > 0 && i > 0) drawRect(FLAME_PAL[i], Offset(left + x * cell, top + y * cell), Size(cell, cell))
-        }
     }
 }
