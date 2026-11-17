@@ -198,6 +198,16 @@ interface BrainDao {
     @Query("UPDATE ideas SET title = :title, body = :body, link = :link, branchId = :branchId, updatedAt = :at WHERE id = :id")
     suspend fun setIdeaFields(id: Long, title: String, body: String, link: String?, branchId: Long?, at: Long)
 
+    /** A move: new home and a fresh updatedAt; the update trigger stamps syncAt, so the peer takes the move in by lobe/group uid. */
+    @Query("UPDATE ideas SET lobeId = :lobeId, branchId = :branchId, updatedAt = :at WHERE id = :id")
+    suspend fun moveIdea(id: Long, lobeId: Long, branchId: Long?, at: Long)
+
+    @Query("SELECT * FROM branches WHERE id = :id")
+    suspend fun getBranch(id: Long): Branch?
+
+    @Query("SELECT * FROM lobes WHERE id = :id")
+    suspend fun getLobe(id: Long): Lobe?
+
     @Query("UPDATE ideas SET done = :done WHERE id = :id")
     suspend fun setIdeaDone(id: Long, done: Boolean)
 

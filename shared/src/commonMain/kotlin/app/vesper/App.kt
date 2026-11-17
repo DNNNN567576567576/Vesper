@@ -32,6 +32,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.material3.Text
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.navigationBarsPadding
+import app.vesper.ui.PixelFont
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -70,6 +76,9 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     var pageSession by rememberSaveable { mutableIntStateOf(0) }
     var pageFrom by remember { mutableStateOf(Offset.Unspecified) } // where its card grows from (root px)
     val cardP = remember { Animatable(0f) } // how open the card is; the world behind dims and shrinks with it
+    var homeSignal by remember { mutableIntStateOf(0) } // the Brain tab tapped again inside a world: close the card, fly back to the map
+    var movedMsg by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(movedMsg) { if (movedMsg != null) { kotlinx.coroutines.delay(2200); movedMsg = null } }
 
     val brainVm = viewModel { BrainViewModel(host) }
     val shrineVm = viewModel { ShrineViewModel(host) }
@@ -120,7 +129,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     1 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
                     2 -> moonsReset.intValue++ // jump back to today
                     3 -> {}
-                    else -> { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
+                    else -> if (selectedLobe >= 0 || learnAt >= -1) homeSignal++ else { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
                 }
             }
         } else {
@@ -135,7 +144,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
         }
         val footer = listOfNotNull(branches?.firstOrNull { it.id == pageBranch }?.name, lobes?.firstOrNull { it.id == pageLobe }?.name)
             .joinToString(" \u00B7 ").uppercase()
-        NoteCard(vm, pageFrom, cardP, footer, onClosed = { pageId = NO_PAGE })
+        NoteCard(vm, pageFrom, cardP, footer, lobes.orEmpty(), branches.orEmpty(), homeSignal, onMoved = { movedMsg = "moved to $it" }, onClosed = { pageId = NO_PAGE })
     }
 
     val tabContent: @Composable () -> Unit = {
@@ -210,6 +219,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     steps = steps,
                     learnAt = learnAt,
                     onLearnAt = { learnAt = it },
+                    homeSignal = homeSignal,
                     learn = learnVm,
                 )
             }
@@ -236,6 +246,11 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
             }
         }
         if (cardOpen) card(pageId)
+        movedMsg?.let {
+            Box(Modifier.fillMaxSize().navigationBarsPadding().padding(bottom = 90.dp), contentAlignment = Alignment.BottomCenter) {
+                Text(it, Modifier.background(Color(0xFF140B26)).padding(horizontal = 14.dp, vertical = 10.dp), maxLines = 2, style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.Lavender))
+            }
+        }
     }
     }
     }

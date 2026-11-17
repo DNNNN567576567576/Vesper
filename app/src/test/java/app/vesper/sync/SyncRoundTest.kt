@@ -485,6 +485,27 @@ class SyncRoundTest {
         assertEquals(a.state(), b.state())
     }
 
+
+    @Test fun anItemMovedToAnotherLobeAndGroupLandsThereOnTheOtherDevice() = test {
+        val (a, b) = pair()
+        a.seedWeb()
+        val code = a.db.brainDao().insertLobe(Lobe(name = "Coding", colorIndex = 2, slot = 3, uid = "C"))
+        val vesper = a.db.brainDao().insertBranch(Branch(lobeId = code, name = "Vesper", uid = "vesper"))
+        converge(a, b); tick()
+        val gita = a.db.syncDao().ideas().single { it.uid == "gita" }
+        a.db.brainDao().moveIdea(gita.id, code, vesper, System.currentTimeMillis())
+        converge(a, b)
+        val onB = b.db.syncDao().ideas().single { it.uid == "gita" }
+        assertEquals("C" to "vesper", b.db.syncDao().lobes().single { it.id == onB.lobeId }.uid to b.db.syncDao().branches().single { it.id == onB.branchId }.uid)
+        assertEquals("chapter 2", onB.body)
+        assertEquals(a.state(), b.state())
+        // and back to loose on the first lobe, from the other side
+        tick()
+        val home = b.db.syncDao().lobes().single { it.uid == "L" }.id
+        b.db.brainDao().moveIdea(onB.id, home, null, System.currentTimeMillis())
+        converge(a, b)
+        assertEquals("L" to null, a.db.syncDao().ideas().single { it.uid == "gita" }.let { i -> a.db.syncDao().lobes().single { it.id == i.lobeId }.uid to i.branchId })
+    }
     @Test fun deletingALobeTombstonesItsGroups() = test {
         val (a, b) = pair()
         a.seedWeb()

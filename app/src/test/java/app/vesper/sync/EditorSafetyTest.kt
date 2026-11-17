@@ -22,6 +22,7 @@ import app.vesper.data.SYNC_TRIGGERS_CALLBACK
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
@@ -426,5 +427,41 @@ class EditorSafetyTest {
         until("gone") { io { rows.ideas() }.isEmpty() }
         vm.flush().done()
         assertEquals(0, io { rows.ideas() }.size)
+    }
+
+    // ---- moving an item (Move to...) ----
+    private fun move(vm: IdeaEditorViewModel, lobe: Long, group: Long?): String? {
+        val job = host.appScope.async { vm.moveTo(lobe, group) }
+        until("move") { job.isCompleted }
+        @Suppress("OPT_IN_USAGE") return job.getCompleted()
+    }
+
+    @Test fun movingSavesTypedTextFirstAndLandsInTheOtherLobesGroup() {
+        val (vm, id) = openIdea()
+        val brain = host.db.brainDao()
+        val other = io { brain.insertLobe(Lobe(name = "Coding", colorIndex = 2, slot = 5)) }
+        val group = io { brain.insertBranch(Branch(lobeId = other, name = "Vesper")) }
+        val before = io { rows.ideas().single { it.id == id } }
+        vm.onBody("typed just now") // not saved yet: the move must carry it
+        Thread.sleep(3)
+        assertEquals("Coding › Vesper", move(vm, other, group))
+        val row = io { rows.ideas().single { it.id == id } }
+        assertEquals(listOf<Any?>("typed just now", other, group), listOf(row.body, row.lobeId, row.branchId))
+        assertTrue(row.syncAt > before.syncAt && row.updatedAt > before.updatedAt)
+        assertEquals(other, vm.lobeId)
+        // then loose on the lobe
+        assertEquals("Coding", move(vm, other, null))
+        assertNull(io { rows.ideas().single { it.id == id } }.branchId)
+    }
+
+    @Test fun aGroupOfAnotherLobeOrAGoneLobeRefusesTheMove() {
+        val (vm, id) = openIdea()
+        val brain = host.db.brainDao()
+        val other = io { brain.insertLobe(Lobe(name = "Coding", colorIndex = 2, slot = 5)) }
+        val foreign = io { brain.insertBranch(Branch(lobeId = vm.lobeId, name = "Stays")) }
+        val home = vm.lobeId
+        assertNull(move(vm, other, foreign))
+        assertNull(move(vm, 9999L, null))
+        assertEquals(home, io { rows.ideas().single { it.id == id } }.lobeId)
     }
 }

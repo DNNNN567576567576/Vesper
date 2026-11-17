@@ -1050,6 +1050,8 @@ fun BrainScreen(
     /** The learn brain: -2 = closed (the map), -1 = its view, else that goal's page. */
     learnAt: Long = -2L,
     onLearnAt: (Long) -> Unit = {},
+    /** Bumped when the Brain tab is tapped while already shown: from inside a world or the learn view, fly back to the map. */
+    homeSignal: Int = 0,
     learn: LearnViewModel? = null,
 ) {
     val lobeList = lobes.orEmpty()
@@ -1142,6 +1144,13 @@ fun BrainScreen(
     /** One level out: sub brain -> whole map, through the portal. */
     val stepOut: () -> Unit = {
         if (learnAt >= 0) onLearnAt(-1L) else if (learnOpen) startLearn(false) else if (selectedNow >= 0) startPortal(-1L) else homeTick++
+    }
+    var seenHome by remember { mutableStateOf(homeSignal) }
+    LaunchedEffect(homeSignal) {
+        if (homeSignal == seenHome) return@LaunchedEffect
+        seenHome = homeSignal
+        if (portal != null) return@LaunchedEffect
+        if (learnOpen) startLearn(false) else if (selectedNow >= 0) startPortal(-1L)
     }
     var learnMenu by remember { mutableStateOf<Offset?>(null) }
     var addingGoal by remember { mutableStateOf(false) }

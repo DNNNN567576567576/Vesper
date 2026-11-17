@@ -370,6 +370,7 @@ class IdeaEditorViewModel(private val notebook: VesperHost, ideaId: Long?, lobeI
 
     val exists: Boolean get() = id != 0L
     val lobeId: Long get() = base.lobeId
+    val branchId: Long? get() = base.branchId
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val rowChanges = snapshotFlow { id }.flatMapLatest { if (it == 0L) emptyFlow() else dao.observeIdeas() }
@@ -404,6 +405,35 @@ class IdeaEditorViewModel(private val notebook: VesperHost, ideaId: Long?, lobeI
                 title = row.title; body = row.body; link = row.link.orEmpty()
             }
             base = row
+        }
+    }
+
+    /**
+     * Moves this item to [toLobe] (and its group [toBranch], null = loose on the lobe). Typed text is saved first; the move is
+     * one transaction. Returns the new home's names ("Coding" or "Coding › Vesper"), null when it could not move
+     * (nothing typed yet, the sub brain or group is gone, or a group of another sub brain).
+     */
+    suspend fun moveTo(toLobe: Long, toBranch: Long?): String? {
+        saveJob?.cancel()
+        persist()
+        return mutex.withLock {
+            if (id == 0L || deleted) return null
+            try {
+                val dest = notebook.db.useWriterConnection { w ->
+                    w.immediateTransaction {
+                        val lobe = dao.getLobe(toLobe) ?: return@immediateTransaction null
+                        val branch = toBranch?.let { dao.getBranch(it) ?: return@immediateTransaction null }
+                        if (branch != null && branch.lobeId != toLobe) return@immediateTransaction null
+                        if (dao.getIdea(id) == null) return@immediateTransaction null
+                        dao.moveIdea(id, toLobe, toBranch, System.currentTimeMillis())
+                        listOfNotNull(lobe.name, branch?.name).joinToString(" › ")
+                    }
+                }
+                if (dest != null) dao.getIdea(id)?.let { base = it }
+                dest
+            } catch (e: Exception) {
+                notebook.reportError("move item", e); null
+            }
         }
     }
 

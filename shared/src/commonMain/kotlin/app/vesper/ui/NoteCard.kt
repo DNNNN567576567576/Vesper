@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,6 +49,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.vesper.IdeaEditorViewModel
+import app.vesper.data.Branch
+import app.vesper.data.Lobe
 import kotlinx.coroutines.launch
 import kotlin.math.max
 
@@ -60,7 +63,10 @@ private val CardPurple = Color(0xFF9C84FF)
  * outside the page (a tap outside, a drag down) saves first just like the page's own back does.
  */
 @Composable
-fun NoteCard(vm: IdeaEditorViewModel, from: Offset, p: Animatable<Float, AnimationVector1D>, footer: String, onClosed: () -> Unit) {
+fun NoteCard(
+    vm: IdeaEditorViewModel, from: Offset, p: Animatable<Float, AnimationVector1D>, footer: String,
+    lobes: List<Lobe>, branches: List<Branch>, closeSignal: Int, onMoved: (String) -> Unit, onClosed: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     var closing by remember { mutableStateOf(false) }
@@ -75,6 +81,10 @@ fun NoteCard(vm: IdeaEditorViewModel, from: Offset, p: Animatable<Float, Animati
     }
     // the same as the page's own back: save what is typed, drop the keyboard, go
     fun leave() { vm.flush(); focusManager.clearFocus(); close() }
+    // The Brain tab tapped again (App bumps the signal): same as leaving by hand, so what is typed is saved first.
+    var seenSignal by remember { mutableIntStateOf(closeSignal) }
+    LaunchedEffect(closeSignal) { if (closeSignal != seenSignal) { seenSignal = closeSignal; leave() } }
+    var moving by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(18.dp)
 
     Box(Modifier.fillMaxSize()) {
@@ -115,12 +125,27 @@ fun NoteCard(vm: IdeaEditorViewModel, from: Offset, p: Animatable<Float, Animati
                 ) {
                     Box(Modifier.size(36.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(CardPurple.copy(alpha = 0.55f)))
                 }
-                Box(Modifier.weight(1f).fillMaxWidth()) { IdeaPageScreen(vm, onClose = ::close) }
+                Box(Modifier.weight(1f).fillMaxWidth()) { IdeaPageScreen(vm, onClose = ::close, onMove = { moving = true }) }
                 Text(
                     footer, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
                     style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim.copy(alpha = 0.7f)),
                 )
             }
         }
+    }
+    if (moving) {
+        MovePicker(
+            lobes, branches, vm.lobeId, vm.branchId,
+            onPick = { l, b ->
+                moving = false
+                scope.launch {
+                    if (l == vm.lobeId && b == vm.branchId) return@launch
+                    val dest = vm.moveTo(l, b) ?: return@launch
+                    onMoved(dest)
+                    close()
+                }
+            },
+            onCancel = { moving = false },
+        )
     }
 }

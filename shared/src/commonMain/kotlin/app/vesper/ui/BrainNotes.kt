@@ -383,12 +383,49 @@ internal fun SharePicker(
 }
 
 @Composable
-private fun PickRow(label: String, color: androidx.compose.ui.graphics.Color, indent: Int, onClick: () -> Unit) {
+private fun PickRow(label: String, color: androidx.compose.ui.graphics.Color, indent: Int, here: Boolean = false, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 48.dp).pixelCard(fill = Px.Bg, shadow = false, notch = 2.dp)
             .clickable(role = Role.Button, onClick = onClick).padding(start = (12 + indent).dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = color))
+        Text(label, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = color))
+        if (here) Text("HERE", style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim))
+    }
+}
+
+/**
+ * "Move to..." for an open note: first every sub brain, then the chosen one's groups plus "no group". Where the note sits now is
+ * marked HERE. Nothing moves until a place is tapped; [onPick] gets (sub brain, group or null for loose).
+ */
+@Composable
+internal fun MovePicker(
+    lobes: List<Lobe>,
+    branches: List<Branch>,
+    hereLobe: Long,
+    hereBranch: Long?,
+    onPick: (lobeId: Long, branchId: Long?) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var lobeId by remember { mutableStateOf<Long?>(null) }
+    val lobe = lobes.firstOrNull { it.id == lobeId }
+    PixelDialog(onCancel) {
+        Text(if (lobe == null) "MOVE TO WHERE?" else "MOVE TO ${lobe.name.uppercase()}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(Modifier.heightIn(max = 340.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (lobe == null) {
+                items(lobes, key = { "l${it.id}" }) { l -> PickRow(l.name.uppercase(), lobeColor(l), 0, here = l.id == hereLobe) { lobeId = l.id } }
+            } else {
+                item(key = "none") { PickRow("NO GROUP", lobeColor(lobe), 0, here = lobe.id == hereLobe && hereBranch == null) { onPick(lobe.id, null) } }
+                items(branches.filter { it.lobeId == lobe.id }.sortedBy { it.name }, key = { "b${it.id}" }) { b ->
+                    PickRow(b.name.uppercase(), lobeColor(lobe), 18, here = b.id == hereBranch) { onPick(lobe.id, b.id) }
+                }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+            if (lobe != null) PixelButton("BACK", { lobeId = null })
+            PixelButton("CANCEL", onCancel)
+        }
     }
 }

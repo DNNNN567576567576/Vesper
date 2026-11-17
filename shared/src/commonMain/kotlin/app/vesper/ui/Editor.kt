@@ -151,7 +151,7 @@ internal fun PageBodyField(value: String, onChange: (String) -> Unit, enabled: B
  * the app stops, when the page leaves composition (desktop) and on back.
  */
 @Composable
-fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit) {
+fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit, onMove: (() -> Unit)? = null) {
     val focusManager = LocalFocusManager.current
     val titleFocus = remember { FocusRequester() }
     val closeNow by rememberUpdatedState(onClose)
@@ -178,6 +178,14 @@ fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(58.dp), verticalAlignment = Alignment.CenterVertically) {
             SigilFab("Back", ::leave, back = true)
             Spacer(Modifier.weight(1f))
+            if (vm.exists && onMove != null) {
+                Box(
+                    Modifier.defaultMinSize(48.dp, 48.dp).clickable(role = Role.Button, onClickLabel = "Move to", onClick = { focusManager.clearFocus(); onMove() }).padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("move", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = Px.Lavender, textDecoration = TextDecoration.Underline))
+                }
+            }
             if (vm.exists) {
                 Box(
                     Modifier.defaultMinSize(48.dp, 48.dp).clickable(role = Role.Button, onClickLabel = "Burn", onClick = { burning = true }).padding(horizontal = 14.dp),
