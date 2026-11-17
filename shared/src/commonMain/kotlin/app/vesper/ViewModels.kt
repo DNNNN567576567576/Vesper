@@ -296,6 +296,27 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         }
     }
 
+    /**
+     * Moves group [id] with all its notes to sub brain [toLobe] in one transaction. Returns the target's name, null when nothing
+     * moved (group or sub brain gone, or already there). A same-named group there stays separate.
+     */
+    suspend fun moveBranchTo(id: Long, toLobe: Long): String? = try {
+        notebook.db.useWriterConnection { w ->
+            w.immediateTransaction {
+                val lobe = dao.getLobe(toLobe) ?: return@immediateTransaction null
+                val branch = dao.getBranch(id) ?: return@immediateTransaction null
+                if (branch.lobeId == toLobe) return@immediateTransaction null
+                dao.moveBranch(id, toLobe)
+                dao.moveBranchIdeas(id, toLobe, System.currentTimeMillis())
+                lobe.name
+            }
+        }
+    } catch (e: Exception) { notebook.reportError("move group", e); null }
+
+    fun moveBranch(id: Long, toLobe: Long, onMoved: (String) -> Unit) {
+        notebook.appScope.launch { moveBranchTo(id, toLobe)?.let { withContext(Dispatchers.Main) { onMoved(it) } } }
+    }
+
     /** Its ideas stay, directly on the lobe. The caller confirms first. */
     fun deleteBranch(id: Long) {
         notebook.appScope.launch {

@@ -429,6 +429,31 @@ class EditorSafetyTest {
         assertEquals(0, io { rows.ideas() }.size)
     }
 
+    // ---- moving a whole group ----
+    @Test fun aMovedGroupTakesAllItsNotesAndUnknownOrSameTargetsDoNothing() {
+        val vm = BrainViewModel(host)
+        val brain = host.db.brainDao()
+        val from = lobe()
+        val to = io { brain.insertLobe(Lobe(name = "Coding", colorIndex = 2, slot = 5)) }
+        val group = io { brain.insertBranch(Branch(lobeId = from, name = "Read")) }
+        io { brain.insertBranch(Branch(lobeId = to, name = "Read")) } // same name there: allowed, not merged
+        repeat(3) { io { brain.insertIdea(Idea(lobeId = from, title = "n$it", body = "", branchId = group)) } }
+        val loose = io { brain.insertIdea(Idea(lobeId = from, title = "loose", body = "")) }
+        val before = io { rows.ideas().single { it.id == loose }.syncAt }
+        assertNull(io { vm.moveBranchTo(group, from) })
+        assertNull(io { vm.moveBranchTo(group, 9999) })
+        assertNull(io { vm.moveBranchTo(9999, to) })
+        assertEquals(from, io { brain.getBranch(group) }!!.lobeId)
+        Thread.sleep(3)
+        assertEquals("Coding", io { vm.moveBranchTo(group, to) })
+        val moved = io { rows.ideas() }.filter { it.branchId == group }
+        assertEquals(listOf(to, to, to), moved.map { it.lobeId })
+        assertEquals(to, io { brain.getBranch(group) }!!.lobeId)
+        assertEquals(2, io { rows.branches() }.count { it.lobeId == to })
+        assertEquals(from, io { rows.ideas().single { it.id == loose } }.lobeId)
+        assertEquals(before, io { rows.ideas().single { it.id == loose } }.syncAt)
+    }
+
     // ---- moving an item (Move to...) ----
     private fun move(vm: IdeaEditorViewModel, lobe: Long, group: Long?): String? {
         val job = host.appScope.async { vm.moveTo(lobe, group) }

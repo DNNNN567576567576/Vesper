@@ -506,6 +506,51 @@ class SyncRoundTest {
         converge(a, b)
         assertEquals("L" to null, a.db.syncDao().ideas().single { it.uid == "gita" }.let { i -> a.db.syncDao().lobes().single { it.id == i.lobeId }.uid to i.branchId })
     }
+    private suspend fun Device.seedGroupOf3(): Pair<Long, Long> {
+        val code = db.brainDao().insertLobe(Lobe(name = "Coding", colorIndex = 2, slot = 3, uid = "C"))
+        val read = db.brainDao().insertBranch(Branch(lobeId = db.syncDao().lobes().single { it.uid == "L" }.id, name = "Shelf", uid = "shelf"))
+        val home = db.syncDao().lobes().single { it.uid == "L" }.id
+        repeat(3) { db.brainDao().insertIdea(Idea(lobeId = home, title = "n$it", body = "b$it", uid = "n$it", branchId = read)) }
+        return read to code
+    }
+
+    private suspend fun Device.landed() = db.syncDao().ideas().filter { it.uid.startsWith("n") }.associate { i ->
+        i.uid to (db.syncDao().lobes().single { it.id == i.lobeId }.uid to db.syncDao().branches().firstOrNull { it.id == i.branchId }?.uid)
+    }
+
+    @Test fun aGroupMovedToAnotherLobeBringsAllItsNotesAlong() = test {
+        val (a, b) = pair()
+        a.seedWeb()
+        val (shelf, code) = a.seedGroupOf3()
+        converge(a, b); tick()
+        a.db.brainDao().moveBranch(shelf, code)
+        a.db.brainDao().moveBranchIdeas(shelf, code, System.currentTimeMillis())
+        converge(a, b)
+        assertEquals(mapOf("n0" to ("C" to "shelf"), "n1" to ("C" to "shelf"), "n2" to ("C" to "shelf")), b.landed())
+        assertEquals(1, b.db.syncDao().branches().count { it.uid == "shelf" })
+        assertEquals("C", b.db.syncDao().lobes().single { it.id == b.db.syncDao().branches().single { g -> g.uid == "shelf" }.lobeId }.uid)
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun anEditOnTheOtherDeviceBeforeSyncingStillConvergesInsideTheMovedGroup() = test {
+        val (a, b) = pair()
+        a.seedWeb()
+        val (shelf, code) = a.seedGroupOf3()
+        converge(a, b); tick()
+        a.db.brainDao().moveBranch(shelf, code)
+        a.db.brainDao().moveBranchIdeas(shelf, code, System.currentTimeMillis()); tick()
+        val n1 = b.db.syncDao().ideas().single { it.uid == "n1" } // B still sees the old lobe and edits later than the move
+        b.db.brainDao().setIdeaFields(n1.id, "n1 edited", "b1", null, n1.branchId, System.currentTimeMillis())
+        converge(a, b)
+        // both sides changed n1 (a move, a text edit): the existing conflict rule keeps both versions, and neither goes loose
+        val landed = b.landed()
+        assertEquals(setOf("n0", "n1", "n2"), landed.keys.filter { !it.contains('~') }.toSet())
+        assertTrue(landed.values.all { it == ("C" to "shelf") })
+        assertTrue(b.db.syncDao().ideas().any { it.title.contains("n1 edited") })
+        assertEquals(6, b.db.syncDao().ideas().size) // gita, loose, three notes and one conflict copy
+        assertEquals(a.state(), b.state())
+    }
+
     @Test fun deletingALobeTombstonesItsGroups() = test {
         val (a, b) = pair()
         a.seedWeb()

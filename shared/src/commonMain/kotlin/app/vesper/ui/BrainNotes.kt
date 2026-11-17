@@ -406,15 +406,19 @@ internal fun MovePicker(
     hereBranch: Long?,
     onPick: (lobeId: Long, branchId: Long?) -> Unit,
     onCancel: () -> Unit,
+    /** false = sub brains only (moving a whole group): tapping one picks it, and the current one is not selectable. */
+    groups: Boolean = true,
 ) {
     var lobeId by remember { mutableStateOf<Long?>(null) }
     val lobe = lobes.firstOrNull { it.id == lobeId }
     PixelDialog(onCancel) {
-        Text(if (lobe == null) "MOVE TO WHERE?" else "MOVE TO ${lobe.name.uppercase()}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
+        Text(if (lobe == null) if (groups) "MOVE TO WHERE?" else "MOVE GROUP TO WHERE?" else "MOVE TO ${lobe.name.uppercase()}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
         Spacer(Modifier.height(12.dp))
         LazyColumn(Modifier.heightIn(max = 340.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (lobe == null) {
-                items(lobes, key = { "l${it.id}" }) { l -> PickRow(l.name.uppercase(), lobeColor(l), 0, here = l.id == hereLobe) { lobeId = l.id } }
+                items(lobes, key = { "l${it.id}" }) { l ->
+                    PickRow(l.name.uppercase(), lobeColor(l), 0, here = l.id == hereLobe) { if (!groups) { if (l.id != hereLobe) onPick(l.id, null) } else lobeId = l.id }
+                }
             } else {
                 item(key = "none") { PickRow("NO GROUP", lobeColor(lobe), 0, here = lobe.id == hereLobe && hereBranch == null) { onPick(lobe.id, null) } }
                 items(branches.filter { it.lobeId == lobe.id }.sortedBy { it.name }, key = { "b${it.id}" }) { b ->

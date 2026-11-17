@@ -1036,6 +1036,8 @@ fun BrainScreen(
     onAddBranch: (Long, String) -> Unit,
     onRenameBranch: (Long, String) -> Unit,
     onDeleteBranch: (Long) -> Unit,
+    /** Moves a group and its notes to another sub brain: (group, sub brain). */
+    onMoveBranch: (Long, Long) -> Unit,
     /** The main map shows every group and note (on) or only the sub brains (off). */
     showAll: Boolean,
     onToggleShowAll: () -> Unit,
@@ -1167,6 +1169,7 @@ fun BrainScreen(
     var addingBranch by remember { mutableStateOf(false) }
     var editingBranch by remember { mutableStateOf<Branch?>(null) }
     var deletingBranch by remember { mutableStateOf<Branch?>(null) }
+    var movingBranch by remember { mutableStateOf<Branch?>(null) }
     var deleting by remember { mutableStateOf<Lobe?>(null) }
     var searching by remember { mutableStateOf(false) }
 
@@ -1266,6 +1269,7 @@ fun BrainScreen(
                     m.branch != null -> listOf(
                         "+ note" to { onOpenIdea(0L, m.branch.lobeId, m.branch.id, m.at + rootOff) },
                         "Rename" to { editingBranch = m.branch },
+                        "Move" to { movingBranch = m.branch },
                         "Delete" to { deletingBranch = m.branch },
                     )
                     selected != null -> listOf(
@@ -1344,6 +1348,13 @@ fun BrainScreen(
     }
     editingBranch?.let { b ->
         NameDialog("RENAME GROUP", "Name", initial = b.name, submit = "SAVE", onDismiss = { editingBranch = null }, onSubmit = { onRenameBranch(b.id, it) })
+    }
+    movingBranch?.let { b ->
+        MovePicker(
+            lobes.orEmpty(), emptyList(), b.lobeId, null, groups = false,
+            onPick = { l, _ -> movingBranch = null; onMoveBranch(b.id, l) },
+            onCancel = { movingBranch = null },
+        )
     }
     renamingLobe?.let { l ->
         NameDialog("RENAME SUB BRAIN", "Name", initial = l.name, submit = "SAVE", onDismiss = { renamingLobe = null }, onSubmit = { onRenameLobe(l.id, it) })

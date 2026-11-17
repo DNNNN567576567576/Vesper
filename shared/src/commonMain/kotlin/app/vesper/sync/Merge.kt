@@ -154,8 +154,16 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
         val goal = goals.dead[uid] ?: throw SyncException("The copy on Drive is damaged. Nothing was changed.")
         goals.live[uid] = goal.copy(syncAt = maxOf(goal.syncAt, tombs.getValue("goals" to uid) + 1))
     }
-    // An idea never brings a deleted group back, it lands directly on the lobe. The new stamp keeps the write quiet and is the same on both devices.
-    ideas.live.replaceAll { _, i -> if (i.branchUid != null && branches.live[i.branchUid]?.lobeUid != i.lobeUid) i.copy(branchUid = null, syncAt = i.syncAt + 1) else i }
+    // An idea never brings a deleted group back, it lands directly on the lobe. An idea whose group moved to another lobe meanwhile follows it.
+    // The new stamp keeps the write quiet and is the same on both devices.
+    ideas.live.replaceAll { _, i ->
+        val g = i.branchUid?.let { branches.live[it] }
+        when {
+            i.branchUid == null || g?.lobeUid == i.lobeUid -> i
+            g == null -> i.copy(branchUid = null, syncAt = i.syncAt + 1)
+            else -> i.copy(lobeUid = g.lobeUid, syncAt = i.syncAt + 1)
+        }
+    }
     while (true) {
         val missing = notes.live.values.mapNotNull { it.parentUid }.filter { it !in notes.live && it in notes.dead }.toSet()
         if (missing.isEmpty()) break

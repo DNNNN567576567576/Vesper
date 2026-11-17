@@ -208,6 +208,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     onAddBranch = brainVm::addBranch,
                     onRenameBranch = brainVm::renameBranch,
                     onDeleteBranch = brainVm::deleteBranch,
+                    onMoveBranch = { b, l -> brainVm.moveBranch(b, l) { movedMsg = "moved to $it" } },
                     showAll = brainShowAll,
                     onToggleShowAll = brainVm::toggleShowAll,
                     soundsOn = brainSounds,

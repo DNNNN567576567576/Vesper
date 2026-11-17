@@ -202,6 +202,13 @@ interface BrainDao {
     @Query("UPDATE ideas SET lobeId = :lobeId, branchId = :branchId, updatedAt = :at WHERE id = :id")
     suspend fun moveIdea(id: Long, lobeId: Long, branchId: Long?, at: Long)
 
+    /** A group moving worlds: the group row and every note in it follow, so the update triggers stamp them all for sync. */
+    @Query("UPDATE branches SET lobeId = :lobeId WHERE id = :id")
+    suspend fun moveBranch(id: Long, lobeId: Long)
+
+    @Query("UPDATE ideas SET lobeId = :lobeId, updatedAt = :at WHERE branchId = :branchId")
+    suspend fun moveBranchIdeas(branchId: Long, lobeId: Long, at: Long)
+
     @Query("SELECT * FROM branches WHERE id = :id")
     suspend fun getBranch(id: Long): Branch?
 
