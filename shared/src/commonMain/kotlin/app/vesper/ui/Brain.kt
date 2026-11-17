@@ -17,6 +17,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
 import kotlin.math.roundToInt
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.animation.core.Animatable
@@ -526,6 +529,8 @@ internal class BrainRenderer(
 
     /** dp per low-res pixel, for the world's portal arc (its width is capped in dp). */
     var pxdp = 2.286f
+    /** Screen y (dp) of the world portal's arc centre: pinned under the header, so the page scrolls beneath it (where it sits at rest). */
+    var arcTopDp = 0f
 
     private val cv get() = pix.canvas
     private val spritePaint = pixPaint()
@@ -656,7 +661,7 @@ internal class BrainRenderer(
         val s = HEART_SCALE * (1f + 0.14f * heartBeat() * l)
         val cy = SUN_Y - heartSprite.height * s / 2f // base stays on SUN_Y while it swells
         sprite(heartDeadSprite, SUN_X, cy, s, d, false)
-        sprite(heartSprite, SUN_X, cy, s, l * d, false) // the original art, untinted: the one pink thing the user keeps
+        sprite(heartSprite, SUN_X, cy, s, l * d, false) // the live heart art, recoloured to the app purples
     }
 
     /** A straight line between two screen points, [gap] px short of each end. */
@@ -766,10 +771,10 @@ internal class BrainRenderer(
     }
 
     /** The world's portal arc, in low-res px: centre x, centre y (on the page top), half width, depth, and the time. Valid after [draw]. */
-    fun arcGeom() = floatArrayOf(W / 2f, sy(0f) - ARC_D / pxdp - 6f / pxdp, min(0.55f * W, 300f / pxdp), ARC_D / pxdp, t)
+    fun arcGeom() = floatArrayOf(W / 2f, arcTopDp / pxdp, min(0.55f * W, 300f / pxdp), ARC_D / pxdp, t)
 
     /**
-     * The doorway you came through, hanging as a shallow smile over the top of the page (it scrolls with the page): its dark inside with
+     * The doorway you came through, hanging as a shallow smile over the top of the page (pinned to the top of the screen, the page scrolls under it): its dark inside with
      * slowly swirling stars, a soft glow and a few faint light rays swaying down over the page. The ring itself is smooth, drawn at
      * full resolution by [drawPortalRing].
      */
@@ -898,7 +903,7 @@ internal class BrainRenderer(
             } else dot(rnd(x), rnd(y), 1, 1, 0xCDB8FF, a)
         }
 
-        if (focus) { portalAbove(L.lcol[sel]); world(L, sel); flash?.let(::flashAt) } else {
+        if (focus) { world(L, sel); portalAbove(L.lcol[sel]); flash?.let(::flashAt) } else {
             // the main map's rot: big rings and core aura, cracks, mold specks
             floatArrayOf(60f, 105f, 150f).forEachIndexed { i, r -> ring(0f, 0f, r, 90, t * (if (i % 2 == 1) -1f else 1f), 0x39234C, 0.6f * (1f - ROT * 0.5f)) }
             glowAt(0f, 0f, 90f, 0x4A2FA0, 0.3f)
@@ -1185,13 +1190,13 @@ fun BrainScreen(
             if (selected == null) {
                 ScreenTitle("Brain")
                 Row(
-                    Modifier.align(Alignment.TopEnd).padding(top = 16.dp, end = 16.dp),
+                    Modifier.align(Alignment.TopEnd).padding(top = 20.dp, end = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (arranging) PixelButton("DONE", { arrangingRaw = false }, primary = true)
                     else if (!searching) {
                         ShowAllToggle(showAll, onToggleShowAll)
-                        PixelButton("SEARCH", { searching = true })
+                        SearchButton { searching = true }
                     }
                 }
             } else {
@@ -1399,24 +1404,46 @@ private val TITLE_H = 76.dp
 /** A portal in flight: into [lobe]'s world ([to] = its id), or out of it to the whole map ([to] = -1). */
 private class PortalRun(val to: Long, val lobe: Lobe)
 
-/** The show-all toggle beside SEARCH: a little pixel brain with its dots, lit when groups and notes show on the main map. */
+/** The show-all toggle beside the search button: an eye, open (lit) when groups and notes show on the main map, closed and dim when hidden. */
 @Composable
-private fun ShowAllToggle(on: Boolean, onToggle: () -> Unit) {
-    val c = if (on) Px.Lavender else Px.TextDim
-    Box(
-        Modifier.size(48.dp).pixelCard(fill = if (on) Px.Primary else Px.Elevated, border = if (on) Px.Lavender else Px.Border, shadow = false, notch = 3.dp)
-            .clickable(role = Role.Button, onClickLabel = if (on) "Hide groups and notes" else "Show groups and notes", onClick = onToggle),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.size(22.dp)) {
-            val u = size.width / 11f
-            fun px(x: Int, y: Int, col: Color = c) = drawRect(col, Offset(x * u, y * u), Size(u, u))
-            // a core with four spokes; with show-all on, dots at the spokes' ends
-            for (x in 4..6) for (y in 4..6) px(x, y)
-            for (i in 1..3) { px(5, 4 - i); px(5, 6 + i); px(4 - i, 5); px(6 + i, 5) }
-            if (on) listOf(0 to 0, 10 to 0, 0 to 10, 10 to 10, 2 to 8, 8 to 2).forEach { (x, y) -> px(x, y, Color.White) }
+private fun ShowAllToggle(on: Boolean, onToggle: () -> Unit) =
+    BrainIconButton(if (on) "Hide" else "Show all", onToggle) { u ->
+        if (on) {
+            drawGrid(u, 2, listOf("...XXXXX...", ".XXX...XXX.", "XX..ooo..XX", "X..ooooo..X", "XX..ooo..XX", ".XXX...XXX.", "...XXXXX..."), Px.Lavender)
+        } else {
+            drawGrid(u, 3, listOf("XX.......XX", "..XX...XX..", "....XXX....", "..X..X..X.."), Px.TextDim)
         }
     }
+
+/** The search button: a magnifier. */
+@Composable
+private fun SearchButton(onClick: () -> Unit) =
+    BrainIconButton("Search", onClick) { u ->
+        drawGrid(u, 0, listOf("..XXXXX....", ".X.....X...", "X.......X..", "X.......X..", "X.......X..", "X.......X..", ".X.....X...", "..XXXXX.o..", ".........o.", "..........o"), Px.Lavender)
+    }
+
+/** A 44dp square pixel button for the Brain title row: dark fill, thin light-purple outline (brighter while pressed), an icon drawn on an 11x11 grid. */
+@Composable
+private fun BrainIconButton(description: String, onClick: () -> Unit, icon: androidx.compose.ui.graphics.drawscope.DrawScope.(u: Float) -> Unit) {
+    val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    Box(
+        Modifier.size(44.dp)
+            .pixelCard(fill = Color(0xFF14091F), border = if (pressed) Color(0xFFE6DCFF) else Px.Lavender, shadow = false, notch = 3.dp)
+            .semantics { contentDescription = description }
+            .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(22.dp)) { icon((size.width / 11f).let { kotlin.math.floor(it).coerceAtLeast(1f) }) }
+    }
+}
+
+/** Draws [rows] as whole-pixel squares of [u] px, row 0 at grid row [y0]: X in [col], o in white. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGrid(u: Float, y0: Int, rows: List<String>, col: Color) {
+    val off = (size.width - 11 * u) / 2f
+    rows.forEachIndexed { y, r -> r.forEachIndexed { x, ch ->
+        if (ch != '.') drawRect(if (ch == 'o') Color.White else col, Offset(off + x * u, off + (y + y0) * u), Size(u, u))
+    } }
 }
 
 /** Chips in a ring round a tapped brain at [at] (px), over a dim backdrop; a tap outside closes it. Each chip closes it too. */
@@ -1554,6 +1581,7 @@ private fun BrainCanvas(
     // A dimension is laid out for this view (its shape and its name sizes), so it is laid out again when the window changes size.
     val nameH = remember(measurer, density, LocalDensity.current.fontScale) { nameHeights(measurer, density, pageFont, titleFont, pixelFont) }
     renderer.pxdp = pxSize / density
+    renderer.arcTopDp = topInset.value
     // the world's title hangs just under the portal arc over the page top, so the page starts that far down (arc depth + 6 dp, less the 12 dp margin)
     val arcTop = topInset.value + ARC_D - 6f
     val frame = if (view.width <= 0) DimFrame(top = arcTop, pxdp = pxSize / density, itemH = nameH[0], groupH = nameH[1], coreH = nameH[2])

@@ -77,6 +77,9 @@ import org.robolectric.annotation.GraphicsMode
  * 2.5.14: every focused-world frame changed on purpose (selectedZoom, selectedFar, dimension, small, blit3): the portal mouth is a darker
  * hole with an inner glow along the arc and brighter stars. flyIn changed on purpose: the other portals fade out early in a fly-through and
  * the flown portal drops its dashes and dots by mid-flight. overview, beatFresh, staleHeart, showAll and glowLabel are untouched.
+ * 2.5.18: overview, beatFresh and showAll changed on purpose (the vault heart is purple again); selectedZoom, selectedFar, dimension, small and blit3
+ * changed on purpose (the portal arc is pinned at the top of the screen, drawn over the world, so the page scrolls under it; the test renderer
+ * now sets arcTopDp = 60). staleHeart, flyIn and glowLabel are untouched.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -101,7 +104,7 @@ class BrainPixelTest {
         setResourceReaderAndroidContext(RuntimeEnvironment.getApplication()) // Robolectric doesn't start CMP's context provider
         val env = getSystemResourceEnvironment()
         suspend fun img(r: DrawableResource) = getDrawableResourceBytes(env, r).decodeToImageBitmap()
-        BrainRenderer(img(core), img(Res.drawable.vault_heart), img(Res.drawable.vault_heart_dead))
+        BrainRenderer(img(core), img(Res.drawable.vault_heart), img(Res.drawable.vault_heart_dead)).also { it.arcTopDp = 60f }
     }
     private fun pixels(r: BrainRenderer): IntArray = IntArray(r.W * r.H).also { r.pix.bmp.readPixels(it) }
     private fun blitPixels(r: BrainRenderer, px: Int): IntArray {
@@ -200,7 +203,7 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "beatFresh" to 213117253, "blit3" to -1127952068, "dimension" to 1271659063, "flyIn" to -1287240568, "glowLabel" to -66391980, "overview" to -909083742, "selectedFar" to 1676187487, "selectedZoom" to -1281280888, "showAll" to -667925983, "small" to 2081209502, "staleHeart" to -1729973114,
+            "beatFresh" to -1355989786, "blit3" to -417458193, "dimension" to -1725325892, "flyIn" to -1287240568, "glowLabel" to -66391980, "overview" to 1714630548, "selectedFar" to -1088837572, "selectedZoom" to -1813238531, "showAll" to 1955788307, "small" to -1724423207, "staleHeart" to -1729973114,
         )
     }
 }

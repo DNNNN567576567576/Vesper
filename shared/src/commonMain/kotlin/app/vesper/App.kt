@@ -41,6 +41,7 @@ import app.vesper.ui.BrainCamera
 import app.vesper.ui.BrainScreen
 import app.vesper.ui.NoteCard
 import app.vesper.ui.MoonsScreen
+import app.vesper.ui.CalculatorScreen
 import app.vesper.ui.PixelNavBar
 import app.vesper.ui.Px
 import app.vesper.ui.SharePicker
@@ -107,6 +108,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                 when (index) {
                     1 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
                     2 -> moonsReset.intValue++ // jump back to today
+                    3 -> {}
                     else -> { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
                 }
             }
@@ -141,6 +143,8 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     onDelete = shrineVm::delete,
                     media = host.shrineMedia,
                 )
+            } else if (current == 3) {
+                CalculatorScreen()
             } else if (current == 2) {
                 MoonsScreen(
                     plans = plans,
