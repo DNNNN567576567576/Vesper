@@ -689,3 +689,47 @@ class MoonsViewModel(private val notebook: VesperHost) : ViewModel() {
         }
     }
 }
+
+/** The learn brain's goals and their steps. Days are `LocalDate.toEpochDay()`. `null` = first emission pending. */
+class LearnViewModel(private val notebook: VesperHost) : ViewModel() {
+    private val dao get() = notebook.db.learnDao()
+
+    val goals: StateFlow<List<app.vesper.data.Goal>?> = dao.observeGoals()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val steps: StateFlow<List<app.vesper.data.Step>?> = dao.observeSteps()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private fun write(what: String, block: suspend () -> Unit): Job = notebook.appScope.launch {
+        try { block() } catch (e: Exception) { notebook.reportError(what, e) }
+    }
+
+    fun addGoal(name: String) {
+        val clean = name.trim().ifEmpty { return }
+        write("add goal") { dao.insertGoal(app.vesper.data.Goal(name = clean, position = dao.nextGoalPosition())) }
+    }
+
+    fun renameGoal(id: Long, name: String) {
+        val clean = name.trim().ifEmpty { return }
+        write("rename goal") { dao.renameGoal(id, clean, System.currentTimeMillis()) }
+    }
+
+    /** Permanent, steps included. The caller confirms first. */
+    fun deleteGoal(id: Long) = write("delete goal") { dao.deleteGoal(id) }
+
+    fun addStep(goalId: Long, title: String) {
+        val clean = title.trim().ifEmpty { return }
+        write("add step") { dao.insertStep(app.vesper.data.Step(goalId = goalId, title = clean, position = dao.nextStepPosition(goalId))) }
+    }
+
+    fun setStepDone(step: app.vesper.data.Step, done: Boolean) = write("update step") { dao.setStepDone(step.id, done, System.currentTimeMillis()) }
+
+    fun setStepDay(step: app.vesper.data.Step, day: Long?) = write("update step") { dao.setStepDay(step.id, day, System.currentTimeMillis()) }
+
+    /** A blank title keeps the old one. */
+    fun editStep(step: app.vesper.data.Step, title: String, note: String, day: Long?) = write("edit step") {
+        dao.setStepFields(step.id, title.trim().ifEmpty { step.title }, note.trim(), day, System.currentTimeMillis())
+    }
+
+    /** Permanent. The caller confirms first. */
+    fun deleteStep(id: Long) = write("delete step") { dao.deleteStep(id) }
+}

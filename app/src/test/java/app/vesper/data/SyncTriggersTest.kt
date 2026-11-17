@@ -90,7 +90,7 @@ class SyncTriggersTest {
     @Test
     fun triggersWorkOnMigratedDb() {
         helper.createDatabase("m.db", 8).apply { execSQL("INSERT INTO notes (id, title, content, updatedAt, position) VALUES (1, 'old', 'x', 1700000000000, 0)"); close() }
-        val db = helper.runMigrationsAndValidate("m.db", DB_VERSION, true, MIGRATION_8_9, MIGRATION_9_10)
+        val db = helper.runMigrationsAndValidate("m.db", DB_VERSION, true, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
         db.assertTriggersWork()
         assertEquals("notes-1", db.str("SELECT uid FROM notes WHERE id = 1")) // backfilled row untouched by the tests above
     }
@@ -132,6 +132,24 @@ class SyncTriggersTest {
             db.brainDao().deleteLobe(lobe) // through Room, which enables foreign keys
             val tombs = db.openHelper.writableDatabase.tombstones()
             assertTrue(tombs.containsAll(setOf("ideas:${idea.uid}")))
+        } finally { db.close() }
+    }
+
+    /** Alarms are local: active ones by time, a rung one-time alarm in history, and nothing tombstoned. */
+    @Test
+    fun alarmsSplitIntoActiveAndHistory(): Unit = runBlocking {
+        val db = freshDb()
+        try {
+            val dao = db.alarmDao()
+            dao.insert(Alarm(hour = 9, minute = 0, repeatDays = 0b0011111))
+            val once = dao.insert(Alarm(hour = 7, minute = 30, label = "train", oneTimeDate = 20000))
+            assertEquals(listOf(7, 9), dao.observeActive().first().map { it.hour })
+            dao.update(dao.get(once)!!.copy(firedAt = 123, enabled = false))
+            assertEquals(listOf(9), dao.observeActive().first().map { it.hour })
+            assertEquals(listOf("train"), dao.observeHistory().first().map { it.label })
+            dao.delete(once)
+            assertTrue(dao.observeHistory().first().isEmpty())
+            assertTrue(db.openHelper.writableDatabase.tombstones().isEmpty())
         } finally { db.close() }
     }
 }

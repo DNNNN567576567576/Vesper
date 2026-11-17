@@ -311,6 +311,113 @@ interface MoonsDao {
     suspend fun deleteFocus(day: Long, lobeId: Long)
 }
 
+/** A learning goal: a moon round the learn brain. [updatedAt] is its own last edit; its steps carry theirs, see [app.vesper.ui.goalTouchedAt]. */
+@Entity(tableName = "goals", indices = [Index(value = ["uid"], unique = true)])
+data class Goal(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    /** Order round the learn brain, lowest first. */
+    val position: Int = 0,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+)
+
+/** One step on a goal's path. [day] is `LocalDate.toEpochDay()`, null = no day. Deleting the goal deletes its steps. */
+@Entity(
+    tableName = "steps",
+    foreignKeys = [ForeignKey(Goal::class, ["id"], ["goalId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("goalId"), Index("day"), Index(value = ["uid"], unique = true)],
+)
+data class Step(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val goalId: Long,
+    val title: String,
+    val note: String = "",
+    val done: Boolean = false,
+    val day: Long? = null,
+    /** Order on the path, lowest first. */
+    val position: Int = 0,
+    val createdAt: Long = System.currentTimeMillis(),
+    /** Made, edited or done: what keeps its goal bright. */
+    val updatedAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+)
+
+@Dao
+interface LearnDao {
+    @Query("SELECT * FROM goals ORDER BY position ASC, id ASC")
+    fun observeGoals(): Flow<List<Goal>>
+
+    @Query("SELECT * FROM steps ORDER BY goalId ASC, position ASC, id ASC")
+    fun observeSteps(): Flow<List<Step>>
+
+    @Query("SELECT IFNULL(MAX(position), -1) + 1 FROM goals")
+    suspend fun nextGoalPosition(): Int
+
+    @Query("SELECT IFNULL(MAX(position), -1) + 1 FROM steps WHERE goalId = :goalId")
+    suspend fun nextStepPosition(goalId: Long): Int
+
+    @Insert suspend fun insertGoal(goal: Goal): Long
+    @Insert suspend fun insertStep(step: Step): Long
+
+    // Named columns only: a whole-row write from a held copy would put back whatever sync changed since.
+    @Query("UPDATE goals SET name = :name, updatedAt = :at WHERE id = :id")
+    suspend fun renameGoal(id: Long, name: String, at: Long)
+
+    @Query("DELETE FROM goals WHERE id = :id")
+    suspend fun deleteGoal(id: Long)
+
+    @Query("UPDATE steps SET done = :done, updatedAt = :at WHERE id = :id")
+    suspend fun setStepDone(id: Long, done: Boolean, at: Long)
+
+    @Query("UPDATE steps SET day = :day, updatedAt = :at WHERE id = :id")
+    suspend fun setStepDay(id: Long, day: Long?, at: Long)
+
+    @Query("UPDATE steps SET title = :title, note = :note, day = :day, updatedAt = :at WHERE id = :id")
+    suspend fun setStepFields(id: Long, title: String, note: String, day: Long?, at: Long)
+
+    @Query("DELETE FROM steps WHERE id = :id")
+    suspend fun deleteStep(id: Long)
+}
+
+/**
+ * A phone alarm. Local only, never synced: each device rings its own. [repeatDays] is a bitmask, bit 0 = Monday .. bit 6 =
+ * Sunday; 0 = one time, on [oneTimeDate] (epoch day). A one-time alarm that has rung keeps its row with [firedAt] set (history).
+ */
+@Entity(tableName = "alarms")
+data class Alarm(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val hour: Int,
+    val minute: Int,
+    val label: String = "",
+    val repeatDays: Int = 0,
+    val enabled: Boolean = true,
+    val oneTimeDate: Long? = null,
+    val firedAt: Long? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+@Dao
+interface AlarmDao {
+    @Query("SELECT * FROM alarms WHERE firedAt IS NULL ORDER BY hour ASC, minute ASC, id ASC")
+    fun observeActive(): Flow<List<Alarm>>
+
+    @Query("SELECT * FROM alarms WHERE firedAt IS NOT NULL ORDER BY firedAt DESC, id DESC")
+    fun observeHistory(): Flow<List<Alarm>>
+
+    @Query("SELECT * FROM alarms WHERE id = :id")
+    suspend fun get(id: Long): Alarm?
+
+    @Insert suspend fun insert(alarm: Alarm): Long
+    @Update suspend fun update(alarm: Alarm)
+
+    @Query("DELETE FROM alarms WHERE id = :id")
+    suspend fun delete(id: Long)
+}
+
 /** Raw row access for the sync code only (app.vesper.sync); everything else goes through the DAOs above. */
 @Dao
 interface SyncDao {
@@ -320,12 +427,15 @@ interface SyncDao {
     @Query("SELECT * FROM branches") suspend fun branches(): List<Branch>
     @Query("SELECT * FROM ideas") suspend fun ideas(): List<Idea>
     @Query("SELECT * FROM plans") suspend fun plans(): List<Plan>
+    @Query("SELECT * FROM goals") suspend fun goals(): List<Goal>
+    @Query("SELECT * FROM steps") suspend fun steps(): List<Step>
     @Query("SELECT * FROM sync_tombstones") suspend fun tombstones(): List<SyncTombstone>
 
     /** Rises on every change to a synced table, deletes included: the triggers keep each term moving. */
     @Query(
         "SELECT IFNULL((SELECT MAX(syncAt) FROM notes), 0) + IFNULL((SELECT MAX(syncAt) FROM tasks), 0) + IFNULL((SELECT MAX(syncAt) FROM lobes), 0) + " +
             "IFNULL((SELECT MAX(syncAt) FROM branches), 0) + IFNULL((SELECT MAX(syncAt) FROM ideas), 0) + IFNULL((SELECT MAX(syncAt) FROM plans), 0) + " +
+            "IFNULL((SELECT MAX(syncAt) FROM goals), 0) + IFNULL((SELECT MAX(syncAt) FROM steps), 0) + " +
             "IFNULL((SELECT MAX(deletedAt) FROM sync_tombstones), 0)",
     )
     fun observeChanges(): Flow<Long>
@@ -336,6 +446,8 @@ interface SyncDao {
     @Insert suspend fun insert(row: Branch): Long
     @Insert suspend fun insert(row: Idea): Long
     @Insert suspend fun insert(row: Plan): Long
+    @Insert suspend fun insert(row: Goal): Long
+    @Insert suspend fun insert(row: Step): Long
     @Insert suspend fun insert(rows: List<SyncTombstone>)
 
     @Update suspend fun update(row: Note)
@@ -344,6 +456,8 @@ interface SyncDao {
     @Update suspend fun update(row: Branch)
     @Update suspend fun update(row: Idea)
     @Update suspend fun update(row: Plan)
+    @Update suspend fun update(row: Goal)
+    @Update suspend fun update(row: Step)
 
     @Query("DELETE FROM notes WHERE uid = :uid") suspend fun deleteNote(uid: String)
     @Query("DELETE FROM tasks WHERE uid = :uid") suspend fun deleteTask(uid: String)
@@ -351,6 +465,8 @@ interface SyncDao {
     @Query("DELETE FROM branches WHERE uid = :uid") suspend fun deleteBranch(uid: String)
     @Query("DELETE FROM ideas WHERE uid = :uid") suspend fun deleteIdea(uid: String)
     @Query("DELETE FROM plans WHERE uid = :uid") suspend fun deletePlan(uid: String)
+    @Query("DELETE FROM goals WHERE uid = :uid") suspend fun deleteGoal(uid: String)
+    @Query("DELETE FROM steps WHERE uid = :uid") suspend fun deleteStep(uid: String)
     @Query("DELETE FROM sync_tombstones") suspend fun clearTombstones()
 }
 
@@ -361,8 +477,8 @@ data class SyncTombstone(val tbl: String, val uid: String, val deletedAt: Long)
 @OptIn(kotlin.uuid.ExperimentalUuidApi::class)
 fun newUid(): String = kotlin.uuid.Uuid.random().toHexString()
 
-/** The tables that carry uid + syncAt. day_focus and posts are not synced yet. */
-val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "branches", "ideas", "plans")
+/** The tables that carry uid + syncAt. day_focus, posts and alarms are not synced. */
+val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "branches", "ideas", "plans", "goals", "steps")
 
 internal const val NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)"
 
@@ -384,7 +500,7 @@ fun syncTriggerSql(t: String) = listOf(
 )
 
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 10
+const val DB_VERSION = 11
 
 /**
  * v9 -> v10, as plain SQL so Android and desktop run the very same statements. Groups come in with ALTER, not a table
@@ -401,12 +517,28 @@ val MIGRATE_9_10_SQL = listOf(
     "CREATE INDEX IF NOT EXISTS `index_ideas_branchId` ON `ideas` (`branchId`)",
 ) + syncTriggerSql("branches")
 
-/** The desktop's first release was v9, so this is its whole list. Its driver has no SupportSQLiteDatabase, hence the connection. */
-val DESKTOP_MIGRATIONS = arrayOf<Migration>(object : Migration(9, 10) {
-    override fun migrate(connection: SQLiteConnection) = MIGRATE_9_10_SQL.forEach { connection.execSQL(it) }
-})
+/** v10 -> v11: the learn brain's goals and steps (synced) and alarms (local only). New tables only: no existing row is touched. */
+val MIGRATE_10_11_SQL = listOf(
+    "CREATE TABLE IF NOT EXISTS `goals` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `position` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `syncAt` INTEGER NOT NULL DEFAULT 0)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_goals_uid` ON `goals` (`uid`)",
+    "CREATE TABLE IF NOT EXISTS `steps` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `goalId` INTEGER NOT NULL, `title` TEXT NOT NULL, `note` TEXT NOT NULL, `done` INTEGER NOT NULL, `day` INTEGER, `position` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `syncAt` INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(`goalId`) REFERENCES `goals`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+    "CREATE INDEX IF NOT EXISTS `index_steps_goalId` ON `steps` (`goalId`)",
+    "CREATE INDEX IF NOT EXISTS `index_steps_day` ON `steps` (`day`)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_steps_uid` ON `steps` (`uid`)",
+    "CREATE TABLE IF NOT EXISTS `alarms` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `hour` INTEGER NOT NULL, `minute` INTEGER NOT NULL, `label` TEXT NOT NULL, `repeatDays` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, `oneTimeDate` INTEGER, `firedAt` INTEGER, `createdAt` INTEGER NOT NULL)",
+) + syncTriggerSql("goals") + syncTriggerSql("steps")
 
-@Database(entities = [Note::class, Task::class, Lobe::class, Branch::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class], version = DB_VERSION, exportSchema = true)
+/** The desktop's first release was v9, so this is its whole list. Its driver has no SupportSQLiteDatabase, hence the connection. */
+val DESKTOP_MIGRATIONS = arrayOf<Migration>(
+    object : Migration(9, 10) {
+        override fun migrate(connection: SQLiteConnection) = MIGRATE_9_10_SQL.forEach { connection.execSQL(it) }
+    },
+    object : Migration(10, 11) {
+        override fun migrate(connection: SQLiteConnection) = MIGRATE_10_11_SQL.forEach { connection.execSQL(it) }
+    },
+)
+
+@Database(entities = [Note::class, Task::class, Lobe::class, Branch::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class, Goal::class, Step::class, Alarm::class], version = DB_VERSION, exportSchema = true)
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
@@ -415,6 +547,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun postDao(): PostDao
     abstract fun moonsDao(): MoonsDao
     abstract fun syncDao(): SyncDao
+    abstract fun learnDao(): LearnDao
+    abstract fun alarmDao(): AlarmDao
 }
 
 /** Room KMP: KSP generates the actual for each target. Android still builds through Room.databaseBuilder(context, AppDatabase::class.java, name). */

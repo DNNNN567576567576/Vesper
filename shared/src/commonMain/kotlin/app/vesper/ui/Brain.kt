@@ -124,8 +124,11 @@ import androidx.compose.ui.window.DialogProperties
 import app.vesper.Vault
 import app.vesper.data.BackupException
 import app.vesper.data.Branch
+import app.vesper.data.Goal
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
+import app.vesper.data.Step
+import app.vesper.LearnViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -527,6 +530,11 @@ internal class BrainRenderer(
     var dragX = 0f
     var dragY = 0f
 
+    /** The learn brain on the main map: world x, y and how many moons circle it; null = none drawn. */
+    var learn: FloatArray? = null
+    /** How far a fly-through into the learn brain has run: 0 none, 1 inside it. */
+    var learnFlyP = 0f
+
     /** dp per low-res pixel, for the world's portal arc (its width is capped in dp). */
     var pxdp = 2.286f
     /** Screen y (dp) of the world portal's arc centre: pinned under the header, so the page scrolls beneath it (where it sits at rest). */
@@ -762,6 +770,22 @@ internal class BrainRenderer(
     }
 
     /** A half ring of dots on an ellipse round screen ([cx], [cy]), radii [rx], [ry], from angle [a0] to [a1] (0..PI = the lower half). */
+    /** The small learn brain: a mirrored core in a dotted ring, up to six moons circling it slowly. [s] its node scale. */
+    private fun learnBrain(x: Float, y: Float, moons: Int, s: Float, a: Float) {
+        if (a <= 0f) return
+        glowAt(x, y, 22f * s, 0x7A4ACF, (0.2f + 0.3f * beat(0.4f)) * a)
+        glowAt(x, y, 14f * s, 0xB69AFF, 0.25f * a)
+        ring(x, y, 12.5f * s, 30, t * 1.5f, 0xB69AFF, 0.7f * a)
+        sprite(coreSprite, x, y, LEARN_SCALE * s, a, true)
+        val w = if (z * s > 2f) 2 else 1
+        for (k in 0 until min(moons, 6)) {
+            val an = t * 0.15f + k * TAU / min(moons, 6)
+            val mx = x + cos(an) * 16f * s; val my = y + sin(an) * 13f * s
+            glowAt(mx, my, 3f * s, 0x8F7BFF, 0.5f * a)
+            dot(rnd(sx(mx)), rnd(sy(my)), w, w, 0xE6DCFF, a)
+        }
+    }
+
     private fun arcE(cx: Float, cy: Float, rx: Float, ry: Float, a0: Float, a1: Float, th: Int, rgb: Int, a: Float) {
         val n = ceil(max(rx, ry) * (a1 - a0) * 1.4f / th).toInt().coerceIn(1, 3000)
         for (q in 0..n) {
@@ -867,7 +891,7 @@ internal class BrainRenderer(
         val focus = sel >= 0
         val d = if (sunSel) 0.45f else 1f // the map dims behind the open vault
         // a world hides the heart completely; a fly-through fades it out early so it never fills the view
-        val sunDim = if (focus) 0f else if (flyIdx >= 0) (1f - flyP * 6f).coerceIn(0f, 1f) else 1f
+        val sunDim = if (focus) 0f else if (flyIdx >= 0) (1f - flyP * 6f).coerceIn(0f, 1f) else if (learnFlyP > 0f) (1f - learnFlyP * 6f).coerceIn(0f, 1f) else 1f
 
         // a world gets a faint wash of its sub brain's shade
         pix.fill(if (focus) mixRgb(0x07030B, L.lcol[sel], 0.08f) else 0x07030B)
@@ -927,7 +951,7 @@ internal class BrainRenderer(
             }
 
             // the nerves: core to every portal, core to the heart (faded out while a portal is flown through)
-            val va = d * (1f - flyP * 4f).coerceIn(0f, 1f)
+            val va = d * (1f - max(flyP, learnFlyP) * 4f).coerceIn(0f, 1f)
             for (i in 0 until L.nL) vein(L.lx[i], L.ly[i], L.lbend[i], 3, i * 5f, va, (PORTAL_R + 2.5f) * ns)
             vein(SUN_X, SUN_Y - HEART_MID, SUN_BEND, 2, 9f, va * sunDim, 16f, 0xD6C8FF)
 
@@ -962,7 +986,7 @@ internal class BrainRenderer(
 
             // the portals, all one size; the one being flown through keeps growing with the zoom, after a squish and a sparkle burst
             // the other portals (glow and all) are gone within the first eighth of a fly-through, before they can streak past
-            val others = if (flyIdx >= 0) (1f - flyP * 8f).coerceIn(0f, 1f) else 1f
+            val others = if (flyIdx >= 0) (1f - flyP * 8f).coerceIn(0f, 1f) else (1f - learnFlyP * 8f).coerceIn(0f, 1f)
             for (i in 0 until L.nL) {
                 val a = (if (i == dragIdx) 0.35f else d) * (if (i == flyIdx) 1f else others)
                 if (a > 0f) portal(i, L.lx[i], L.ly[i], portalScale(i, ns, flyIdx, flyP, tapP), L, a)
@@ -986,6 +1010,7 @@ internal class BrainRenderer(
             ring(0f, 0f, 30f, 48, t * 2f, 0xB69AFF, 0.85f)
             ring(0f, 0f, 35f, 56, -t * 1.5f, 0x8A6CF0, 0.7f)
             sprite(coreSprite, 0f, 0f, 0.64f * (1f + 0.06f * pulse), 1f, false)
+            learn?.let { learnBrain(it[0], it[1], it[2].toInt(), ns.toDouble().pow(1.0 - learnFlyP).toFloat(), d * others) }
 
             // spores
             for (i in 0 until L.spores.size / 4) {
@@ -1036,6 +1061,12 @@ fun BrainScreen(
     vault: Vault,
     sync: SyncManager,
     appScope: CoroutineScope,
+    goals: List<Goal>? = null,
+    steps: List<Step>? = null,
+    /** The learn brain: -2 = closed (the map), -1 = its view, else that goal's page. */
+    learnAt: Long = -2L,
+    onLearnAt: (Long) -> Unit = {},
+    learn: LearnViewModel? = null,
 ) {
     val lobeList = lobes.orEmpty()
     val ideaList = ideas.orEmpty()
@@ -1057,6 +1088,19 @@ fun BrainScreen(
     val density = LocalDensity.current.density
     val pxSize = round(2.28f * density).coerceAtLeast(1f)
     val rx = ringRx(viewSize.width / density, viewSize.height / density)
+    val goalList = goals.orEmpty()
+    val stepList = steps.orEmpty()
+    val learnOpen = learnAt >= -1
+    val learnPos = remember(lobeList, rx) { learnSpot(lobeList.map { lobeRingPos(lobeList, it, rx) }) }
+    var learnFlyP by remember { mutableFloatStateOf(0f) }
+    var focusStep by remember { mutableStateOf(-1L) } // a step the today strip opened its goal at
+    val learnGoal = remember { longArrayOf(-1L) } // the page a learn fly-in opens: -1 the learn view, else a goal
+    val learnAtNow by rememberUpdatedState(onLearnAt)
+    fun startLearn(open: Boolean, goal: Long = -1L) {
+        if (portal != null) return
+        learnGoal[0] = goal
+        portal = PortalRun(if (open) 0L else -1L, null, learn = true)
+    }
     fun startPortal(to: Long) {
         if (portal != null) return
         val lobe = lobeList.firstOrNull { it.id == if (to >= 0) to else selectedNow } ?: run { onSelectLobe(to); return }
@@ -1065,54 +1109,58 @@ fun BrainScreen(
     val selectNow by rememberUpdatedState(onSelectLobe)
     LaunchedEffect(portal) {
         val run = portal ?: return@LaunchedEffect
-        val p = lobeRingPos(lobeList, run.lobe, rx)
+        val p = if (run.learn) learnPos else lobeRingPos(lobeList, run.lobe!!, rx)
         // deep enough that the ring's inside covers the whole view
-        val zIn = max(4f, 1.2f * hypot(viewSize.width.toFloat(), viewSize.height.toFloat()) / 2f / pxSize / PORTAL_R)
+        val zIn = max(4f, 1.2f * hypot(viewSize.width.toFloat(), viewSize.height.toFloat()) / 2f / pxSize / (if (run.learn) LEARN_R else PORTAL_R))
         fun flyTo(from: FloatArray, e: Float) {
             // the zoom grows evenly in steps, the portal slides to the middle evenly on the screen
             val z = from[2] * (zIn / from[2]).pow(e)
             val k = (1f - e) * from[2] / z
             camera.x = p.x - (p.x - from[0]) * k; camera.y = p.y - (p.y - from[1]) * k; camera.scale = z
-            flyP = e
+            if (run.learn) learnFlyP = e else flyP = e
         }
         val a = Animatable(0f)
         val ease = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
         if (run.to >= 0) {
             val from = floatArrayOf(camera.x, camera.y, camera.scale)
             camera.outside = from
-            flyId = run.lobe.id
             Sounds.play(Sfx.Tick)
-            a.animateTo(1f, tween(160, easing = LinearEasing)) { tapP = value } // the tap: a squish and a burst of sparkles first
-            tapP = 0f
-            a.snapTo(0f)
+            if (!run.learn) {
+                flyId = run.lobe!!.id
+                a.animateTo(1f, tween(160, easing = LinearEasing)) { tapP = value } // the tap: a squish and a burst of sparkles first
+                tapP = 0f
+                a.snapTo(0f)
+            }
             Sounds.play(Sfx.WhooshIn)
             a.animateTo(1f, tween(500, easing = ease)) { flyTo(from, value) }
             worldA = 0f
-            selectNow(run.to)
+            if (run.learn) learnAtNow(learnGoal[0]) else selectNow(run.to)
             repeat(2) { withFrameNanos { } } // let the world lay itself out unseen
-            flyId = -1L; flyP = 0f
+            flyId = -1L; flyP = 0f; learnFlyP = 0f
             a.snapTo(0f)
             a.animateTo(1f, tween(320, easing = LinearOutSlowInEasing)) { worldA = value }
         } else {
             Sounds.play(Sfx.WhooshOut)
             a.animateTo(1f, tween(250, easing = FastOutLinearInEasing)) { worldA = 1f - value }
             val back = camera.outside ?: camera.overview ?: floatArrayOf(p.x, p.y, camera.home)
-            flyId = run.lobe.id
+            if (!run.learn) flyId = run.lobe!!.id
             flyTo(back, 1f)
-            selectNow(-1L)
+            if (run.learn) learnAtNow(-2L) else selectNow(-1L)
             repeat(2) { withFrameNanos { } }
             worldA = 1f
             a.snapTo(0f)
             a.animateTo(1f, tween(500, easing = ease)) { flyTo(back, 1f - value) }
             camera.x = back[0]; camera.y = back[1]; camera.scale = back[2]
-            flyId = -1L; flyP = 0f
+            flyId = -1L; flyP = 0f; learnFlyP = 0f
         }
         portal = null
     }
     /** One level out: sub brain -> whole map, through the portal. */
     val stepOut: () -> Unit = {
-        if (selectedNow >= 0) startPortal(-1L) else homeTick++
+        if (learnAt >= 0) onLearnAt(-1L) else if (learnOpen) startLearn(false) else if (selectedNow >= 0) startPortal(-1L) else homeTick++
     }
+    var learnMenu by remember { mutableStateOf<Offset?>(null) }
+    var addingGoal by remember { mutableStateOf(false) }
 
     var menu by remember { mutableStateOf<MenuAt?>(null) }
     var arrangingRaw by remember { mutableStateOf(false) }
@@ -1120,7 +1168,7 @@ fun BrainScreen(
     var addingLobe by remember { mutableStateOf(false) }
     var renamingLobe by remember { mutableStateOf<Lobe?>(null) }
     val zoomedIn by remember { derivedStateOf { camera.scale > camera.home * 1.5f } }
-    BackHandler(enabled = selected != null || zoomedIn || portal != null || arranging, onBack = {
+    BackHandler(enabled = selected != null || zoomedIn || portal != null || arranging || learnOpen, onBack = {
         if (portal == null) { if (arranging) arrangingRaw = false else stepOut() }
     })
     var addingBranch by remember { mutableStateOf(false) }
@@ -1168,10 +1216,11 @@ fun BrainScreen(
         ) {
             // a world settles in from 1.25x, and shrinks to 0.8x as it fades out
             Box(Modifier.fillMaxSize().graphicsLayer {
-                val s = if (portal == null || selected == null) 1f else if ((portal?.to ?: -1L) >= 0) 1.25f - 0.25f * worldA else 0.8f + 0.2f * worldA
+                val s = if (portal == null || (selected == null && !learnOpen)) 1f else if ((portal?.to ?: -1L) >= 0) 1.25f - 0.25f * worldA else 0.8f + 0.2f * worldA
                 scaleX = s; scaleY = s; alpha = worldA
             }) {
-                BrainCanvas(
+                if (learnOpen) LearnView(goalList, stepList, HEADER_H, onTapBrain = { learnMenu = it }, onOpenGoal = { focusStep = -1L; onLearnAt(it) })
+                else BrainCanvas(
                     lobeList, branchList, ideaList, showAll, selected?.id ?: -1L, homeTick, camera, sv, sunSel, goTo,
                     topInset = if (selected != null) HEADER_H else TITLE_H,
                     locked = portal != null,
@@ -1185,9 +1234,18 @@ fun BrainScreen(
                     onTapBranch = { b, at -> menu = MenuAt(at, b) },
                     onTapEmpty = { sunSel = false; stepOut() }, // only the whole map gets here; a portal page ignores empty space
                     onMoveLobe = onMoveLobe,
+                    learnAt = learnPos, learnMoons = goalList.size, learnFlyP = learnFlyP,
+                    onTapLearn = { sunSel = false; startLearn(true) },
                 )
             }
-            if (selected == null) {
+            val today = java.time.LocalDate.now().toEpochDay()
+            val due = remember(goalList, stepList, today) { dueSteps(goalList, stepList, today) }
+            if (!learnOpen && selected == null && portal == null && !arranging && !searching && due.isNotEmpty()) {
+                TodayStrip(due, goalList, today, camera, pxSize, viewSize) { st -> focusStep = st.id; sunSel = false; startLearn(true, st.goalId) }
+            }
+            if (learnOpen) {
+                LearnHeader(goalList.size, Modifier.align(Alignment.TopStart), onBack = { startLearn(false) })
+            } else if (selected == null) {
                 ScreenTitle("Brain")
                 Row(
                     Modifier.align(Alignment.TopEnd).padding(top = 20.dp, end = 16.dp),
@@ -1202,6 +1260,12 @@ fun BrainScreen(
             } else {
                 SubBrainHeader(selected, ideaList.count { it.lobeId == selected.id }, Modifier.align(Alignment.TopStart), onBack = stepOut)
             }
+            if (learnAt >= 0 && learn != null) {
+                val g = goalList.firstOrNull { it.id == learnAt }
+                if (g != null) GoalPage(g, pathOf(stepList, g.id), focusStep, learn, onBack = { onLearnAt(-1L) })
+                else if (goals != null) LaunchedEffect(learnAt) { onLearnAt(-1L) } // deleted, here or on another device
+            }
+            learnMenu?.let { at -> BrainMenu(at, listOf("+ goal" to { addingGoal = true }), { learnMenu = null }) }
             peek?.let { (i, at) -> if (selected != null) PeekBubble(i, at) }
             menu?.let { m ->
                 val close = { menu = null }
@@ -1239,7 +1303,7 @@ fun BrainScreen(
                 onClose = { searching = false },
             )
         }
-        if (sunSel && selected == null) {
+        if (sunSel && selected == null && !learnOpen) {
             VaultSheet(
                 canBackup = vault.canBackup,
                 status = working ?: message ?: when {
@@ -1308,6 +1372,9 @@ fun BrainScreen(
                 }, primary = true)
             }
         }
+    }
+    if (addingGoal) {
+        NameDialog("NEW GOAL", "Name it: Panduri, Spanish...", onDismiss = { addingGoal = false }, onSubmit = { learn?.addGoal(it) })
     }
     if (addingLobe) {
         NameDialog("NEW SUB BRAIN", "Name it: Coding, Business...", onDismiss = { addingLobe = false }, onSubmit = onAddLobe)
@@ -1397,12 +1464,12 @@ internal class GoTo(val branchId: Long, val ideaId: Long = -1L)
 /** A brain's menu, opened by tapping it at [at] (px): the centre brain's (main map or dimension) when [branch] is null, else that group's. */
 private class MenuAt(val at: Offset, val branch: Branch?)
 
-private val HEADER_H = 60.dp
+internal val HEADER_H = 60.dp
 /** The "Brain" title row of the whole map. */
 private val TITLE_H = 76.dp
 
-/** A portal in flight: into [lobe]'s world ([to] = its id), or out of it to the whole map ([to] = -1). */
-private class PortalRun(val to: Long, val lobe: Lobe)
+/** A portal in flight: into [lobe]'s world ([to] = its id), or out of it to the whole map ([to] = -1). [learn]: the learn brain's instead. */
+private class PortalRun(val to: Long, val lobe: Lobe?, val learn: Boolean = false)
 
 /** The show-all toggle beside the search button: an eye, open (lit) when groups and notes show on the main map, closed and dim when hidden. */
 @Composable
@@ -1448,7 +1515,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGrid(u: Float, 
 
 /** Chips in a ring round a tapped brain at [at] (px), over a dim backdrop; a tap outside closes it. Each chip closes it too. */
 @Composable
-private fun BrainMenu(at: Offset, chips: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {
+internal fun BrainMenu(at: Offset, chips: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {
     BackHandler(true, onDismiss)
     val pill = RoundedCornerShape(50)
     Layout(
@@ -1568,6 +1635,11 @@ private fun BrainCanvas(
     onTapBranch: (Branch, Offset) -> Unit,
     onTapEmpty: () -> Unit,
     onMoveLobe: (Long, Int) -> Unit,
+    /** The learn brain's place (world), its moon count, how far a fly into it has run, and its tap. */
+    learnAt: Offset = Offset(40f, 40f),
+    learnMoons: Int = 0,
+    learnFlyP: Float = 0f,
+    onTapLearn: () -> Unit = {},
 ) {
     val density = LocalDensity.current.density
     val pxSize = remember(density) { round(2.28f * density).coerceAtLeast(1f) }
@@ -1598,6 +1670,10 @@ private fun BrainCanvas(
     val layout = remember(lobes, web, rx) { buildLayout(lobes, web, rx = rx) }
     val selIdx = layout.lobeIds.indexOf(selectedId)
     val labels = remember(lobes, web, layout, density, pxSize) { BrainLabels(measurer, density, pxSize, pageFont, titleFont, pixelFont, lobes, web, layout) }
+    val learnLabel = remember(measurer, density) {
+        val c = Color(0xFFC9B6FF)
+        GlowText(measurer.measure("learn", TextStyle(fontFamily = pageFont, fontSize = 18.sp, lineHeight = 20.sp, color = c, shadow = Shadow(c.copy(alpha = 0.7f), blurRadius = 10f * density))))
+    }
     var aim by remember { mutableStateOf<FloatArray?>(null) } // x, y, zoom; a new array glides there
     fun overviewAim() = fitOverview(labels::overviewBoxes, view.width / density, view.height / density, topInset.value, pxSize / density, NODE_ZOOM, MIN_ZOOM)
     // The page swap through the portal sets the camera at once (no glide): a dimension at its top, fitted to the width; the whole map as it opens.
@@ -1710,7 +1786,7 @@ private fun BrainCanvas(
                     }
                 }
             }
-            .pointerInput(lobes, web, layout, selectedId, locked, arranging, onTapSun) {
+            .pointerInput(lobes, web, layout, selectedId, locked, arranging, onTapSun, learnAt) {
                 var peeked = false
                 fun starAt(tap: Offset): Pair<Placed, Offset>? {
                     if (selectedId < 0) return null
@@ -1761,6 +1837,11 @@ private fun BrainCanvas(
                     }
                     if ((screen(Offset(SUN_X, SUN_Y - HEART_MID)) - tap).getDistance() <= maxOf(36.dp.toPx(), 18f * u)) {
                         onTapSun()
+                        return@detectTapGestures
+                    }
+                    // The learn brain flies you into its view.
+                    if ((screen(learnAt) - tap).getDistance() <= maxOf(30.dp.toPx(), 18f * u * nodeScale(z))) {
+                        if (!arranging) onTapLearn()
                         return@detectTapGestures
                     }
                     // The main map: a portal flies you into its world.
@@ -1820,12 +1901,20 @@ private fun BrainCanvas(
         renderer.slots = slots
         renderer.contents = contents
         renderer.flyIdx = layout.lobeIds.indexOf(flyId); renderer.flyP = flyP; renderer.tapP = tapP
+        renderer.learn = if (selIdx >= 0) null else floatArrayOf(learnAt.x, learnAt.y, learnMoons.toFloat())
+        renderer.learnFlyP = learnFlyP
         renderer.draw(time, cam.x, cam.y, cam.scale, layout, selIdx, sunSv, sunSel)
         drawIntoCanvas { renderer.blit(it, px) }
 
-        val fade = (1f - flyP * 8f).coerceIn(0f, 1f)
+        val fade = (1f - max(flyP, learnFlyP) * 8f).coerceIn(0f, 1f)
         if (selIdx >= 0) drawPortalRing(renderer, pxSize, layout.lcol[selIdx])
         labels.draw(this, renderer, cam.x, cam.y, cam.scale, selIdx, sunSel, sunSv, fade = fade)
+        if (selIdx < 0 && fade > 0f) {
+            val u = pxSize * cam.scale
+            val x = (learnAt.x - cam.x) * u + renderer.W * pxSize / 2f
+            val y = (learnAt.y + 17f * nodeScale(cam.scale) - cam.y) * u + renderer.H * pxSize / 2f
+            learnLabel.draw(this, x - learnLabel.tl.size.width / 2f, y, fade * (if (sunSel) 0.45f else 1f))
+        }
     }
 }
 
@@ -1968,7 +2057,7 @@ internal fun PixelField(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun NameDialog(
+internal fun NameDialog(
     title: String,
     hint: String,
     onDismiss: () -> Unit,

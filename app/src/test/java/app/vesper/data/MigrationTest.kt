@@ -238,6 +238,51 @@ class MigrationTest {
         assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'branches' AND uid = 'watch'"))
     }
 
+    /** Real v10 rows and triggers. Only new tables arrive: nothing existing moves, the new ones are wired for sync. */
+    @Test
+    fun migrate10To11() {
+        helper.createDatabase(name, 10).apply {
+            listOf("notes", "tasks", "lobes", "branches", "ideas", "plans").forEach { t -> syncTriggerSql(t).forEach(::execSQL) }
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0, 'notes-1', 1700000000000)")
+            execSQL("INSERT INTO tasks (id, text, uid, syncAt) VALUES (1, 'buy candles', 'tasks-1', 5)")
+            execSQL("INSERT INTO lobes (id, name, colorIndex, slot, uid, syncAt) VALUES (1, 'Work', 2, 0, 'lobes-1', 6)")
+            execSQL("INSERT INTO branches (id, lobeId, name, uid, syncAt) VALUES (1, 1, 'Read', 'read', 8)")
+            execSQL("INSERT INTO ideas (id, lobeId, title, body, noteId, updatedAt, uid, syncAt, branchId, link, done) VALUES (1, 1, 'Idea', 'body text', 1, 1700000001000, 'ideas-1', 7, 1, 'x.org', 1)")
+            execSQL("INSERT INTO plans (id, day, text, done, createdAt, uid, syncAt) VALUES (1, 20000, 'plan', 1, 1700000004000, 'plans-1', 9)")
+            execSQL("INSERT INTO day_focus (day, lobeId) VALUES (20000, 1)")
+            execSQL("INSERT INTO sync_tombstones (tbl, uid, deletedAt) VALUES ('notes', 'gone', 3)")
+            insertPost(); close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 11, true, MIGRATION_10_11)
+        db.assertNoteAndTask(); db.assertBrain(); db.assertPost()
+        fun count(sql: String) = db.query(sql).use { it.moveToFirst(); it.getInt(0) }
+        fun row(sql: String) = db.query(sql).use { c -> c.moveToFirst(); (0 until c.columnCount).map { c.getString(it) } }
+        assertEquals(listOf("1", "x.org", "1", "7", "ideas-1"), row("SELECT branchId, link, done, syncAt, uid FROM ideas WHERE id = 1"))
+        assertEquals(listOf("Read", "8"), row("SELECT name, syncAt FROM branches WHERE id = 1"))
+        assertEquals(listOf("plan", "1", "9", "plans-1"), row("SELECT text, done, syncAt, uid FROM plans WHERE id = 1"))
+        assertEquals(listOf("1700000000000"), row("SELECT syncAt FROM notes WHERE id = 1"))
+        assertEquals(1, count("SELECT COUNT(*) FROM day_focus"))
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones"))
+        db.assertIndexes("index_goals_uid", "index_steps_goalId", "index_steps_day", "index_steps_uid")
+
+        // goals and steps are wired: uid and clock on insert, the cascade, tombstones for both
+        db.execSQL("PRAGMA foreign_keys = ON")
+        db.execSQL("INSERT INTO goals (id, name, position, createdAt, updatedAt) VALUES (1, 'Panduri', 0, 1, 1)")
+        db.execSQL("INSERT INTO steps (id, goalId, title, note, done, day, position, createdAt, updatedAt) VALUES (1, 1, 'Suliko', '', 0, 20000, 0, 1, 1)")
+        assertTrue(row("SELECT uid FROM steps")[0].matches(Regex("[0-9a-f]{32}")))
+        assertTrue(row("SELECT syncAt FROM goals")[0].toLong() > 1)
+        db.execSQL("DELETE FROM goals WHERE id = 1")
+        assertEquals(0, count("SELECT COUNT(*) FROM steps"))
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'goals'"))
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'steps'"))
+
+        // alarms: local only, no triggers
+        db.execSQL("INSERT INTO alarms (hour, minute, label, repeatDays, enabled, oneTimeDate, firedAt, createdAt) VALUES (7, 30, 'wake', 31, 1, NULL, NULL, 1)")
+        db.execSQL("DELETE FROM alarms")
+        assertEquals(0, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'alarms'"))
+        assertEquals(0, count("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%alarms%'"))
+    }
+
     @Test
     fun migrateAllFrom1() {
         helper.createDatabase(name, 1).apply { insertNote(); close() }
@@ -259,6 +304,8 @@ class MigrationTest {
             assertEquals("buy candles", db.taskDao().observeLit().first().single().text)
             // every new DAO works on the upgraded file
             db.brainDao().observeLobes().first(); db.postDao().observeAll().first(); db.moonsDao().observeAllPlans().first()
+            db.learnDao().observeGoals().first(); db.learnDao().observeSteps().first()
+            db.alarmDao().observeActive().first(); db.alarmDao().observeHistory().first()
         } finally {
             db.close()
         }

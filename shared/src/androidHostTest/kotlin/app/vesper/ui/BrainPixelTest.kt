@@ -1,5 +1,7 @@
 package app.vesper.ui
 
+import androidx.compose.ui.geometry.Offset
+
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
@@ -80,6 +82,8 @@ import org.robolectric.annotation.GraphicsMode
  * 2.5.18: overview, beatFresh and showAll changed on purpose (the vault heart is purple again); selectedZoom, selectedFar, dimension, small and blit3
  * changed on purpose (the portal arc is pinned at the top of the screen, drawn over the world, so the page scrolls under it; the test renderer
  * now sets arcTopDp = 60). staleHeart, flyIn and glowLabel are untouched.
+ * Learn brain: learnBrain is new (the small learn brain with three moons beside the core). Every other frame is untouched: the
+ * renderer draws it only when [BrainRenderer.learn] is set.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -173,6 +177,18 @@ class BrainPixelTest {
         assertTrue("a focused map still draws the core or another lobe", base.contentEquals(pixels(b)))
     }
 
+    /** Learn (new): the small learn brain with three moons beside the core; without it the overview stays exactly as it was. */
+    @Test fun learnBrain() {
+        val r = newRenderer(); r.resize(180, 390)
+        val spot = learnSpot((0 until layout.nL).map { Offset(layout.lx[it], layout.ly[it]) })
+        r.learn = floatArrayOf(spot.x, spot.y, 3f)
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, -1, 0f, false)
+        check("learnBrain", pixels(r), E["learnBrain"])
+        r.learn = null
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, -1, 0f, false)
+        check("overview", pixels(r), E["overview"])
+    }
+
     @Test fun resizeAndBlit() {
         val r = newRenderer()
         r.resize(60, 90)
@@ -203,7 +219,7 @@ class BrainPixelTest {
 
     private companion object {
         val E = mapOf(
-            "beatFresh" to -1355989786, "blit3" to -417458193, "dimension" to -1725325892, "flyIn" to -1287240568, "glowLabel" to -66391980, "overview" to 1714630548, "selectedFar" to -1088837572, "selectedZoom" to -1813238531, "showAll" to 1955788307, "small" to -1724423207, "staleHeart" to -1729973114,
+            "beatFresh" to -1355989786, "blit3" to -417458193, "dimension" to -1725325892, "flyIn" to -1287240568, "glowLabel" to -66391980, "learnBrain" to 1539578251, "overview" to 1714630548, "selectedFar" to -1088837572, "selectedZoom" to -1813238531, "showAll" to 1955788307, "small" to -1724423207, "staleHeart" to -1729973114,
         )
     }
 }

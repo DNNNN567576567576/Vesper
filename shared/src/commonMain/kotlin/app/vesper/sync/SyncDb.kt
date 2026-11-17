@@ -4,6 +4,8 @@ import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
 import app.vesper.data.AppDatabase
 import app.vesper.data.Branch
+import app.vesper.data.Goal
+import app.vesper.data.Step
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import app.vesper.data.Note
@@ -19,6 +21,8 @@ private suspend fun SyncDao.read(deviceId: String): Snapshot {
     val lobeUid = lobes.associate { it.id to it.uid }
     val branches = branches()
     val branchUid = branches.associate { it.id to it.uid }
+    val goals = goals()
+    val goalUid = goals.associate { it.id to it.uid }
     return Snapshot(
         v = SNAPSHOT_VERSION,
         deviceId = deviceId,
@@ -28,6 +32,8 @@ private suspend fun SyncDao.read(deviceId: String): Snapshot {
         branches = branches.map { SyncBranch(it.uid, it.syncAt, lobeUid.getValue(it.lobeId), it.name) }.sortedBy { it.uid },
         ideas = ideas().map { SyncIdea(it.uid, it.syncAt, lobeUid.getValue(it.lobeId), it.title, it.body, noteUid[it.noteId], it.updatedAt, branchUid[it.branchId], it.link, it.done) }.sortedBy { it.uid },
         plans = plans().map { SyncPlan(it.uid, it.syncAt, it.day, it.text, it.done, it.createdAt) }.sortedBy { it.uid },
+        goals = goals.map { SyncGoal(it.uid, it.syncAt, it.name, it.position, it.createdAt, it.updatedAt) }.sortedBy { it.uid },
+        steps = steps().map { SyncStep(it.uid, it.syncAt, goalUid.getValue(it.goalId), it.title, it.note, it.done, it.day, it.position, it.createdAt, it.updatedAt) }.sortedBy { it.uid },
         tombstones = tombstones().map { SyncTomb(it.tbl, it.uid, it.deletedAt) }.sortedWith(compareBy({ it.tbl }, { it.uid })),
     )
 }
@@ -61,6 +67,8 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
     gone(local.notes, merged.notes).forEach { deleteNote(it) }
     gone(local.tasks, merged.tasks).forEach { deleteTask(it) }
     gone(local.plans, merged.plans).forEach { deletePlan(it) }
+    gone(local.steps, merged.steps).forEach { deleteStep(it) }
+    gone(local.goals, merged.goals).forEach { deleteGoal(it) }
     gone(local.lobes, merged.lobes).forEach { deleteLobe(it) }
 
     val lobeIds = lobes().associate { it.uid to it.id }.toMutableMap()
@@ -102,6 +110,17 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
     val planIds = plans().associate { it.uid to it.id }
     for (p in changed(local.plans, merged.plans)) {
         val row = Plan(planIds[p.uid] ?: 0, p.day, p.text, p.done, p.createdAt, p.uid, p.syncAt)
+        if (row.id == 0L) insert(row) else update(row)
+    }
+
+    val goalIds = goals().associate { it.uid to it.id }.toMutableMap()
+    for (g in changed(local.goals, merged.goals)) {
+        val row = Goal(goalIds[g.uid] ?: 0, g.name, g.position, g.createdAt, g.updatedAt, g.uid, g.syncAt)
+        if (row.id == 0L) goalIds[g.uid] = insert(row) else update(row)
+    }
+    val stepIds = steps().associate { it.uid to it.id }
+    for (s in changed(local.steps, merged.steps)) {
+        val row = Step(stepIds[s.uid] ?: 0, goalIds.getValue(s.goalUid), s.title, s.note, s.done, s.day, s.position, s.createdAt, s.updatedAt, s.uid, s.syncAt)
         if (row.id == 0L) insert(row) else update(row)
     }
 

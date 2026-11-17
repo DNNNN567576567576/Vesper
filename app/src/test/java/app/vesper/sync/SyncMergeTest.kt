@@ -226,4 +226,49 @@ class SyncMergeTest {
         assertThrows(SyncException::class.java) { b(tombs = listOf(SyncTomb("posts", "n", 1))).validate() }
         assertThrows(SyncException::class.java) { b().copy(v = 99).validate() }
     }
+
+    private fun goal(uid: String, at: Long, name: String = "Panduri") = SyncGoal(uid, at, name, 0, 1, at)
+    private fun step(uid: String, at: Long, goal: String = "G", title: String = "s", done: Boolean = false, day: Long? = null) = SyncStep(uid, at, goal, title, "", done, day, 0, 1, at)
+
+    @Test fun goalsAndStepsMergeNewestWins() {
+        val mine = Snapshot(deviceId = "a", goals = listOf(goal("G", 1)), steps = listOf(step("s", 5, done = true)))
+        val theirs = Snapshot(deviceId = "b", goals = listOf(goal("G", 2, "Panduri lessons")), steps = listOf(step("s", 3, title = "older"), step("t", 4, day = 20000)))
+        val m = merge(mine, theirs, emptyMap())
+        assertEquals(listOf(goal("G", 2, "Panduri lessons")), m.goals)
+        assertEquals(listOf(step("s", 5, done = true), step("t", 4, day = 20000)), m.steps)
+    }
+
+    @Test fun aDeletedGoalTakesItsStepsAlong() {
+        val g = goal("G", 1)
+        val mine = Snapshot(deviceId = "a", goals = listOf(g), steps = listOf(step("s", 2)))
+        val theirs = Snapshot(deviceId = "b", tombstones = listOf(SyncTomb("goals", "G", 10), SyncTomb("steps", "s", 10)))
+        val m = merge(mine, theirs, emptyMap())
+        assertTrue(m.goals.isEmpty() && m.steps.isEmpty())
+        assertEquals(setOf("goals:G", "steps:s"), m.tombstones.map { "${it.tbl}:${it.uid}" }.toSet())
+    }
+
+    @Test fun aStepEditedAfterItsGoalWasDeletedBringsTheGoalBack() {
+        val mine = Snapshot(deviceId = "a", goals = listOf(goal("G", 1)), steps = listOf(step("s", 20, title = "edited later")))
+        val theirs = Snapshot(deviceId = "b", tombstones = listOf(SyncTomb("goals", "G", 10)))
+        val m = merge(mine, theirs, emptyMap())
+        assertEquals(listOf("G"), m.goals.map { it.uid })
+        assertTrue(m.goals.single().syncAt > 10)
+        assertEquals("edited later", m.steps.single().title)
+    }
+
+    /** A version 2 file has no goals or steps: merging it keeps ours as they are. */
+    @Test fun aVersion2SnapshotLeavesGoalsAndStepsAlone() {
+        val mine = Snapshot(deviceId = "a", lobes = listOf(lobe("L", 1)), goals = listOf(goal("G", 1)), steps = listOf(step("s", 2)))
+        val v2 = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), """{"v":2,"deviceId":"b","lobes":[{"uid":"L","syncAt":5,"name":"Work","colorIndex":0,"slot":0}]}""")
+        v2.validate()
+        val m = merge(mine, v2, emptyMap())
+        assertEquals(mine.goals, m.goals)
+        assertEquals(mine.steps, m.steps)
+        assertEquals("Work", m.lobes.single().name)
+    }
+
+    @Test fun learnTombstonesAreValid() {
+        b(tombs = listOf(SyncTomb("goals", "g", 1), SyncTomb("steps", "s", 1))).validate()
+        assertThrows(SyncException::class.java) { Snapshot(deviceId = "b", steps = listOf(step("s", 0))).validate() }
+    }
 }

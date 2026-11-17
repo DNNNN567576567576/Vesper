@@ -5,6 +5,8 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import app.vesper.data.AppDatabase
 import app.vesper.data.Branch
+import app.vesper.data.Goal
+import app.vesper.data.Step
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import app.vesper.data.Note
@@ -602,6 +604,78 @@ class SyncRoundTest {
         converge(a, b)
         assertEquals(a.state().notes.map { it.uid to it.content }, b.state().notes.map { it.uid to it.content })
         assertEquals(a.state(), b.state())
+    }
+
+    private suspend fun Device.seedLearn(): Long {
+        val g = db.learnDao().insertGoal(Goal(name = "Panduri", uid = "G"))
+        db.learnDao().insertStep(Step(goalId = g, title = "Suliko", note = "slow", day = 20000, position = 0, uid = "s1"))
+        db.learnDao().insertStep(Step(goalId = g, title = "Chords", done = true, position = 1, uid = "s2"))
+        return g
+    }
+
+    @Test fun goalsAndStepsTravel() = test {
+        val (a, b) = pair()
+        a.seedLearn()
+        converge(a, b)
+        val g = b.db.syncDao().goals().single()
+        assertEquals("Panduri", g.name)
+        val steps = b.db.syncDao().steps().sortedBy { it.position }
+        assertEquals(listOf("Suliko", "Chords"), steps.map { it.title })
+        assertTrue(steps.all { it.goalId == g.id })
+        assertEquals(Triple("slow", 20000L, false), Triple(steps[0].note, steps[0].day, steps[0].done))
+        assertTrue(steps[1].done)
+        // edits travel back
+        tick()
+        b.db.learnDao().setStepDone(steps[0].id, true, 9)
+        converge(a, b)
+        assertTrue(a.db.syncDao().steps().single { it.uid == "s1" }.done)
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun aDeletedGoalAndItsStepsGoEverywhere() = test {
+        val (a, b) = pair()
+        val g = a.seedLearn()
+        converge(a, b)
+        tick()
+        a.db.learnDao().deleteGoal(g) // cascades its steps, the triggers tombstone all three
+        converge(a, b)
+        assertTrue(b.db.syncDao().goals().isEmpty() && b.db.syncDao().steps().isEmpty())
+        assertEquals(setOf("goals:G", "steps:s1", "steps:s2"), b.db.syncDao().tombstones().map { "${it.tbl}:${it.uid}" }.toSet())
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun aDeletedStepGoesEverywhere() = test {
+        val (a, b) = pair()
+        a.seedLearn()
+        converge(a, b)
+        tick()
+        a.db.learnDao().deleteStep(a.db.syncDao().steps().single { it.uid == "s2" }.id)
+        converge(a, b)
+        assertEquals(listOf("s1"), b.db.syncDao().steps().map { it.uid })
+        assertEquals(a.state(), b.state())
+    }
+
+    /** A device still on version 2: its rows merge (they only lack whole tables), our goals stay, and the user hears to update it. */
+    @Test fun aVersion2DevicesFileMergesAndKeepsGoals() = test {
+        val (a, _) = pair()
+        a.seedLearn()
+        upload("old-device", Snapshot(v = 2, deviceId = "old-device", lobes = listOf(SyncLobe("L2", 5, "Work", 1, 0))))
+        val e = assertThrows(SyncException::class.java) { runBlocking { a.sync() } }
+        assertTrue(e.message!!, e.message!!.contains("older Vesper"))
+        assertEquals("Work", a.db.syncDao().lobes().single().name)
+        assertEquals(2, a.db.syncDao().steps().size)
+        assertEquals("Panduri", a.db.syncDao().goals().single().name)
+        assertTrue(a.ownFile().contains("\"v\":3") && a.ownFile().contains("Suliko")) // pushed anyway
+    }
+
+    /** What a version 2 build does with our file: its validate() stops at the number before merging or pushing anything. */
+    @Test fun aVersion3FileCarriesItsNumberForOlderBuilds() = test {
+        val (a, _) = pair()
+        a.seedLearn()
+        a.sync()
+        val file = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), a.ownFile())
+        assertEquals(3, file.v)
+        assertTrue(file.v > 2) // a v2 build's validate() throws "newer Vesper" on exactly this
     }
 
     private fun java.util.Random.asKotlin() = kotlin.random.Random(nextLong())

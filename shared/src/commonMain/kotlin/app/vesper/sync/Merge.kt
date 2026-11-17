@@ -21,10 +21,18 @@ interface SyncRow {
 @Serializable data class SyncBranch(override val uid: String, override val syncAt: Long, val lobeUid: String, val name: String) : SyncRow
 @Serializable data class SyncIdea(override val uid: String, override val syncAt: Long, val lobeUid: String, val title: String, val body: String, val noteUid: String? = null, val updatedAt: Long, val branchUid: String? = null, val link: String? = null, val done: Boolean = false) : SyncRow
 @Serializable data class SyncPlan(override val uid: String, override val syncAt: Long, val day: Long, val text: String, val done: Boolean, val createdAt: Long) : SyncRow
+@Serializable data class SyncGoal(override val uid: String, override val syncAt: Long, val name: String, val position: Int, val createdAt: Long, val updatedAt: Long) : SyncRow
+@Serializable data class SyncStep(override val uid: String, override val syncAt: Long, val goalUid: String, val title: String, val note: String = "", val done: Boolean = false, val day: Long? = null, val position: Int, val createdAt: Long, val updatedAt: Long) : SyncRow
 @Serializable data class SyncTomb(val tbl: String, val uid: String, val deletedAt: Long)
 
-/** 2 added groups, links and done. Bump it whenever an older build would silently drop part of a row. */
-const val SNAPSHOT_VERSION = 2
+/** 2 added groups, links and done; 3 the learn brain's goals and steps. Bump it whenever an older build would silently drop part of a row. */
+const val SNAPSHOT_VERSION = 3
+
+/**
+ * The oldest snapshot that merges whole: its rows carry every field of every table it has. 3 only added tables, so a 2 simply
+ * holds no goals or steps, and merging it can't touch ours (only tombstones delete). A 1 lacks groups, links and done.
+ */
+const val MERGEABLE_VERSION = 2
 
 /**
  * One device's full state of the synced tables. Every list is sorted, so equal state means equal bytes.
@@ -42,8 +50,10 @@ data class Snapshot(
     val ideas: List<SyncIdea> = emptyList(),
     val plans: List<SyncPlan> = emptyList(),
     val tombstones: List<SyncTomb> = emptyList(),
+    val goals: List<SyncGoal> = emptyList(),
+    val steps: List<SyncStep> = emptyList(),
 ) {
-    val rows: List<SyncRow> get() = notes + tasks + lobes + branches + ideas + plans
+    val rows: List<SyncRow> get() = notes + tasks + lobes + branches + ideas + plans + goals + steps
 }
 
 /** Refuses a snapshot that could not have come from a healthy device, before anything is written. */
@@ -131,11 +141,18 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
     val lobes = resolve("lobes", local.lobes.keepUnseen("lobes") { copy(syncAt = it) }, remote.lobes, tombs, tie)
     val branches = resolve("branches", local.branches.keepUnseen("branches") { copy(syncAt = it) }, remote.branches, tombs, tie)
     val plans = resolve("plans", local.plans.keepUnseen("plans") { copy(syncAt = it) }, (planCopies + remote.plans).associateBy { it.uid }.values.toList(), tombs, tie)
+    // Goals and steps: last writer wins, no conflict copies (a step is a short title, a goal a name).
+    val goals = resolve("goals", local.goals.keepUnseen("goals") { copy(syncAt = it) }, remote.goals, tombs, tie)
+    val steps = resolve("steps", local.steps.keepUnseen("steps") { copy(syncAt = it) }, remote.steps, tombs, tie)
 
     // A surviving child keeps its parent: the parent is stamped just past its tombstone, the same on both devices.
     for (uid in (ideas.live.values.map { it.lobeUid } + branches.live.values.map { it.lobeUid }).toSet() - lobes.live.keys) {
         val lobe = lobes.dead[uid] ?: throw SyncException("The copy on Drive is damaged. Nothing was changed.")
         lobes.live[uid] = lobe.copy(syncAt = maxOf(lobe.syncAt, tombs.getValue("lobes" to uid) + 1))
+    }
+    for (uid in steps.live.values.map { it.goalUid }.toSet() - goals.live.keys) {
+        val goal = goals.dead[uid] ?: throw SyncException("The copy on Drive is damaged. Nothing was changed.")
+        goals.live[uid] = goal.copy(syncAt = maxOf(goal.syncAt, tombs.getValue("goals" to uid) + 1))
     }
     // An idea never brings a deleted group back, it lands directly on the lobe. The new stamp keeps the write quiet and is the same on both devices.
     ideas.live.replaceAll { _, i -> if (i.branchUid != null && branches.live[i.branchUid]?.lobeUid != i.lobeUid) i.copy(branchUid = null, syncAt = i.syncAt + 1) else i }
@@ -156,9 +173,11 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
         lobes.live[l.uid] = l.copy(slot = slot, syncAt = l.syncAt + 1)
     }
 
-    val live = mapOf("notes" to notes.live.keys, "tasks" to tasks.live.keys, "lobes" to lobes.live.keys, "branches" to branches.live.keys, "ideas" to ideas.live.keys, "plans" to plans.live.keys)
+    val live = mapOf("notes" to notes.live.keys, "tasks" to tasks.live.keys, "lobes" to lobes.live.keys, "branches" to branches.live.keys, "ideas" to ideas.live.keys, "plans" to plans.live.keys,
+        "goals" to goals.live.keys, "steps" to steps.live.keys)
     return local.copy(
         notes = notes.rows(), tasks = tasks.rows(), lobes = lobes.rows(), branches = branches.rows(), ideas = ideas.rows(), plans = plans.rows(),
+        goals = goals.rows(), steps = steps.rows(),
         // A live row's tombstone goes away (revive); the rest are kept forever so a long-offline device can't bring rows back.
         tombstones = tombs.filterKeys { (t, u) -> u !in live.getValue(t) }.map { (k, at) -> SyncTomb(k.first, k.second, at) }.sortedWith(compareBy({ it.tbl }, { it.uid })),
     )

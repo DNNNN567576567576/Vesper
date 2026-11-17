@@ -68,8 +68,10 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
         val remote = json.decodeFromString(Snapshot.serializer(), String(open(key, f.name, t.download(f.id))))
         // Too old to merge: its rows lack fields we hold and would wipe them. Skipping loses nothing, that device keeps its rows
         // and sends them once updated. We still push below: two freshly updated devices each see the other's old file, and
-        // if both stopped here neither would ever write a new one.
-        if (remote.v < SNAPSHOT_VERSION) { olderPeer = true; continue }
+        // if both stopped here neither would ever write a new one. A file between [MERGEABLE_VERSION] and ours merges (it only
+        // lacks whole tables), but that device can't read ours, so the user still hears to update it.
+        if (remote.v < SNAPSHOT_VERSION) olderPeer = true
+        if (remote.v < MERGEABLE_VERSION) continue
         remote.validate()
         if (remote.deviceId != peer) throw SyncException("The copy on Drive is damaged. Nothing was changed.")
         val seen = store.state.seen

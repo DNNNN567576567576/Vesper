@@ -59,6 +59,7 @@ private const val NO_PAGE = -2L
 fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Brain (default), 1 = Shrine, 2 = Moons
     var selectedLobe by rememberSaveable { mutableLongStateOf(-1L) }
+    var learnAt by rememberSaveable { mutableLongStateOf(-2L) } // the learn brain: -2 closed, -1 its view, else a goal's page
     val brainCamera = remember { BrainCamera() }
     // The open item page: its id (0 = a new item), where a new one goes, and a counter that gives each opening its own editor.
     var pageId by rememberSaveable { mutableLongStateOf(NO_PAGE) }
@@ -71,6 +72,9 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     val brainVm = viewModel { BrainViewModel(host) }
     val shrineVm = viewModel { ShrineViewModel(host) }
     val moonsVm = viewModel { MoonsViewModel(host) }
+    val learnVm = viewModel { LearnViewModel(host) }
+    val goals by learnVm.goals.collectAsStateWithLifecycle()
+    val steps by learnVm.steps.collectAsStateWithLifecycle()
     val plans by moonsVm.plans.collectAsStateWithLifecycle()
     val focus by moonsVm.focus.collectAsStateWithLifecycle()
     val moonsReset = remember { mutableIntStateOf(0) }
@@ -158,6 +162,9 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     onEditPlan = moonsVm::editPlan,
                     onDeletePlan = moonsVm::deletePlan,
                     onToggleFocus = moonsVm::toggleFocus,
+                    goals = goals,
+                    steps = steps,
+                    onSetStepDone = { st, done -> learnVm.setStepDone(st, done) },
                 )
             } else {
                 BrainScreen(
@@ -182,6 +189,11 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     vault = host.vault,
                     sync = host.sync,
                     appScope = host.appScope,
+                    goals = goals,
+                    steps = steps,
+                    learnAt = learnAt,
+                    onLearnAt = { learnAt = it },
+                    learn = learnVm,
                 )
             }
         }
