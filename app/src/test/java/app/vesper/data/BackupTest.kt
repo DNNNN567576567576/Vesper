@@ -103,6 +103,48 @@ class BackupTest {
         assertTrue(ZipFile(safety).use { it.getEntry("shrine/x.jpg") != null && it.getEntry("database.db") != null })
     }
 
+    /** The Bible canvas is in the database file, so a kept copy carries its cards and links and a restore brings them back. */
+    @Test
+    fun bibleCardsAndLinksSurviveARestore(): Unit = runBlocking {
+        val dao = app.db.bibleDao()
+        val abraham = BibleCard(name = "Abraham", note = "father of many", x = 10f, y = -4.5f)
+        val isaac = BibleCard(name = "Isaac", kind = BIBLE_THING, x = 80f, y = 60f, locked = true)
+        dao.insertCard(abraham); dao.insertCard(isaac)
+        dao.insertLink(BibleLink(fromUid = isaac.uid, toUid = abraham.uid, label = "son"))
+        val cards = dao.observeCards().first(); val links = dao.observeLinks().first()
+        val file = File(app.cacheDir, "bible.zip")
+        writeBackup(app, Uri.fromFile(file))
+
+        dao.deleteLinksOf(isaac.uid); dao.deleteCardRow(cards.single { it.uid == isaac.uid }.id)
+        dao.renameCard(cards.single { it.uid == abraham.uid }.id, "Abram")
+        restoreBackup(app, Uri.fromFile(file))
+
+        val db = reopen()
+        try {
+            assertEquals(cards, db.bibleDao().observeCards().first())
+            assertEquals(links, db.bibleDao().observeLinks().first())
+        } finally { db.close() }
+    }
+
+    /** A copy kept before the Bible (v11) restores, migrates and has empty, working Bible tables. */
+    @Test
+    fun restoresAndMigratesV11Backup(): Unit = runBlocking {
+        helper.createDatabase("old11.db", 11).apply {
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'x', 1700000000000, 0, 'notes-1', 1)")
+            execSQL("INSERT INTO goals (id, name, position, createdAt, updatedAt, uid, syncAt) VALUES (1, 'Panduri', 0, 1, 1, 'g1', 2)")
+            close()
+        }
+        seed()
+        restoreBackup(app, zip("old11.zip", mapOf("manifest.json" to manifest(11), "database.db" to app.getDatabasePath("old11.db").readBytes())))
+        val db = reopen()
+        try {
+            assertEquals(listOf("Panduri"), db.learnDao().observeGoals().first().map { it.name })
+            assertEquals(emptyList<BibleCard>(), db.bibleDao().observeCards().first())
+            db.bibleDao().insertCard(BibleCard(name = "Noah", x = 0f, y = 0f))
+            assertEquals(listOf("Noah"), db.bibleDao().observeCards().first().map { it.name })
+        } finally { db.close() }
+    }
+
     @Test
     fun restoresAndMigratesV4Backup() = restoresAndMigratesOldVersionBackup(4)
 

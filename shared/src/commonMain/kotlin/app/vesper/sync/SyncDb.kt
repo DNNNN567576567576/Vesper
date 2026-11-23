@@ -3,6 +3,8 @@ package app.vesper.sync
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
 import app.vesper.data.AppDatabase
+import app.vesper.data.BibleCard
+import app.vesper.data.BibleLink
 import app.vesper.data.Branch
 import app.vesper.data.Goal
 import app.vesper.data.Step
@@ -34,6 +36,8 @@ private suspend fun SyncDao.read(deviceId: String): Snapshot {
         plans = plans().map { SyncPlan(it.uid, it.syncAt, it.day, it.text, it.done, it.createdAt) }.sortedBy { it.uid },
         goals = goals.map { SyncGoal(it.uid, it.syncAt, it.name, it.position, it.createdAt, it.updatedAt) }.sortedBy { it.uid },
         steps = steps().map { SyncStep(it.uid, it.syncAt, goalUid.getValue(it.goalId), it.title, it.note, it.done, it.day, it.position, it.createdAt, it.updatedAt) }.sortedBy { it.uid },
+        bibleCards = bibleCards().map { SyncBibleCard(it.uid, it.syncAt, it.name, it.note, it.kind, it.x, it.y, it.locked) }.sortedBy { it.uid },
+        bibleLinks = bibleLinks().map { SyncBibleLink(it.uid, it.syncAt, it.fromUid, it.toUid, it.label) }.sortedBy { it.uid },
         tombstones = tombstones().map { SyncTomb(it.tbl, it.uid, it.deletedAt) }.sortedWith(compareBy({ it.tbl }, { it.uid })),
     )
 }
@@ -43,12 +47,12 @@ suspend fun AppDatabase.exportSnapshot(deviceId: String): Snapshot =
     useWriterConnection { c -> c.immediateTransaction { syncDao().read(deviceId) } }
 
 /** Merges [remote] in one transaction, so any failure leaves the DB untouched. Returns whether anything changed. */
-suspend fun AppDatabase.mergeIn(remote: Snapshot, deviceId: String, seen: Map<String, Long>, pushedUpTo: Long = Long.MAX_VALUE): Boolean =
+suspend fun AppDatabase.mergeIn(remote: Snapshot, deviceId: String, seen: Map<String, Long>, pushedUpTo: Long = Long.MAX_VALUE, sent: Map<String, List<Long>> = emptyMap()): Boolean =
     useWriterConnection { c ->
         c.immediateTransaction {
             val dao = syncDao()
             val local = dao.read(deviceId)
-            val merged = merge(local, remote, seen, pushedUpTo)
+            val merged = merge(local, remote, seen, pushedUpTo, sent)
             if (merged != local) dao.write(local, merged)
             merged != local
         }
@@ -70,6 +74,8 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
     gone(local.steps, merged.steps).forEach { deleteStep(it) }
     gone(local.goals, merged.goals).forEach { deleteGoal(it) }
     gone(local.lobes, merged.lobes).forEach { deleteLobe(it) }
+    gone(local.bibleLinks, merged.bibleLinks).forEach { deleteBibleLink(it) }
+    gone(local.bibleCards, merged.bibleCards).forEach { deleteBibleCard(it) }
 
     val lobeIds = lobes().associate { it.uid to it.id }.toMutableMap()
     for (l in changed(local.lobes, merged.lobes)) {
@@ -121,6 +127,17 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
     val stepIds = steps().associate { it.uid to it.id }
     for (s in changed(local.steps, merged.steps)) {
         val row = Step(stepIds[s.uid] ?: 0, goalIds.getValue(s.goalUid), s.title, s.note, s.done, s.day, s.position, s.createdAt, s.updatedAt, s.uid, s.syncAt)
+        if (row.id == 0L) insert(row) else update(row)
+    }
+
+    val cardIds = bibleCards().associate { it.uid to it.id }
+    for (c in changed(local.bibleCards, merged.bibleCards)) {
+        val row = BibleCard(cardIds[c.uid] ?: 0, c.name, c.note, c.kind, c.x, c.y, c.locked, c.uid, c.syncAt)
+        if (row.id == 0L) insert(row) else update(row)
+    }
+    val linkIds = bibleLinks().associate { it.uid to it.id }
+    for (l in changed(local.bibleLinks, merged.bibleLinks)) {
+        val row = BibleLink(linkIds[l.uid] ?: 0, l.fromUid, l.toUid, l.label, l.uid, l.syncAt)
         if (row.id == 0L) insert(row) else update(row)
     }
 

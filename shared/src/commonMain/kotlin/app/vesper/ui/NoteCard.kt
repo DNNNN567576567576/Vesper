@@ -33,6 +33,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -49,7 +50,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.vesper.IdeaEditorViewModel
-import app.vesper.data.Branch
 import app.vesper.data.Lobe
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -65,13 +65,12 @@ private val CardPurple = Color(0xFF9C84FF)
 @Composable
 fun NoteCard(
     vm: IdeaEditorViewModel, from: Offset, p: Animatable<Float, AnimationVector1D>, footer: String,
-    lobes: List<Lobe>, branches: List<Branch>, closeSignal: Int, onMoved: (String) -> Unit, onClosed: () -> Unit,
+    lobes: List<Lobe>, closeSignal: Int, lobeNamed: (String, (Long) -> Unit) -> Unit, onMoved: (String) -> Unit, onClosed: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     var closing by remember { mutableStateOf(false) }
     var drag by remember { mutableFloatStateOf(0f) }
-    var bounds by remember { mutableStateOf(Rect.Zero) }
     LaunchedEffect(vm) { Sounds.play(Sfx.Open); p.snapTo(0f); p.animateTo(1f, tween(320, easing = CubicBezierEasing(0.34f, 1.35f, 0.64f, 1f))) }
     fun close() {
         if (closing) return
@@ -98,17 +97,7 @@ fun NoteCard(
         ) {
             Column(
                 Modifier.widthIn(max = 720.dp).fillMaxSize()
-                    .onGloballyPositioned { bounds = it.boundsInRoot() }
-                    .graphicsLayer {
-                        val e = p.value
-                        val c = bounds.center
-                        val at = if (from.isSpecified) from else c
-                        val k = 0.06f + 0.94f * e
-                        scaleX = k; scaleY = k
-                        translationX = (at.x - c.x) * (1f - e)
-                        translationY = (at.y - c.y) * (1f - e) + drag * e.coerceIn(0f, 1f)
-                        alpha = (e * 4f).coerceIn(0f, 1f)
-                    }
+                    .growFrom(from, { p.value }, { drag })
                     .shadow(20.dp, shape, ambientColor = CardPurple, spotColor = CardPurple)
                     .clip(shape).background(Color(0xFF140B26)).border(1.5.dp, CardPurple, shape)
                     .pointerInput(Unit) { detectTapGestures { } }, // taps on the card itself never reach the dim world behind
@@ -134,18 +123,39 @@ fun NoteCard(
         }
     }
     if (moving) {
+        val here = placeIndex(lobes.firstOrNull { it.id == vm.lobeId })
         MovePicker(
-            lobes, branches, vm.lobeId, vm.branchId,
-            onPick = { l, b ->
+            here,
+            onPick = { name ->
                 moving = false
-                scope.launch {
-                    if (l == vm.lobeId && b == vm.branchId) return@launch
-                    val dest = vm.moveTo(l, b) ?: return@launch
-                    onMoved(dest)
-                    close()
+                if (PLACE_NAMES.indexOf(name) == here) return@MovePicker // already there (an old group counts as the main brain)
+                lobeNamed(name) { l ->
+                    scope.launch {
+                        val dest = vm.moveTo(l, null) ?: return@launch
+                        onMoved(dest.ifBlank { "main brain" })
+                        close()
+                    }
                 }
             },
             onCancel = { moving = false },
         )
+    }
+}
+
+/**
+ * Grows a card from [from] (px in the root; unspecified = its own middle) with a fade as [p] goes 0 to 1, pulled [dragY] px down.
+ * The note card and the main brain's card both open this way.
+ */
+internal fun Modifier.growFrom(from: Offset, p: () -> Float, dragY: () -> Float = { 0f }): Modifier = composed {
+    var bounds by remember { mutableStateOf(Rect.Zero) }
+    onGloballyPositioned { bounds = it.boundsInRoot() }.graphicsLayer {
+        val e = p()
+        val c = bounds.center
+        val at = if (from.isSpecified) from else c
+        val k = 0.06f + 0.94f * e
+        scaleX = k; scaleY = k
+        translationX = (at.x - c.x) * (1f - e)
+        translationY = (at.y - c.y) * (1f - e) + dragY() * e.coerceIn(0f, 1f)
+        alpha = (e * 4f).coerceIn(0f, 1f)
     }
 }

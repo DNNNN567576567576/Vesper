@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -32,7 +33,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-private const val KEY_BRAIN_SHOW_ALL = "brainShowAll"
 private const val KEY_BRAIN_SOUNDS = "brainSounds"
 
 
@@ -197,43 +197,32 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
     val branches: StateFlow<List<app.vesper.data.Branch>?> = dao.observeBranches()
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    fun addLobe(name: String, onAdded: (Long) -> Unit) {
+    /** A new sub brain called [name] in the first free slot. */
+    private suspend fun insertLobe(name: String): Long {
+        val existing = dao.observeLobes().first()
+        val slot = generateSequence(0) { it + 1 }.first { s -> existing.none { it.slot == s } }
+        return dao.insertLobe(app.vesper.data.Lobe(name = name, colorIndex = slot, slot = slot))
+    }
+
+
+    /**
+     * Calls back with the first sub brain called [name] (trimmed, any case; "" = the nameless one that holds the loose notes), made
+     * when there is none. Two devices may each make one before they sync; the Brain shows same-named ones as one, so nothing hides.
+     */
+    fun lobeNamed(name: String, onReady: (Long) -> Unit) {
         val clean = name.trim()
-        if (clean.isEmpty()) return
         notebook.appScope.launch {
             try {
-                val existing = lobes.value.orEmpty()
-                val slot = generateSequence(0) { it + 1 }.first { s -> existing.none { it.slot == s } }
-                val id = dao.insertLobe(app.vesper.data.Lobe(name = clean, colorIndex = slot, slot = slot))
-                launch(Dispatchers.Main) { onAdded(id) }
-            } catch (e: Exception) { notebook.reportError("add lobe", e) }
+                val id = dao.observeLobes().first().firstOrNull { it.name.trim().equals(clean, ignoreCase = true) }?.id ?: insertLobe(clean)
+                launch(Dispatchers.Main) { onReady(id) }
+            } catch (e: Exception) { notebook.reportError("find lobe", e) }
         }
     }
 
-    fun renameLobe(id: Long, name: String) {
-        val clean = name.trim()
-        if (clean.isEmpty()) return
-        notebook.appScope.launch {
-            try { dao.renameLobe(id, clean) } catch (e: Exception) { notebook.reportError("rename lobe", e) }
-        }
-    }
-
-    /** Moves lobe [id] to [slot]; a lobe already there swaps into its old slot. */
-    fun moveLobe(id: Long, slot: Int) {
-        val from = lobes.value?.firstOrNull { it.id == id }?.slot ?: return
-        if (from == slot) return
-        notebook.appScope.launch {
-            try { dao.moveLobe(id, slot, from) } catch (e: Exception) { notebook.reportError("move lobe", e) }
-        }
-    }
-
-    /** Main map: every group and note shown (true) or only the sub brains. Remembered across restarts. */
-    val showAll by lazy { MutableStateFlow(notebook.settings.getBoolean(KEY_BRAIN_SHOW_ALL, true)) } // lazy: read only by the Brain tab
-
-    fun toggleShowAll() {
-        showAll.value = !showAll.value
-        notebook.settings.putBoolean(KEY_BRAIN_SHOW_ALL, showAll.value)
-    }
+    // Where the player put the brains on the map, per device.
+    fun loadLayout() = app.vesper.ui.NoteMoves.load(notebook.settings)
+    fun saveLayout() = app.vesper.ui.NoteMoves.save(notebook.settings)
+    fun resetLayout() = app.vesper.ui.NoteMoves.reset(notebook.settings)
 
     /** The Brain's little sounds on or off (default on). Remembered across restarts. */
     val sounds by lazy { MutableStateFlow(notebook.settings.getBoolean(KEY_BRAIN_SOUNDS, true).also { app.vesper.ui.Sounds.on = it }) }
@@ -242,13 +231,6 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         sounds.value = !sounds.value
         app.vesper.ui.Sounds.on = sounds.value
         notebook.settings.putBoolean(KEY_BRAIN_SOUNDS, sounds.value)
-    }
-
-    /** Permanent, and takes the lobe's ideas with it. The caller confirms first. */
-    fun deleteLobe(id: Long) {
-        notebook.appScope.launch {
-            try { dao.deleteLobe(id) } catch (e: Exception) { notebook.reportError("delete lobe", e) }
-        }
     }
 
     /** Same rules as [writeIdea]; [base] is the idea as the caller last saw it, id 0 for a new one. */
@@ -262,65 +244,35 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         try { writeIdea(notebook, base, title, body, link, branchId) } catch (e: Exception) { notebook.reportError("save idea", e) }
     }
 
-    /** An item made from shared text, kept in [lobeId] (and [branchId] when that group still exists). */
-    fun addShared(share: SharedText, lobeId: Long, branchId: Long?) {
+    /** An item made from shared text, kept in [lobeId]. */
+    fun addShared(share: SharedText, lobeId: Long) {
         val parsed = parseShare(share.text, share.subject)
         notebook.appScope.launch {
             try {
-                if (dao.lobeExists(lobeId)) dao.insertIdea(
-                    app.vesper.data.Idea(lobeId = lobeId, title = parsed.title, body = parsed.body, link = parsed.link, branchId = branchId?.takeIf { dao.branchExists(it) }),
-                )
+                if (dao.lobeExists(lobeId)) dao.insertIdea(app.vesper.data.Idea(lobeId = lobeId, title = parsed.title, body = parsed.body, link = parsed.link))
             } catch (e: Exception) { notebook.reportError("save shared text", e) }
+        }
+    }
+
+    /** A new Daily item called [name], in the Daily sub brain (made when missing). */
+    fun addDaily(name: String) {
+        val clean = name.trim().ifEmpty { return }
+        lobeNamed(DAILY_LOBE) { lobeId ->
+            notebook.appScope.launch {
+                try { dao.insertIdea(app.vesper.data.Idea(lobeId = lobeId, title = clean, body = "")) } catch (e: Exception) { notebook.reportError("add daily", e) }
+            }
+        }
+    }
+
+    fun setDone(id: Long, done: Boolean) {
+        notebook.appScope.launch {
+            try { dao.setIdeaDone(id, done) } catch (e: Exception) { notebook.reportError("tick daily", e) }
         }
     }
 
     fun deleteIdea(id: Long) {
         notebook.appScope.launch {
             try { dao.deleteIdea(id) } catch (e: Exception) { notebook.reportError("delete idea", e) }
-        }
-    }
-
-    fun addBranch(lobeId: Long, name: String) {
-        val clean = name.trim()
-        if (clean.isEmpty()) return
-        notebook.appScope.launch {
-            try { if (dao.lobeExists(lobeId)) dao.insertBranch(app.vesper.data.Branch(lobeId = lobeId, name = clean)) } catch (e: Exception) { notebook.reportError("add group", e) }
-        }
-    }
-
-    fun renameBranch(id: Long, name: String) {
-        val clean = name.trim()
-        if (clean.isEmpty()) return
-        notebook.appScope.launch {
-            try { dao.renameBranch(id, clean) } catch (e: Exception) { notebook.reportError("rename group", e) }
-        }
-    }
-
-    /**
-     * Moves group [id] with all its notes to sub brain [toLobe] in one transaction. Returns the target's name, null when nothing
-     * moved (group or sub brain gone, or already there). A same-named group there stays separate.
-     */
-    suspend fun moveBranchTo(id: Long, toLobe: Long): String? = try {
-        notebook.db.useWriterConnection { w ->
-            w.immediateTransaction {
-                val lobe = dao.getLobe(toLobe) ?: return@immediateTransaction null
-                val branch = dao.getBranch(id) ?: return@immediateTransaction null
-                if (branch.lobeId == toLobe) return@immediateTransaction null
-                dao.moveBranch(id, toLobe)
-                dao.moveBranchIdeas(id, toLobe, System.currentTimeMillis())
-                lobe.name
-            }
-        }
-    } catch (e: Exception) { notebook.reportError("move group", e); null }
-
-    fun moveBranch(id: Long, toLobe: Long, onMoved: (String) -> Unit) {
-        notebook.appScope.launch { moveBranchTo(id, toLobe)?.let { withContext(Dispatchers.Main) { onMoved(it) } } }
-    }
-
-    /** Its ideas stay, directly on the lobe. The caller confirms first. */
-    fun deleteBranch(id: Long) {
-        notebook.appScope.launch {
-            try { dao.deleteBranch(id) } catch (e: Exception) { notebook.reportError("delete group", e) }
         }
     }
 }
@@ -673,13 +625,11 @@ class MoonsViewModel(private val notebook: VesperHost) : ViewModel() {
     }
 }
 
-/** The learn brain's goals and their steps. Days are `LocalDate.toEpochDay()`. `null` = first emission pending. */
+/** The learn brain's goals (just names; their steps stay in the database untouched but are not shown). `null` = first emission pending. */
 class LearnViewModel(private val notebook: VesperHost) : ViewModel() {
     private val dao get() = notebook.db.learnDao()
 
     val goals: StateFlow<List<app.vesper.data.Goal>?> = dao.observeGoals()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-    val steps: StateFlow<List<app.vesper.data.Step>?> = dao.observeSteps()
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private fun write(what: String, block: suspend () -> Unit): Job = notebook.appScope.launch {
@@ -696,23 +646,51 @@ class LearnViewModel(private val notebook: VesperHost) : ViewModel() {
         write("rename goal") { dao.renameGoal(id, clean, System.currentTimeMillis()) }
     }
 
-    /** Permanent, steps included. The caller confirms first. */
+    /** Permanent (a goal's steps in the database go with it). The caller confirms first. */
     fun deleteGoal(id: Long) = write("delete goal") { dao.deleteGoal(id) }
+}
 
-    fun addStep(goalId: Long, title: String) {
-        val clean = title.trim().ifEmpty { return }
-        write("add step") { dao.insertStep(app.vesper.data.Step(goalId = goalId, title = clean, position = dao.nextStepPosition(goalId))) }
+/** The Bible canvas: cards (people, things) and the labelled links between them. Every write is one statement or one transaction. */
+class BibleViewModel(private val notebook: VesperHost) : ViewModel() {
+    private val dao get() = notebook.db.bibleDao()
+
+    val cards: StateFlow<List<app.vesper.data.BibleCard>?> = dao.observeCards().stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val links: StateFlow<List<app.vesper.data.BibleLink>?> = dao.observeLinks().stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private fun write(what: String, block: suspend () -> Unit): Job = notebook.appScope.launch {
+        try { block() } catch (e: Exception) { notebook.reportError(what, e) }
     }
 
-    fun setStepDone(step: app.vesper.data.Step, done: Boolean) = write("update step") { dao.setStepDone(step.id, done, System.currentTimeMillis()) }
-
-    fun setStepDay(step: app.vesper.data.Step, day: Long?) = write("update step") { dao.setStepDay(step.id, day, System.currentTimeMillis()) }
-
-    /** A blank title keeps the old one. */
-    fun editStep(step: app.vesper.data.Step, title: String, note: String, day: Long?) = write("edit step") {
-        dao.setStepFields(step.id, title.trim().ifEmpty { step.title }, note.trim(), day, System.currentTimeMillis())
+    fun addCard(name: String, x: Float, y: Float) {
+        val clean = name.trim().ifEmpty { return }
+        write("add card") { dao.insertCard(app.vesper.data.BibleCard(name = clean, x = x, y = y)) }
     }
 
-    /** Permanent. The caller confirms first. */
-    fun deleteStep(id: Long) = write("delete step") { dao.deleteStep(id) }
+    fun renameCard(id: Long, name: String) {
+        val clean = name.trim().ifEmpty { return }
+        write("rename card") { dao.renameCard(id, clean) }
+    }
+
+    fun setNote(id: Long, note: String) = write("save note") { dao.setNote(id, note.trim()) }
+    fun setKind(id: Long, kind: String) = write("change kind") { dao.setKind(id, kind) }
+    fun moveCard(id: Long, x: Float, y: Float) = write("move card") { dao.moveCard(id, x, y) }
+    fun setLocked(id: Long, locked: Boolean) = write("lock card") { dao.setLocked(id, locked) }
+
+    /** The card and every link to or from it, together. The caller confirms first. */
+    fun deleteCard(card: app.vesper.data.BibleCard) = write("delete card") {
+        notebook.db.useWriterConnection { w -> w.immediateTransaction { dao.deleteLinksOf(card.uid); dao.deleteCardRow(card.id) } }
+    }
+
+    fun addLink(fromUid: String, toUid: String, label: String) {
+        val clean = label.trim().ifEmpty { return }
+        if (fromUid == toUid) return
+        write("add link") { dao.insertLink(app.vesper.data.BibleLink(fromUid = fromUid, toUid = toUid, label = clean)) }
+    }
+
+    fun renameLink(id: Long, label: String) {
+        val clean = label.trim().ifEmpty { return }
+        write("rename link") { dao.renameLink(id, clean) }
+    }
+
+    fun deleteLink(id: Long) = write("delete link") { dao.deleteLink(id) }
 }

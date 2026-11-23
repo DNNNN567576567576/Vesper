@@ -19,8 +19,8 @@ android {
         applicationId = "app.vesper"
         minSdk = 26
         targetSdk = 35
-        versionCode = 35
-        versionName = "2.6.4-alt"
+        versionCode = 45
+        versionName = "2.7.9-alt"
     }
 
     signingConfigs {

@@ -271,4 +271,115 @@ class SyncMergeTest {
         b(tombs = listOf(SyncTomb("goals", "g", 1), SyncTomb("steps", "s", 1))).validate()
         assertThrows(SyncException::class.java) { Snapshot(deviceId = "b", steps = listOf(step("s", 0))).validate() }
     }
+
+    // ---- 2.7.9 the Bible canvas: cards and links ----
+
+    private fun card(uid: String, at: Long, name: String = "Isaac", note: String = "", x: Float = 0f, y: Float = 0f, locked: Boolean = false) = SyncBibleCard(uid, at, name, note, "person", x, y, locked)
+    private fun link(uid: String, at: Long, from: String, to: String, label: String = "son") = SyncBibleLink(uid, at, from, to, label)
+    private fun bible(id: String, cards: List<SyncBibleCard> = emptyList(), links: List<SyncBibleLink> = emptyList(), tombs: List<SyncTomb> = emptyList()) =
+        Snapshot(v = SNAPSHOT_VERSION, deviceId = id, bibleCards = cards, bibleLinks = links, tombstones = tombs)
+
+    @Test fun cardsAndLinksUnionAndNewestWins() {
+        val m = merge(bible("a", listOf(card("i", 1)), listOf(link("l", 2, "i", "x"))), bible("b", listOf(card("x", 1, "Abraham"), card("i", 5, "Isaac!"))), mapOf("bible_cards:i" to 1))
+        assertEquals(listOf("Isaac!", "Abraham"), m.bibleCards.map { it.name })
+        assertEquals(listOf("l"), m.bibleLinks.map { it.uid })
+    }
+
+    /** Moving (and locking) is no text conflict: both sides moved, the later one wins and no copy is made. */
+    @Test fun bothMovedIsNoConflict() {
+        val seen = mapOf("bible_cards:i" to 1L)
+        val m = merge(bible("a", listOf(card("i", 10, x = 5f, y = 5f))), bible("b", listOf(card("i", 20, x = 90f, y = -3f, locked = true))), seen)
+        assertEquals(listOf(card("i", 20, x = 90f, y = -3f, locked = true)), m.bibleCards)
+        val back = merge(bible("b", listOf(card("i", 20, x = 90f, y = -3f, locked = true))), bible("a", listOf(card("i", 10, x = 5f, y = 5f))), seen)
+        assertEquals(m.bibleCards, back.bibleCards)
+    }
+
+    @Test fun bothRenamedKeepsTheLoserAsACopyBesideIt() {
+        val seen = mapOf("bible_cards:i" to 1L)
+        val mine = bible("a", listOf(card("i", 10, "Isaac son of Abraham", x = 40f, y = 40f)))
+        val theirs = bible("b", listOf(card("i", 20, "Yitzhak", x = 40f, y = 40f)))
+        val m = merge(mine, theirs, seen)
+        assertEquals(setOf("Yitzhak", "Isaac son of Abraham (other copy)"), m.bibleCards.map { it.name }.toSet())
+        val copy = m.bibleCards.single { it.uid == "i~10" }
+        assertEquals(64f to 64f, copy.x to copy.y) // beside its card, not under it
+        assertEquals(m.bibleCards, merge(theirs.copy(deviceId = "a"), mine.copy(deviceId = "b"), seen).bibleCards) // the same copy on both devices
+    }
+
+    @Test fun aNoteEditedOnBothSidesIsAConflictToo() {
+        val m = merge(bible("a", listOf(card("i", 10, note = "mine"))), bible("b", listOf(card("i", 20, note = "theirs"))), mapOf("bible_cards:i" to 1L))
+        assertEquals(setOf("mine", "theirs"), m.bibleCards.map { it.note }.toSet())
+    }
+
+    /** A move on one side, a rename on the other: the later move wins, the rename is kept as a copy rather than lost. */
+    @Test fun aRenameNeverGetsLostToAMove() {
+        val m = merge(bible("a", listOf(card("i", 10, "Yitzhak"))), bible("b", listOf(card("i", 20, x = 50f))), mapOf("bible_cards:i" to 1L))
+        assertTrue(m.bibleCards.any { it.name.startsWith("Yitzhak") })
+        assertEquals(50f, m.bibleCards.single { it.uid == "i" }.x)
+    }
+
+    @Test fun anEchoOfOurOwnOlderCardIsNoConflict() {
+        val sent = mapOf("bible_cards:i" to listOf(10L))
+        val m = merge(bible("a", listOf(card("i", 12, "Isaac."))), bible("b", listOf(card("i", 10, "Isaac"))), mapOf("bible_cards:i" to 1L), sent = sent)
+        assertEquals(listOf("Isaac."), m.bibleCards.map { it.name })
+        assertEquals(listOf(10L), sentAfter(emptyMap(), emptyMap(), bible("a", listOf(card("i", 10))))["bible_cards:i"])
+        assertEquals(7L, seenAfter(emptyMap(), bible("b", listOf(card("i", 7))))["bible_cards:i"])
+    }
+
+    @Test fun linksAreLastWriterWinsWithNoCopy() {
+        val cards = listOf(card("i", 1), card("x", 1))
+        val m = merge(bible("a", cards, listOf(link("l", 10, "i", "x", "son"))), bible("b", cards, listOf(link("l", 20, "i", "x", "heir"))), emptyMap())
+        assertEquals(listOf(link("l", 20, "i", "x", "heir")), m.bibleLinks)
+    }
+
+    /** The other device deleted Abraham (and its links with him); our newer link to him must not dangle: it goes too. */
+    @Test fun aLinkToACardDeletedElsewhereIsDropped() {
+        val mine = bible("a", listOf(card("i", 1), card("x", 1, "Abraham")), listOf(link("l", 50, "i", "x"), link("keep", 2, "x", "i")))
+        val theirs = bible("b", listOf(card("i", 1)), tombs = listOf(SyncTomb("bible_cards", "x", 10)))
+        val m = merge(mine, theirs, emptyMap())
+        assertEquals(listOf("i"), m.bibleCards.map { it.uid })
+        assertTrue(m.bibleLinks.isEmpty())
+        assertEquals(m.bibleLinks, merge(theirs.copy(deviceId = "a"), mine.copy(deviceId = "b"), emptyMap()).bibleLinks)
+        assertEquals(m, merge(m, theirs, emptyMap())) // and stays settled
+    }
+
+    @Test fun aLinkToACardThatExistsNowhereIsDroppedNotRefused() {
+        val m = merge(bible("a", listOf(card("i", 1))), bible("b", links = listOf(link("l", 3, "i", "ghost"), link("l2", 3, "ghost", "i"))), emptyMap())
+        assertTrue(m.bibleLinks.isEmpty())
+        assertEquals(listOf("i"), m.bibleCards.map { it.uid })
+    }
+
+    @Test fun aCardEditedAfterItsDeleteComesBackWithoutItsDeletedLinks() {
+        val mine = bible("a", listOf(card("x", 30, "Abraham", x = 9f), card("i", 1)), listOf(link("l", 5, "i", "x")))
+        val theirs = bible("b", listOf(card("i", 1)), tombs = listOf(SyncTomb("bible_cards", "x", 10), SyncTomb("bible_links", "l", 10)))
+        val m = merge(mine, theirs, emptyMap())
+        assertEquals(setOf("x", "i"), m.bibleCards.map { it.uid }.toSet())
+        assertTrue(m.bibleLinks.isEmpty())
+    }
+
+    /** A version 3 file has no Bible: merging it keeps ours as they are. */
+    @Test fun aVersion3SnapshotLeavesTheBibleAlone() {
+        val mine = bible("a", listOf(card("i", 1), card("x", 1)), listOf(link("l", 2, "i", "x"))).copy(lobes = listOf(lobe("L", 1)))
+        val v3 = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), """{"v":3,"deviceId":"b","lobes":[{"uid":"L","syncAt":5,"name":"Work","colorIndex":0,"slot":0}],"goals":[{"uid":"G","syncAt":3,"name":"Panduri","position":0,"createdAt":1,"updatedAt":1}]}""")
+        v3.validate()
+        val m = merge(mine, v3, emptyMap())
+        assertEquals(mine.bibleCards, m.bibleCards)
+        assertEquals(mine.bibleLinks, m.bibleLinks)
+        assertEquals("Work", m.lobes.single().name)
+        assertEquals("Panduri", m.goals.single().name)
+    }
+
+    @Test fun aVersion4FileRoundTripsAndOlderBuildsStopAtItsNumber() {
+        val s = bible("a", listOf(card("i", 1, note = "laughter", locked = true)), listOf(link("l", 2, "i", "i")))
+        val text = kotlinx.serialization.json.Json.encodeToString(Snapshot.serializer(), s)
+        assertTrue(text.contains("\"v\":4"))
+        assertEquals(s, kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), text))
+        assertEquals(4, SNAPSHOT_VERSION)
+        assertThrows(SyncException::class.java) { s.copy(v = SNAPSHOT_VERSION + 1).validate() } // how a v3 build met our v4
+    }
+
+    @Test fun bibleTombstonesAreValidAndDamagedRowsAreNot() {
+        b(tombs = listOf(SyncTomb("bible_cards", "c", 1), SyncTomb("bible_links", "l", 1))).validate()
+        assertThrows(SyncException::class.java) { bible("b", listOf(card("", 1))).validate() }
+        assertThrows(SyncException::class.java) { bible("b", links = listOf(link("l", 0, "a", "b"))).validate() }
+    }
 }

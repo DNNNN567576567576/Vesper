@@ -23,6 +23,7 @@ data class SyncState(
     val pushedUpTo: Long = 0,
     val peerVersions: Map<String, String> = emptyMap(),
     val seen: Map<String, Long> = emptyMap(),
+    val sent: Map<String, List<Long>> = emptyMap(),
 )
 
 private val json = Json { ignoreUnknownKeys = true }
@@ -75,7 +76,7 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
         remote.validate()
         if (remote.deviceId != peer) throw SyncException("The copy on Drive is damaged. Nothing was changed.")
         val seen = store.state.seen
-        db.mergeIn(remote, deviceId, seen, store.state.pushedUpTo)
+        db.mergeIn(remote, deviceId, seen, store.state.pushedUpTo, store.state.sent)
         // After the commit: a crash in between only merges the same file again, which is a no-op.
         store.state = store.state.copy(peerVersions = store.state.peerVersions + (f.id to f.version), seen = seenAfter(seen, remote))
     }
@@ -90,7 +91,8 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
         own.isEmpty() -> t.create(name, seal(key, name, plain))
         hash != store.state.pushedHash -> t.update(own[0].id, seal(key, name, plain))
     }
-    store.state = store.state.copy(pushedHash = hash, pushedUpTo = snapshot.rows.maxOfOrNull { it.syncAt } ?: 0, lastSyncAt = now())
+    store.state = store.state.copy(pushedHash = hash, pushedUpTo = snapshot.rows.maxOfOrNull { it.syncAt } ?: 0, lastSyncAt = now(),
+        sent = sentAfter(store.state.sent, store.state.seen, snapshot))
     if (olderPeer) throw SyncException("Your other device runs an older Vesper. Update it to sync again. Everything here is safe.")
 }
 
@@ -98,7 +100,7 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
  * Sync state for a DB that was just replaced by a backup: nothing here is known to be merged or pushed any more, so the
  * next round merges every peer in full, and with [SyncState.seen] empty any text that differs keeps both versions.
  */
-fun SyncState.afterRestore() = copy(lastSyncAt = 0, pushedHash = null, pushedUpTo = 0, peerVersions = emptyMap(), seen = emptyMap())
+fun SyncState.afterRestore() = copy(lastSyncAt = 0, pushedHash = null, pushedUpTo = 0, peerVersions = emptyMap(), seen = emptyMap(), sent = emptyMap())
 
 /** Forgot the passphrase, or starting over: empties the Drive folder. Local rows and [SyncState.seen] stay, they still hold. */
 fun resetVault(store: SyncStore, t: SyncTransport) {

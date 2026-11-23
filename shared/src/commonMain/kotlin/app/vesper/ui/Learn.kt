@@ -54,6 +54,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
@@ -81,7 +82,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-// The learn brain: goals as moons round a small second brain, each goal a path of steps.
+// The learn brain: goals (just names) as calm full moons round a small second brain.
 
 // ---------------------------------------------------------------------------------------------
 // Rules (pure, tested in LearnTest)
@@ -89,42 +90,18 @@ import kotlin.math.sin
 
 internal const val DAY_MS = 86_400_000L
 
+/** A goal's name is a short sentence, so it may be this long. */
+internal const val GOAL_NAME_MAX = 60
+
 /** The learn brain's ring radius in world units: how deep a fly-through into it zooms. */
 internal const val LEARN_R = 12f
 /** The learn brain's core sprite scale on the main map (the main brain's is 0.64). */
 internal const val LEARN_SCALE = 0.24f
 
-/** Done steps over all steps; 0 with none. */
-internal fun goalProgress(steps: List<Step>): Float = if (steps.isEmpty()) 0f else steps.count { it.done } / steps.size.toFloat()
-
-/** The last time anyone worked on [goal]: made or renamed it, or made, edited or ticked one of its [steps]. */
-internal fun goalTouchedAt(goal: Goal, steps: List<Step>): Long = max(goal.updatedAt, steps.maxOfOrNull { it.updatedAt } ?: 0L)
-
 /** 1 while touched within 7 days, then fading evenly to 0.45 over the next three weeks, never dimmer. */
 internal fun goalBrightness(touchedAt: Long, now: Long): Float =
     1f - 0.55f * (((now - touchedAt) / DAY_MS.toFloat() - 7f) / 21f).coerceIn(0f, 1f)
 
-/** [goalId]'s steps in path order. */
-internal fun pathOf(steps: List<Step>, goalId: Long): List<Step> = steps.filter { it.goalId == goalId }.sortedWith(compareBy({ it.position }, { it.id }))
-
-/** Undone steps whose day is [today] or earlier: oldest day first, then in goal order and path order. Steps of unknown goals are left out. */
-internal fun dueSteps(goals: List<Goal>, steps: List<Step>, today: Long): List<Step> {
-    val rank = goals.withIndex().associate { it.value.id to it.index }
-    return steps.filter { !it.done && (it.day ?: Long.MAX_VALUE) <= today && it.goalId in rank }
-        .sortedWith(compareBy({ it.day }, { rank[it.goalId] }, { it.position }, { it.id }))
-}
-
-internal fun isOverdue(step: Step, today: Long) = !step.done && (step.day ?: Long.MAX_VALUE) < today
-
-/** "today", "tomorrow", or a short date like "Nov 20". */
-internal fun dayLabel(day: Long, today: Long): String = when (day) {
-    today -> "today"
-    today + 1 -> "tomorrow"
-    else -> LocalDate.ofEpochDay(day).let { it.month.getDisplayName(DateTextStyle.SHORT, Locale.ENGLISH) + " " + it.dayOfMonth }
-}
-
-/** Names are sized in dp, so their world size depends on the zoom; the map never settles below this many dp per world unit on a phone. */
-internal const val LEARN_K = 1.8f
 private const val LEARN_BRAIN_R = 17.5f // the dotted ring, the moons' orbit (16) and a moon's dot
 internal const val LEARN_LABEL_W = 48f // dp: "learn" at 18sp with its glow
 internal const val LEARN_LABEL_H = 24f // dp
@@ -135,459 +112,51 @@ internal fun learnBrainBox(p: Offset) = floatArrayOf(p.x - LEARN_BRAIN_R, p.y - 
 /** The "learn" label under the brain at [p] (l, t, r, b, world) when a world unit is [k] dp. */
 internal fun learnLabelBox(p: Offset, k: Float) = floatArrayOf(p.x - LEARN_LABEL_W / 2f / k, p.y + 17f, p.x + LEARN_LABEL_W / 2f / k, p.y + 17f + LEARN_LABEL_H / k)
 
-/** Signed gap between two boxes: negative when they overlap. */
-private fun boxGap(a: FloatArray, b: FloatArray): Float {
-    val gx = max(a[0] - b[2], b[0] - a[2]); val gy = max(a[1] - b[3], b[1] - a[3])
-    return if (gx > 0f && gy > 0f) hypot(gx, gy) else max(gx, gy)
-}
-
-/**
- * Where the learn brain sits on the main map: beside the vault heart at heart height, left or right, at the spot with the most room
- * round the brain, its orbit and its "learn" label. Everything else on the map counts as taken: the core, the today strip, the heart's
- * nerve, the heart and its name, every portal with its glow (world [portals]) and the name above and under it ([nameLens] letters each,
- * in the portals' order). The first spot with 6 units to spare wins, nearest the heart, so the answer only depends on the map.
- */
-internal fun learnSpot(portals: List<Offset>, nameLens: List<Int> = emptyList()): Offset {
-    val k = LEARN_K
-    val taken = ArrayList<FloatArray>()
-    taken.add(floatArrayOf(-36f, -36f, 36f, 36f)) // the core and its ring
-    taken.add(floatArrayOf(-150f / k, 22f, 150f / k, 22f + 28f / k)) // the today strip, as wide as it gets
-    taken.add(floatArrayOf(-11f, 36f, 11f, SUN_Y - HEART_MID)) // the heart's nerve and its wobble
-    taken.add(floatArrayOf(SUN_X + HEART_BOX[0], SUN_Y + HEART_BOX[1], SUN_X + HEART_BOX[2], SUN_Y + HEART_BOX[3]))
-    val vw = 5 * NAME_CHAR_DP / k / 2f + 3f
-    taken.add(floatArrayOf(SUN_X - vw, SUN_Y + 12f, SUN_X + vw, SUN_Y + 12f + LEARN_LABEL_H / k))
-    portals.forEachIndexed { i, p ->
-        val g = PORTAL_OUT * 1.7f // the glow's reach
-        taken.add(floatArrayOf(p.x - g, p.y - g, p.x + g, p.y + g))
-        val w = min(150f, nameLens.getOrElse(i) { 0 } * NAME_CHAR_DP + 8f) / k // twice the half width: crowded names slide sideways under or over their portal
-        if (w > 8f / k) {
-            val h = LEARN_LABEL_H / k
-            taken.add(floatArrayOf(p.x - w, p.y + PORTAL_OUT + 1f, p.x + w, p.y + PORTAL_OUT + 1f + h)) // under
-            taken.add(floatArrayOf(p.x - w, p.y - PORTAL_OUT - 1f - h, p.x + w, p.y - PORTAL_OUT - 1f)) // above
-        }
-    }
-    val cands = ArrayList<Offset>()
-    for (y in floatArrayOf(144f, 136f, 152f, 160f)) for (x in 30..76 step 2) { cands.add(Offset(x.toFloat(), y)); cands.add(Offset(-x.toFloat(), y)) }
-    fun room(c: Offset): Float {
-        val b = learnBrainBox(c); val l = learnLabelBox(c, k)
-        return min(6f, taken.minOf { min(boxGap(b, it), boxGap(l, it)) })
-    }
-    return cands.withIndex().maxWith(compareBy<IndexedValue<Offset>>({ room(it.value) }, { -it.index })).value // earlier = nearer the heart, then the right side
-}
+/** The ring round the main brain the small brains sit on (world radius; the middle rot ring), and how far (radians) below or above the horizontal each spot is. */
+internal const val RING_R = 105f
+private const val RING_A = 1.0472f // 60 degrees: the bottom spots stay clear of the heart, the top ones of the main brain's sparks
+private val RING_X = RING_R * cos(RING_A)
+private val RING_Y = RING_R * sin(RING_A)
+/** The four spots on the ring, symmetric about x = 0: the tasks brain bottom left, the learn brain its mirror at bottom right. */
+internal val TASKS_AT = Offset(-RING_X, RING_Y)
+internal val LEARN_AT = Offset(RING_X, RING_Y)
+/** Top left holds the Daily brain, top right the Bible brain. No task or goal flower is placed on either. */
+internal val RESERVED_AT = listOf(Offset(-RING_X, -RING_Y), Offset(RING_X, -RING_Y))
+internal val DAILY_AT = RESERVED_AT[0]
+internal val BIBLE_AT = RESERVED_AT[1]
+/** The "daily" label sits above its brain (the main brain's sparks fill the room below it): its box (l, t, r, b, world) when a world unit is [k] dp. */
+internal fun dailyLabelBox(k: Float, ns: Float = 1f) = floatArrayOf(DAILY_AT.x - LEARN_LABEL_W / 2f / k, DAILY_AT.y - 15f * ns - LEARN_LABEL_H / k, DAILY_AT.x + LEARN_LABEL_W / 2f / k, DAILY_AT.y - 15f * ns)
 
 // ---------------------------------------------------------------------------------------------
 // The learn view: the learn brain with its goals circling it
 // ---------------------------------------------------------------------------------------------
 
 private val MoonInk = Color(0xFFE6DCFF)
-private const val MOON_N = 14 // a goal moon, low-res px across
-private const val MOON_STEPS = 16
 
-@Composable
-internal fun LearnView(goals: List<Goal>, steps: List<Step>, topInset: Dp, onTapBrain: (Offset) -> Unit, onOpenGoal: (Long) -> Unit) {
-    val density = LocalDensity.current.density
-    val pxSize = rememberRotPxSize()
-    val core = imageResource(Res.drawable.brain_main)
-    val pix = remember { Pix() }
-    val paint = remember { pixPaint() }
-    val dither = remember { makeDitherPaint(0.17f) }
-    val measurer = rememberTextMeasurer(cacheSize = 64)
-    val font = PageFont
-    val pixelFont = PixelFont
-    val time = rememberRotTime()
-    // progress and brightness per goal; brightness by the day, so a goal dims while the view stays open only after a data change
-    val info = remember(goals, steps) {
-        val now = System.currentTimeMillis()
-        goals.map { g -> pathOf(steps, g.id).let { s -> goalProgress(s) to goalBrightness(goalTouchedAt(g, s), now) } }
-    }
-    val moons = remember { Array(MOON_STEPS + 1) { moonPhase(0.5 * it / MOON_STEPS, MOON_N, 0xC9B0FF, 0xE6DCFF, 0x8F6BD0, 0x2A1A44) } } // phases 0..100 %, reusing the Moons tab renderer
-    val moonPaint = remember { pixPaint() }
-    val spots = remember { arrayOf(FloatArray(0)) } // moon centres (px) as drawn last frame, then the brain's centre
-    Canvas(
-        Modifier.fillMaxSize().pointerInput(goals) {
-            detectTapGestures { tap ->
-                val s = spots[0]
-                if (s.size < 2) return@detectTapGestures
-                val n = s.size / 2 - 1
-                val near = (0 until n).minByOrNull { hypot(s[it * 2] - tap.x, s[it * 2 + 1] - tap.y) }
-                val centre = Offset(s[n * 2], s[n * 2 + 1])
-                if (near != null && near < goals.size && hypot(s[near * 2] - tap.x, s[near * 2 + 1] - tap.y) <= 30.dp.toPx()) onOpenGoal(goals[near].id)
-                else if ((centre - tap).getDistance() <= 44.dp.toPx()) onTapBrain(centre)
-            }
-        },
-    ) {
-        val t = time.floatValue
-        val w = ceil(size.width / pxSize).toInt(); val h = ceil(size.height / pxSize).toInt()
-        if (w <= 0 || h <= 0) return@Canvas
-        pix.resize(w, h)
-        pix.fill(0x07030B)
-        val top = topInset.toPx() / pxSize
-        val cx = w / 2f; val cy = top + (h - top) / 2f
-        for (i in 0 until 5) pix.glow(cx + sin(t * 0.05f + i * 1.3f) * 60f, cy + cos(t * 0.04f + i * 1.7f) * 90f, 70f, if (i % 2 == 1) 0x2A1A6A else 0x3A1A7A, 0.3f)
-        for (i in 0 until 90) {
-            val a = 0.15f + 0.45f * max(0f, sin(t * 1.2f + hf(i, 5) * 6.28f))
-            pix.dot((hf(i, 11) * w).toInt(), (hf(i, 29) * h).toInt(), 1, 1, 0xCDB8FF, a)
-        }
-
-        // orbits: up to three dotted rings, the goals shared round them
-        val n = goals.size
-        val rings = min(n, 3)
-        val maxR = min(w / 2f - 14f, (h - top) / 2f - 16f)
-        val base = 48f
-        val gap = ((maxR - base) / 2f).coerceIn(9f, 24f)
-        for (k in 0 until rings) {
-            val r = base + k * gap
-            val count = (TAU * r / 3f).toInt()
-            for (q in 0 until count) {
-                val an = q * TAU / count + t * 0.01f
-                if (q % 2 == 0) pix.dot(rotRnd(cx + cos(an) * r), rotRnd(cy + sin(an) * r * ORBIT_Y), 1, 1, 0x4A3478, 0.8f)
-            }
-        }
-
-        // the learn brain
-        pix.glow(cx, cy, 48f, 0x7A4ACF, 0.3f + 0.15f * sin(t * 1.1f))
-        pix.glow(cx, cy, 34f, 0xB69AFF, 0.25f)
-        for ((r, dir, rgb) in listOf(Triple(30f, 2f, 0xB69AFF), Triple(35f, -1.5f, 0x8A6CF0))) {
-            val count = (TAU * r / 2.5f).toInt()
-            for (q in 0 until count) if (q % 4 != 0) {
-                val an = q * TAU / count + t * dir * 0.05f
-                pix.dot(rotRnd(cx + cos(an) * r), rotRnd(cy + sin(an) * r), 1, 1, rgb, 0.8f)
-            }
-        }
-        val sw = core.width * 0.64f; val sh = core.height * 0.64f
-        val l = rotRnd(cx - sw / 2f); val tp = rotRnd(cy - sh / 2f)
-        pix.canvas.save(); pix.canvas.translate(cx, cy); pix.canvas.scale(-1f, 1f); pix.canvas.translate(-cx, -cy) // the learn brain is the main one mirrored
-        pix.canvas.drawImageRect(core, IntOffset.Zero, IntSize(core.width, core.height), IntOffset(l, tp), IntSize(rotRnd(cx + sw / 2f) - l, rotRnd(cy + sh / 2f) - tp), paint)
-        pix.canvas.restore()
-        pix.canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), dither)
-
-        // the moons: a disc, a dark ring with the done part lit, dimmer when left alone
-        val out = FloatArray(n * 2 + 2)
-        for (i in 0 until n) {
-            val k = i % rings
-            val j = i / rings
-            val onRing = (n - k + rings - 1) / rings
-            val r = base + k * gap
-            val an = t * TAU / (260f + 90f * k) + j * TAU / onRing + k * 2.4f // rings start apart, so moons don't line up
-            val mx = cx + cos(an) * r; val my = cy + sin(an) * r * ORBIT_Y
-            val (prog, b) = info.getOrElse(i) { 0f to 1f }
-            pix.glow(mx, my, 13f, 0x8A6CF0, 0.35f * b)
-            val dots = 64
-            for (q in 0 until dots) { // a thin ring: bright for the done part
-                val f = (q + 0.5f) / dots
-                val an2 = -TAU / 4f + f * TAU
-                pix.dot(rotRnd(mx + cos(an2) * 9.5f), rotRnd(my + sin(an2) * 9.5f), 1, 1, if (f < prog) 0xB69AFF else 0x4A3478, 0.7f * b)
-            }
-            // the phase is the progress: new moon at 0, half at 50 %, full at 100 %, waxing
-            moonPaint.alpha = b
-            val mb = moons[(prog * MOON_STEPS).roundToInt().coerceIn(0, MOON_STEPS)]
-            pix.canvas.drawImageRect(mb, IntOffset.Zero, IntSize(MOON_N, MOON_N), IntOffset(rotRnd(mx - MOON_N / 2f), rotRnd(my - MOON_N / 2f)), IntSize(MOON_N, MOON_N), moonPaint)
-            out[i * 2] = mx * pxSize; out[i * 2 + 1] = my * pxSize
-        }
-        out[n * 2] = cx * pxSize; out[n * 2 + 1] = cy * pxSize
-        spots[0] = out
-        drawIntoCanvas { pix.blit(it, 0, 0, pxSize.toInt()) }
-
-        // names under the moons, readable at any brightness
-        for (i in 0 until n) {
-            val b = info.getOrElse(i) { 0f to 1f }.second
-            val tl = measurer.measure(
-                goals[i].name, TextStyle(fontFamily = font, fontSize = 18.sp, lineHeight = 19.sp, color = MoonInk.copy(alpha = b)),
-                maxLines = 1, overflow = TextOverflow.Ellipsis, constraints = Constraints(maxWidth = (120f * density).toInt()),
-            )
-            drawText(tl, topLeft = Offset(out[i * 2] - tl.size.width / 2f, out[i * 2 + 1] + 12f * pxSize))
-        }
-        if (n == 0) {
-            val hint = measurer.measure("TAP THE BRAIN TO ADD A GOAL", TextStyle(fontFamily = pixelFont, fontSize = 9.sp, color = Px.TextDim))
-            drawText(hint, topLeft = Offset(cx * pxSize - hint.size.width / 2f, (cy + 48f) * pxSize))
-        }
-    }
+/**
+ * The goal moon, drawn in code: a chunky 11x11 purple pixel disc lit from the upper left (W white, L light, M mid, D the dark side),
+ * with a few darker craters (K on the lit side, C on the dark one). Purple shades and white only.
+ */
+internal val MOON_ROWS = listOf(
+    "...WLLLM...",
+    "..WLLLLMM..",
+    ".WLLKLLLMD.",
+    "WLLLLLLLMDD",
+    "LLLLLLKLMDD",
+    "LLLKKLLMMDD",
+    "LLLKKLLMDDD",
+    "LLLLLLMDCDD",
+    ".LLLLMMDDD.",
+    "..MMMMDDD..",
+    "...MDDDD...",
+)
+internal fun moonRgb(ch: Char): Int = when (ch) {
+    'W' -> 0xFFFFFF; 'L' -> 0xC9B6FF; 'M' -> 0x9C84FF; 'D' -> 0x5B3FB0; 'K' -> 0x8A6CF0; 'C' -> 0x3A2475; else -> -1
 }
-
-/** Orbits are a little flattened, like the main map's ring. */
-private const val ORBIT_Y = 0.86f
-
-/** Top strip of the learn view: the trail back to the map, its name, how many goals. */
-@Composable
-internal fun LearnHeader(count: Int, modifier: Modifier, onBack: () -> Unit) {
-    Column(modifier.fillMaxWidth().background(Px.Bg.copy(alpha = 0.86f))) {
-        Row(Modifier.fillMaxWidth().height(HEADER_H - 2.dp).padding(start = 18.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "< BRAIN >", Modifier.clickable(onClick = onBack).padding(end = 8.dp, top = 4.dp, bottom = 4.dp),
-                        style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.Lavender),
-                    )
-                    Text("learn", style = TextStyle(fontFamily = TitleFont, fontSize = 22.sp, color = Px.Lavender, shadow = Shadow(Px.Lavender.copy(alpha = 0.6f), blurRadius = 10f)))
-                }
-                Text(if (count == 1) "1 goal" else "$count goals", style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim))
-            }
-        }
-        Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Today strip (main map, under the main brain)
-// ---------------------------------------------------------------------------------------------
-
-/** One line under the main brain: the first due step ("today · Suliko · Panduri") and how many more are due. Follows the camera. */
-@Composable
-internal fun TodayStrip(due: List<Step>, goals: List<Goal>, today: Long, cam: BrainCamera, pxSize: Float, view: IntSize, onOpen: (Step) -> Unit) {
-    val first = due.first()
-    val goal = goals.firstOrNull { it.id == first.goalId }?.name.orEmpty()
-    val text = buildAnnotatedString {
-        withStyle(SpanStyle(color = if (isOverdue(first, today)) MoonInk else Px.Lavender)) { append(dayLabel(first.day ?: today, today)) }
-        append(" · ${first.title} · $goal")
-    }
-    val pill = RoundedCornerShape(50)
-    Layout(
-        content = {
-            Row(
-                Modifier.clip(pill).background(Color(0xE6140B26)).border(1.dp, Px.Border, pill)
-                    .clickable(role = Role.Button) { onOpen(first) }.padding(horizontal = 12.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, lineHeight = 19.sp, color = Px.TextDim),
-                )
-                if (due.size > 1) Text("  +${due.size - 1}", style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, lineHeight = 19.sp, color = Px.Lavender))
-            }
-        },
-        modifier = Modifier.fillMaxSize(),
-    ) { ms, c ->
-        val u = pxSize * cam.scale
-        val ns = nodeScale(cam.scale)
-        val ox = ceil(view.width / pxSize) * pxSize / 2f; val oy = ceil(view.height / pxSize) * pxSize / 2f
-        val cx = -cam.x * u + ox
-        val y = (24f * ns - cam.y) * u + oy + 4.dp.toPx() // just under the core sprite
-        // the learn brain sits beside the heart (see [learnSpot]), so the strip may be wide
-        val maxW = min(300.dp.toPx(), c.maxWidth - 16.dp.toPx()).toInt().coerceAtLeast(0)
-        val p = ms[0].measure(Constraints(maxWidth = maxW))
-        layout(c.maxWidth, c.maxHeight) {
-            val m = 8.dp.toPx()
-            val x = (cx - p.width / 2f).coerceIn(m, max(m, c.maxWidth - p.width - m))
-            p.place(x.roundToInt(), y.roundToInt())
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Goal page: the path of steps
-// ---------------------------------------------------------------------------------------------
-
-private val RING9 = listOf("..XXXXX..", ".X.....X.", "X.......X", "X.......X", "X.......X", "X.......X", "X.......X", ".X.....X.", "..XXXXX..")
-private val DISC9 = listOf("..XXXXX..", ".XXXXXXX.", "XXXXXXXXX", "XXXXXXXXX", "XXXXXXXXX", "XXXXXXXXX", "XXXXXXXXX", ".XXXXXXX.", "..XXXXX..")
-private val CORE9 = listOf("..XXXXX..", ".X.....X.", "X.......X", "X..ooo..X", "X..ooo..X", "X..ooo..X", "X.......X", ".X.....X.", "..XXXXX..")
-private val StepDone = Color(0xFFD6C8FF)
-private val StepLater = Color(0xFF5F5070)
-private val PathLine = Color(0xFF4A3478)
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-internal fun GoalPage(goal: Goal, path: List<Step>, focusStep: Long, vm: LearnViewModel, onBack: () -> Unit) {
-    val today = LocalDate.now().toEpochDay()
-    val time = rememberRotTime()
-    var menu by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf(false) }
-    var deleting by remember { mutableStateOf(false) }
-    var adding by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<Step?>(null) }
-    var picking by remember { mutableStateOf<Step?>(null) }
-    val list = rememberLazyListState()
-    val flash = remember { Animatable(0f) }
-    LaunchedEffect(goal.id, focusStep) {
-        val i = path.indexOfFirst { it.id == focusStep }
-        if (i < 0) return@LaunchedEffect
-        list.scrollToItem(i)
-        flash.snapTo(1f)
-        flash.animateTo(0f, tween(1400))
-    }
-    val current = path.indexOfFirst { !it.done }
-
-    Column(
-        Modifier.fillMaxSize().background(Px.Bg)
-            .pointerInput(Unit) { detectTapGestures { } }, // the learn view underneath gets nothing
-    ) {
-        Column(Modifier.fillMaxWidth()) {
-            Row(Modifier.fillMaxWidth().height(HEADER_H - 2.dp).padding(start = 18.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "< LEARN", Modifier.clickable(onClick = onBack).padding(end = 10.dp, top = 4.dp, bottom = 4.dp),
-                            style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.Lavender),
-                        )
-                        Text(
-                            goal.name, Modifier.weight(1f, fill = false).clickable(role = Role.Button) { menu = true }, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            style = TextStyle(fontFamily = TitleFont, fontSize = 22.sp, color = Px.Lavender, shadow = Shadow(Px.Lavender.copy(alpha = 0.6f), blurRadius = 10f)),
-                        )
-                    }
-                    Text("${path.count { it.done }} of ${path.size} done", style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim))
-                }
-            }
-            Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
-        }
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-            LazyColumn(Modifier.widthIn(max = 560.dp).fillMaxHeight(), state = list, contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, end = 16.dp, top = 14.dp, bottom = 40.dp)) {
-                itemsIndexed(path, key = { _, s -> s.id }) { i, s ->
-                    val state = if (s.done) 0 else if (i == current) 1 else 2
-                    Row(
-                        Modifier.fillMaxWidth().height(IntrinsicSize.Min)
-                            .background(if (s.id == focusStep) Color(0xFF2A1A40).copy(alpha = 0.8f * flash.value) else Color.Transparent, RoundedCornerShape(8.dp)),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // the path: a dotted line through every circle, from the first step to "+ step"
-                        Box(Modifier.width(44.dp).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                            Canvas(Modifier.fillMaxSize()) {
-                                val x = size.width / 2f
-                                val dash = PathEffect.dashPathEffect(floatArrayOf(2.dp.toPx(), 3.dp.toPx()))
-                                if (i > 0) drawLine(PathLine, Offset(x, 0f), Offset(x, size.height / 2f - 10.dp.toPx()), 2.dp.toPx(), pathEffect = dash)
-                                drawLine(PathLine, Offset(x, size.height / 2f + 10.dp.toPx()), Offset(x, size.height), 2.dp.toPx(), pathEffect = dash)
-                            }
-                            Box(
-                                Modifier.size(44.dp).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, role = Role.Checkbox) {
-                                    Sounds.play(Sfx.Tick)
-                                    vm.setStepDone(s, !s.done)
-                                },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                when (state) {
-                                    0 -> PixelArt(DISC9, mapOf('X' to StepDone), 2.dp)
-                                    1 -> PixelArt(CORE9, mapOf('X' to Px.Lavender, 'o' to Px.Lavender.copy(alpha = 0.5f)), 2.dp, Modifier.graphicsLayer {
-                                        val p = 0.5f + 0.5f * sin(time.floatValue * 2.4f)
-                                        alpha = 0.6f + 0.4f * p; scaleX = 1f + 0.08f * p; scaleY = scaleX
-                                    })
-                                    else -> PixelArt(RING9, mapOf('X' to StepLater), 2.dp)
-                                }
-                            }
-                        }
-                        Text(
-                            s.title, Modifier.weight(1f).clickable(role = Role.Button) { editing = s }.padding(vertical = 12.dp),
-                            style = TextStyle(
-                                fontFamily = PageFont, fontSize = 21.sp, lineHeight = 22.sp,
-                                color = when (state) { 0 -> Color(0xFFB8A8D0); 1 -> Px.Text; else -> Color(0xFF8A7A9C) },
-                            ),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        DayChip(s.day, today, overdue = isOverdue(s, today), dim = s.done) { picking = s }
-                    }
-                }
-                item(key = "add") {
-                    Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Canvas(Modifier.width(44.dp).fillMaxHeight()) {
-                            if (path.isNotEmpty()) drawLine(PathLine, Offset(size.width / 2f, 0f), Offset(size.width / 2f, size.height / 2f - 6.dp.toPx()), 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(2.dp.toPx(), 3.dp.toPx())))
-                        }
-                        Text(
-                            "+ step", Modifier.clickable(role = Role.Button) { adding = true }.padding(vertical = 10.dp, horizontal = 4.dp),
-                            style = TextStyle(fontFamily = PixelFont, fontSize = 10.sp, color = Px.Lavender),
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    if (menu) {
-        Dialog(onDismissRequest = { menu = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Column(Modifier.width(220.dp).pixelCard(fill = Px.Elevated, border = Px.Primary, notch = 4.dp).padding(vertical = 6.dp)) {
-                for ((label, act) in listOf("rename" to { renaming = true }, "delete" to { deleting = true })) {
-                    Text(
-                        label, Modifier.fillMaxWidth().clickable(role = Role.Button) { menu = false; act() }.padding(horizontal = 18.dp, vertical = 10.dp),
-                        style = TextStyle(fontFamily = PageFont, fontSize = 21.sp, color = if (label == "delete") Px.Lavender else Px.Text),
-                    )
-                }
-            }
-        }
-    }
-    if (renaming) NameDialog("RENAME GOAL", "Name", initial = goal.name, submit = "SAVE", onDismiss = { renaming = false }, onSubmit = { vm.renameGoal(goal.id, it) })
-    if (deleting) {
-        PixelDialog({ deleting = false }) {
-            Text("DELETE ${goal.name.uppercase()}?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, lineHeight = 18.sp, color = Px.Lavender))
-            Spacer(Modifier.height(10.dp))
-            Text("Its steps go with it, forever. No undo.", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim))
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("KEEP", { deleting = false })
-                PixelButton("DELETE", { deleting = false; vm.deleteGoal(goal.id) }, primary = true)
-            }
-        }
-    }
-    if (adding) {
-        var text by remember { mutableStateOf("") }
-        fun submit() { vm.addStep(goal.id, text); adding = false }
-        PixelDialog({ adding = false }) {
-            Text("NEW STEP", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
-            Spacer(Modifier.height(16.dp))
-            PixelField(text, { text = it.take(80) }, "What comes next?", onDone = ::submit, cursor = Px.Lavender)
-            Spacer(Modifier.height(18.dp))
-            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                PixelButton("CANCEL", { adding = false })
-                PixelButton("ADD", ::submit, primary = true)
-            }
-        }
-    }
-    picking?.let { s -> DayPicker(s.day, onDismiss = { picking = null }) { d -> picking = null; vm.setStepDay(s, d) } }
-    editing?.let { s -> StepCard(s, today, vm, onClose = { editing = null }) }
-}
-
-/** The day on a step's right: "today", "tomorrow", "Nov 20", or "+ day". Overdue is a brighter lavender, never red. */
-@Composable
-private fun DayChip(day: Long?, today: Long, overdue: Boolean, dim: Boolean, onClick: () -> Unit) {
-    val pill = RoundedCornerShape(50)
-    val (ink, line) = when {
-        day == null -> Px.TextDim.copy(alpha = 0.6f) to Px.Border
-        dim -> StepLater to Px.Border
-        overdue -> MoonInk to Color(0xFF9C84FF)
-        day == today -> Px.Lavender to Px.Lavender.copy(alpha = 0.7f)
-        else -> Px.TextDim to Px.Border
-    }
-    Text(
-        if (day == null) "+ day" else dayLabel(day, today),
-        Modifier.clip(pill).border(1.dp, line, pill).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 10.dp, vertical = 4.dp),
-        maxLines = 1,
-        style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, lineHeight = 18.sp, color = ink),
-    )
-}
-
-/** A step's small card: title, note, day, delete. Saves on SAVE only. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun StepCard(step: Step, today: Long, vm: LearnViewModel, onClose: () -> Unit) {
-    var title by remember(step.id) { mutableStateOf(step.title) }
-    var note by remember(step.id) { mutableStateOf(step.note) }
-    var day by remember(step.id) { mutableStateOf(step.day) }
-    var picking by remember { mutableStateOf(false) }
-    var deleting by remember { mutableStateOf(false) }
-    PixelDialog(onClose) {
-        Text("STEP", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
-        Spacer(Modifier.height(14.dp))
-        PixelField(title, { title = it.take(80) }, "Title", cursor = Px.Lavender)
-        Spacer(Modifier.height(10.dp))
-        PixelField(note, { note = it }, "Note", singleLine = false, minHeight = 90.dp, cursor = Px.Lavender, modifier = Modifier.heightIn(max = 220.dp))
-        Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("DAY", Modifier.padding(end = 10.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.TextDim))
-            DayChip(day, today, overdue = !step.done && (day ?: Long.MAX_VALUE) < today, dim = false) { picking = true }
-        }
-        Spacer(Modifier.height(18.dp))
-        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            PixelButton("DELETE", { deleting = true })
-            PixelButton("CANCEL", onClose)
-            PixelButton("SAVE", { vm.editStep(step, title, note, day); onClose() }, primary = true)
-        }
-    }
-    if (picking) DayPicker(day, onDismiss = { picking = false }) { day = it; picking = false }
-    if (deleting) {
-        PixelDialog({ deleting = false }) {
-            Text("DELETE STEP?", style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, color = Px.Lavender))
-            Spacer(Modifier.height(10.dp))
-            Text("Gone for good. No undo.", style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim))
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("KEEP", { deleting = false })
-                PixelButton("DELETE", { deleting = false; vm.deleteStep(step.id); onClose() }, primary = true)
-            }
-        }
-    }
+/** Low-res pixels per moon pixel on the main map at zoom [z]: it grows with the nodes, never shrinking below one. */
+internal fun moonScale(z: Float) = max(1, rnd(z * nodeScale(z) * 0.75f))
+/** The moon centred on pixel ([cx], [cy]), [s] pixels per moon pixel. */
+internal fun Pix.goalMoon(cx: Int, cy: Int, s: Int, a: Float) {
+    val x0 = cx - 11 * s / 2; val y0 = cy - 11 * s / 2
+    MOON_ROWS.forEachIndexed { y, row -> row.forEachIndexed { x, ch -> moonRgb(ch).let { if (it >= 0) dot(x0 + x * s, y0 + y * s, s, s, it, a) } } }
 }

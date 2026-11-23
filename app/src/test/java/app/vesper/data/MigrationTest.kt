@@ -282,6 +282,46 @@ class MigrationTest {
         assertEquals(0, count("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%alarms%'"))
     }
 
+    /** Real v11 rows and triggers. Only the two Bible tables arrive: nothing existing moves, the new ones are wired for sync. */
+    @Test
+    fun migrate11To12() {
+        helper.createDatabase(name, 11).apply {
+            listOf("notes", "tasks", "lobes", "branches", "ideas", "plans", "goals", "steps").forEach { t -> syncTriggerSql(t).forEach(::execSQL) }
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0, 'notes-1', 1700000000000)")
+            execSQL("INSERT INTO tasks (id, text, uid, syncAt) VALUES (1, 'buy candles', 'tasks-1', 5)")
+            execSQL("INSERT INTO lobes (id, name, colorIndex, slot, uid, syncAt) VALUES (1, 'Work', 2, 0, 'lobes-1', 6)")
+            execSQL("INSERT INTO ideas (id, lobeId, title, body, noteId, updatedAt, uid, syncAt, branchId, link, done) VALUES (1, 1, 'Idea', 'body text', 1, 1700000001000, 'ideas-1', 7, NULL, 'x.org', 1)")
+            execSQL("INSERT INTO goals (id, name, position, createdAt, updatedAt, uid, syncAt) VALUES (1, 'Panduri', 0, 1, 1, 'g1', 8)")
+            execSQL("INSERT INTO steps (id, goalId, title, note, done, day, position, createdAt, updatedAt, uid, syncAt) VALUES (1, 1, 'Suliko', '', 0, 20000, 0, 1, 1, 's1', 9)")
+            execSQL("INSERT INTO alarms (hour, minute, label, repeatDays, enabled, oneTimeDate, firedAt, createdAt) VALUES (7, 30, 'wake', 31, 1, NULL, NULL, 1)")
+            execSQL("INSERT INTO sync_tombstones (tbl, uid, deletedAt) VALUES ('notes', 'gone', 3)")
+            insertPost(); close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 12, true, MIGRATION_11_12)
+        db.assertNoteAndTask(); db.assertBrain(); db.assertPost()
+        fun count(sql: String) = db.query(sql).use { it.moveToFirst(); it.getInt(0) }
+        fun row(sql: String) = db.query(sql).use { c -> c.moveToFirst(); (0 until c.columnCount).map { c.getString(it) } }
+        assertEquals(listOf("x.org", "1", "7", "ideas-1"), row("SELECT link, done, syncAt, uid FROM ideas WHERE id = 1"))
+        assertEquals(listOf("Panduri", "8"), row("SELECT name, syncAt FROM goals"))
+        assertEquals(listOf("Suliko", "9", "20000"), row("SELECT title, syncAt, day FROM steps"))
+        assertEquals(listOf("wake"), row("SELECT label FROM alarms"))
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones"))
+        db.assertIndexes("index_bible_cards_uid", "index_bible_links_uid")
+
+        // the Bible tables are wired: uid and clock on insert, a bump on update, tombstones on delete
+        db.execSQL("INSERT INTO bible_cards (id, name, note, kind, x, y, locked) VALUES (1, 'Abraham', '', 'person', 10.5, -20, 0)")
+        db.execSQL("INSERT INTO bible_links (id, fromUid, toUid, label, uid) VALUES (1, 'x', 'y', 'son', 'link-1')")
+        val (uid, at) = db.query("SELECT uid, syncAt FROM bible_cards").use { it.moveToFirst(); it.getString(0) to it.getLong(1) }
+        assertTrue(uid.matches(Regex("[0-9a-f]{32}"))); assertTrue(at > 1)
+        assertEquals(listOf("10.5", "-20.0"), row("SELECT x, y FROM bible_cards"))
+        db.execSQL("UPDATE bible_cards SET x = 11 WHERE id = 1")
+        assertTrue(row("SELECT syncAt FROM bible_cards")[0].toLong() > at)
+        db.execSQL("DELETE FROM bible_links")
+        db.execSQL("DELETE FROM bible_cards")
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'bible_links' AND uid = 'link-1'"))
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'bible_cards' AND uid = '$uid'"))
+    }
+
     @Test
     fun migrateAllFrom1() {
         helper.createDatabase(name, 1).apply { insertNote(); close() }
@@ -305,6 +345,7 @@ class MigrationTest {
             db.brainDao().observeLobes().first(); db.postDao().observeAll().first(); db.moonsDao().observeAllPlans().first()
             db.learnDao().observeGoals().first(); db.learnDao().observeSteps().first()
             db.alarmDao().observeActive().first(); db.alarmDao().observeHistory().first()
+            db.bibleDao().observeCards().first(); db.bibleDao().observeLinks().first()
         } finally {
             db.close()
         }

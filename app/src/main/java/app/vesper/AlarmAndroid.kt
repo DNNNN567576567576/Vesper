@@ -30,6 +30,9 @@ internal object AlarmKeys {
     const val LABEL = "label"
     const val ONCE = "once"
     const val CHANNEL = "alarms"
+    const val DAILY = "app.vesper.daily.REMIND"
+    const val DAILY_CHANNEL = "daily"
+    const val DAILY_NOTE = 2_000_000_001 // the Daily reminder's notification id, apart from any alarm's
     const val SNOOZE_MS = 10 * 60_000L
     const val RING_MS = 10 * 60_000L
 
@@ -44,6 +47,11 @@ internal object AlarmKeys {
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
         }
         ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        // the Daily reminder: one quiet line in the evening, no sound, no ring
+        val daily = NotificationChannel(DAILY_CHANNEL, "Daily", NotificationManager.IMPORTANCE_LOW).apply {
+            description = "What is left on the daily list in the evening"
+        }
+        ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(daily)
     }
 }
 
@@ -84,11 +92,29 @@ class AndroidAlarmScheduler(private val app: NotebookApp) : AlarmScheduler {
 
     fun snooze(id: Long) = setAt(id, System.currentTimeMillis() + AlarmKeys.SNOOZE_MS, true)
 
+    private fun dailyPi() = PendingIntent.getBroadcast(
+        app, 1, Intent(app, AlarmReceiver::class.java).setAction(AlarmKeys.DAILY),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    override fun scheduleDaily(hour: Int?) {
+        val pi = dailyPi()
+        if (hour == null) { am.cancel(pi); return }
+        val at = dailyRemindAt(hour, System.currentTimeMillis(), zone)
+        try {
+            if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        } catch (e: SecurityException) {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi) // a few minutes late is fine for a reminder
+        }
+    }
+
     /**
      * Re-arms every active alarm (app start, boot, clock or zone change; AlarmManager forgets them on reboot).
      * [afterGap]: the phone may have been off, so a one-time alarm missed by a little still rings; older ones go to the history.
      */
     suspend fun rescheduleAll(afterGap: Boolean) {
+        scheduleDaily(dailyRemindHour(app.settings))
         val now = System.currentTimeMillis()
         val dao = app.db.alarmDao()
         for (a in dao.observeActive().first()) {
@@ -137,6 +163,7 @@ class AlarmReceiver : BroadcastReceiver() {
                 when (intent.action) {
                     AlarmKeys.RING -> ring(app, intent.getLongExtra(AlarmKeys.ID, -1), snoozed = false)
                     AlarmKeys.SNOOZE_RING -> ring(app, intent.getLongExtra(AlarmKeys.ID, -1), snoozed = true)
+                    AlarmKeys.DAILY -> remindDaily(app)
                     else -> app.alarms.rescheduleAll(afterGap = true) // BOOT_COMPLETED, MY_PACKAGE_REPLACED, TIME_SET, TIMEZONE_CHANGED
                 }
             } catch (e: Exception) {
@@ -145,6 +172,25 @@ class AlarmReceiver : BroadcastReceiver() {
                 pending.finish()
             }
         }
+    }
+
+    /** The evening reminder: arms tomorrow's, then posts one quiet line if anything on the daily list is still undone today. */
+    private suspend fun remindDaily(app: NotebookApp) {
+        app.alarms.scheduleDaily(dailyRemindHour(app.settings))
+        val dao = app.db.brainDao()
+        val text = dailyReminder(dailyItems(dao.observeLobes().first(), dao.observeIdeas().first()), System.currentTimeMillis(), ZoneId.systemDefault()) ?: return
+        if (!NotificationManagerCompat.from(app).areNotificationsEnabled()) return
+        val open = PendingIntent.getActivity(app, 2, Intent(app, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = androidx.core.app.NotificationCompat.Builder(app, AlarmKeys.DAILY_CHANNEL)
+            .setSmallIcon(R.drawable.ic_alarm)
+            .setContentText(text)
+            .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setSilent(true)
+            .build()
+        try { NotificationManagerCompat.from(app).notify(AlarmKeys.DAILY_NOTE, n) } catch (e: SecurityException) { Log.e("Vesper", "daily reminder", e) }
     }
 
     private suspend fun ring(app: NotebookApp, id: Long, snoozed: Boolean) {

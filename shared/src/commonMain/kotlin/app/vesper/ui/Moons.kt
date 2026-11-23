@@ -74,7 +74,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.vesper.data.DayFocus
 import app.vesper.data.Goal
-import app.vesper.data.Step
 import app.vesper.data.Lobe
 import app.vesper.data.Plan
 import java.time.LocalDate
@@ -125,9 +124,6 @@ private val RING_DONE: List<String> = run {
 }
 private val RingOpen = mapOf('X' to Color(0xFFB69AFF))
 private val RingShut = mapOf('X' to Color(0xFF5F5070), 'C' to Color(0xFF935AD4))
-private val StepShut = mapOf('X' to Color(0xFF5F5070), 'C' to Color(0xFFB69AFF))
-/** A day's learn steps: a small hollow square beside the plan dot, lavender while one is undone. */
-private val StepMark = Color(0xFFB69AFF)
 
 private val zone: ZoneId get() = ZoneId.systemDefault()
 
@@ -206,9 +202,6 @@ fun MoonsScreen(
     onEditPlan: (Plan, String) -> Unit,
     onDeletePlan: (Long) -> Unit,
     onToggleFocus: (Long, Long, Boolean) -> Unit,
-    goals: List<Goal>? = null,
-    steps: List<Step>? = null,
-    onSetStepDone: (Step, Boolean) -> Unit = { _, _ -> },
     alarmUi: AlarmUi? = null,
 ) {
     val time = rememberRotTime()
@@ -233,13 +226,6 @@ fun MoonsScreen(
     }
 
     val plansByDay = remember(plans) { plans.orEmpty().groupBy { it.day } }
-    val goalNames = remember(goals) { goals.orEmpty().associate { it.id to it.name } }
-    // dated steps per day, in goal order then path order
-    val stepsByDay = remember(goals, steps) {
-        val rank = goals.orEmpty().withIndex().associate { it.value.id to it.index }
-        steps.orEmpty().filter { it.day != null && it.goalId in rank }
-            .sortedWith(compareBy({ rank[it.goalId] }, { it.position }, { it.id })).groupBy { it.day!! }
-    }
 
     var picking by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Plan?>(null) }
@@ -305,7 +291,6 @@ fun MoonsScreen(
                                         isSelected = ed == selected,
                                         moon = moons[i],
                                         unfinished = plansByDay[ed]?.any { !it.done } == true,
-                                        steps = stepsByDay[ed]?.let { d -> if (d.any { !it.done }) 1 else 2 } ?: 0,
                                         time = time,
                                         modifier = Modifier.weight(1f),
                                         onDoubleClick = { selected = ed; adding = true },
@@ -377,35 +362,6 @@ fun MoonsScreen(
                                         textDecoration = if (p.done) TextDecoration.LineThrough else null,
                                     ),
                                 )
-                            }
-                        }
-                        val daySteps = stepsByDay[selected].orEmpty()
-                        if (daySteps.isNotEmpty()) {
-                            Spacer(Modifier.height(10.dp))
-                            SheetLabel("STEPS")
-                            Spacer(Modifier.height(4.dp))
-                        }
-                        for (st in daySteps) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, role = Role.Checkbox) { onSetStepDone(st, !st.done) }
-                                    .padding(vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                if (st.done) PixelArt(RING_DONE, StepShut, 2.dp) else PixelArt(RING, RingOpen, 2.dp)
-                                Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        st.title,
-                                        style = TextStyle(
-                                            fontFamily = PageFont, fontSize = 20.sp, lineHeight = 22.sp,
-                                            color = if (st.done) Color(0xFF5F5070) else MoonsInk,
-                                            textDecoration = if (st.done) TextDecoration.LineThrough else null,
-                                        ),
-                                    )
-                                    Text(goalNames[st.goalId].orEmpty(), style = TextStyle(fontFamily = PageFont, fontSize = 16.sp, lineHeight = 17.sp, color = MoonsDim))
-                                }
                             }
                         }
                     }
@@ -597,8 +553,6 @@ private fun DayCell(
     isSelected: Boolean,
     moon: ImageBitmap,
     unfinished: Boolean,
-    /** Dated learn steps: 0 none, 1 one undone, 2 all done. */
-    steps: Int,
     time: FloatState,
     modifier: Modifier,
     onDoubleClick: () -> Unit,
@@ -641,15 +595,7 @@ private fun DayCell(
         )
         Canvas(Modifier.padding(top = 2.dp).size(width = 44.dp, height = 4.dp)) {
             val d = 4.dp.toPx()
-            val shift = if (unfinished && steps > 0) 4.dp.toPx() else 0f
-            if (unfinished) drawRect(PlanDot, Offset((size.width - d) / 2f - shift, 0f), Size(d, d))
-            if (steps > 0) {
-                val sw = 1.dp.toPx()
-                drawRect(
-                    if (steps == 1) StepMark else StepMark.copy(alpha = 0.4f), Offset((size.width - d) / 2f + shift + sw / 2f, sw / 2f), Size(d - sw, d - sw),
-                    style = Stroke(sw),
-                )
-            }
+            if (unfinished) drawRect(PlanDot, Offset((size.width - d) / 2f, 0f), Size(d, d))
         }
     }
 }

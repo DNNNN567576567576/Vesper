@@ -47,6 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import app.vesper.ui.BrainCamera
 import app.vesper.ui.BrainScreen
 import app.vesper.ui.NoteCard
+import app.vesper.ui.placeName
 import app.vesper.ui.MoonsScreen
 import app.vesper.ui.AlarmUi
 import app.vesper.ui.CalculatorScreen
@@ -66,8 +67,6 @@ private const val NO_PAGE = -2L
 @Composable
 fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Brain (default), 1 = Shrine, 2 = Moons
-    var selectedLobe by rememberSaveable { mutableLongStateOf(-1L) }
-    var learnAt by rememberSaveable { mutableLongStateOf(-2L) } // the learn brain: -2 closed, -1 its view, else a goal's page
     val brainCamera = remember { BrainCamera() }
     // The open item page: its id (0 = a new item), where a new one goes, and a counter that gives each opening its own editor.
     var pageId by rememberSaveable { mutableLongStateOf(NO_PAGE) }
@@ -76,16 +75,17 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     var pageSession by rememberSaveable { mutableIntStateOf(0) }
     var pageFrom by remember { mutableStateOf(Offset.Unspecified) } // where its card grows from (root px)
     val cardP = remember { Animatable(0f) } // how open the card is; the world behind dims and shrinks with it
-    var homeSignal by remember { mutableIntStateOf(0) } // the Brain tab tapped again inside a world: close the card, fly back to the map
+    var homeSignal by remember { mutableIntStateOf(0) } // the Brain tab tapped again: close the cards, fly back to the map
     var movedMsg by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(movedMsg) { if (movedMsg != null) { kotlinx.coroutines.delay(2200); movedMsg = null } }
 
     val brainVm = viewModel { BrainViewModel(host) }
+    remember(brainVm) { brainVm.loadLayout() } // where the notes were dragged, before the first frame
     val shrineVm = viewModel { ShrineViewModel(host) }
     val moonsVm = viewModel { MoonsViewModel(host) }
     val learnVm = viewModel { LearnViewModel(host) }
+    val bibleVm = viewModel { BibleViewModel(host) }
     val goals by learnVm.goals.collectAsStateWithLifecycle()
-    val steps by learnVm.steps.collectAsStateWithLifecycle()
     val plans by moonsVm.plans.collectAsStateWithLifecycle()
     val focus by moonsVm.focus.collectAsStateWithLifecycle()
     val moonsReset = remember { mutableIntStateOf(0) }
@@ -97,19 +97,30 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     val lobes by brainVm.lobes.collectAsStateWithLifecycle()
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
     val branches by brainVm.branches.collectAsStateWithLifecycle()
-    val brainShowAll by brainVm.showAll.collectAsStateWithLifecycle()
     val brainSounds by brainVm.sounds.collectAsStateWithLifecycle()
 
     // Hoisted so the Grimoire keeps its scroll position while another tab (or an item page) is shown.
     val shrineListState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    // The Daily ticks are only good for the day they were made: cleared on start, on resume, when the date turns while open, and
+    // whenever rows change (a stale tick arriving by sync); see [resetDaily].
+    var resumes by remember { mutableIntStateOf(0) }
+    var today by remember { mutableStateOf(java.time.LocalDate.now()) }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(30_000); java.time.LocalDate.now().let { if (it != today) today = it } } }
+    LaunchedEffect(today, resumes, ideas) {
+        val zone = java.time.ZoneId.systemDefault()
+        val day = java.time.LocalDate.now(zone).also { if (it != today) today = it }
+        try { resetDaily(host.db, host.settings, day, dayStart(day, zone)) } catch (e: Exception) { host.reportError("reset daily", e) }
+    }
+    var remindAt by remember { mutableStateOf(dailyRemindHour(host.settings)) }
+
     // Automatic sync runs only while the app is on screen.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START) host.sync.setForeground(true)
-            if (event == Lifecycle.Event.ON_RESUME) alarmProblem = host.alarms.problem()
+            if (event == Lifecycle.Event.ON_RESUME) { alarmProblem = host.alarms.problem(); resumes++ }
             if (event == Lifecycle.Event.ON_STOP) host.sync.setForeground(false)
         }
         lifecycle.addObserver(observer)
@@ -129,7 +140,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     1 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
                     2 -> moonsReset.intValue++ // jump back to today
                     3 -> {}
-                    else -> if (selectedLobe >= 0 || learnAt >= -1) homeSignal++ else { brainCamera.x = 0f; brainCamera.y = 0f; brainCamera.scale = 0.85f }
+                    else -> homeSignal++
                 }
             }
         } else {
@@ -142,9 +153,8 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
         val vm = viewModel(key = "idea-$pageSession") {
             IdeaEditorViewModel(host, target.takeIf { it != 0L }, pageLobe, pageBranch.takeIf { it >= 0 })
         }
-        val footer = listOfNotNull(branches?.firstOrNull { it.id == pageBranch }?.name, lobes?.firstOrNull { it.id == pageLobe }?.name)
-            .joinToString(" \u00B7 ").uppercase()
-        NoteCard(vm, pageFrom, cardP, footer, lobes.orEmpty(), branches.orEmpty(), homeSignal, onMoved = { movedMsg = "moved to $it" }, onClosed = { pageId = NO_PAGE })
+        val footer = lobes?.firstOrNull { it.id == pageLobe }?.let(::placeName).orEmpty().uppercase()
+        NoteCard(vm, pageFrom, cardP, footer, lobes.orEmpty(), homeSignal, brainVm::lobeNamed, onMoved = { movedMsg = "moved to $it" }, onClosed = { pageId = NO_PAGE })
     }
 
     val tabContent: @Composable () -> Unit = {
@@ -178,9 +188,6 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     onEditPlan = moonsVm::editPlan,
                     onDeletePlan = moonsVm::deletePlan,
                     onToggleFocus = moonsVm::toggleFocus,
-                    goals = goals,
-                    steps = steps,
-                    onSetStepDone = { st, done -> learnVm.setStepDone(st, done) },
                     alarmUi = if (host.alarms.supported) AlarmUi(
                         alarms = alarms,
                         history = alarmHistory,
@@ -198,30 +205,31 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     ideas = ideas,
                     branches = branches,
                     camera = brainCamera,
-                    selectedLobe = selectedLobe,
-                    onSelectLobe = { selectedLobe = it },
-                    onAddLobe = { name -> brainVm.addLobe(name) { selectedLobe = it } },
-                    onRenameLobe = brainVm::renameLobe,
-                    onMoveLobe = brainVm::moveLobe,
-                    onDeleteLobe = brainVm::deleteLobe,
                     onOpenIdea = { id, lobeId, branchId, from -> pageSession++; pageLobe = lobeId; pageBranch = branchId ?: -1L; pageFrom = from; pageId = id },
-                    onAddBranch = brainVm::addBranch,
-                    onRenameBranch = brainVm::renameBranch,
-                    onDeleteBranch = brainVm::deleteBranch,
-                    onMoveBranch = { b, l -> brainVm.moveBranch(b, l) { movedMsg = "moved to $it" } },
-                    showAll = brainShowAll,
-                    onToggleShowAll = brainVm::toggleShowAll,
+                    onNewIn = { name, from -> brainVm.lobeNamed(name) { lobeId -> pageSession++; pageLobe = lobeId; pageBranch = -1L; pageFrom = from; pageId = 0L } },
                     soundsOn = brainSounds,
                     onToggleSounds = brainVm::toggleSounds,
+                    onSaveLayout = brainVm::saveLayout,
+                    onResetLayout = brainVm::resetLayout,
                     vault = host.vault,
                     sync = host.sync,
                     appScope = host.appScope,
                     goals = goals,
-                    steps = steps,
-                    learnAt = learnAt,
-                    onLearnAt = { learnAt = it },
                     homeSignal = homeSignal,
                     learn = learnVm,
+                    bible = bibleVm,
+                    onDailyAdd = brainVm::addDaily,
+                    onDailyDone = { i, done -> brainVm.setDone(i.id, done) },
+                    onRenameIdea = { i, name -> brainVm.saveIdea(i, name) },
+                    onDeleteIdea = { brainVm.deleteIdea(it.id) },
+                    remindAt = remindAt,
+                    onRemind = if (host.alarms.supported) ({
+                        val next = nextRemindHour(remindAt)
+                        remindAt = next
+                        setDailyRemindHour(host.settings, next)
+                        if (next != null) host.alarms.requestPermissions()
+                        host.alarms.scheduleDaily(next)
+                    }) else null,
                 )
             }
         }
@@ -259,9 +267,8 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     val lobeList = lobes
     if (shared != null && lobeList != null) {
         SharePicker(
-            shared, lobeList, branches.orEmpty(),
-            onPick = { lobeId, branchId -> brainVm.addShared(shared, lobeId, branchId); onSharedHandled() },
-            onNewLobe = { name -> brainVm.addLobe(name) { brainVm.addShared(shared, it, null) }; onSharedHandled() },
+            shared,
+            onNamed = { name -> brainVm.lobeNamed(name) { brainVm.addShared(shared, it) }; onSharedHandled() },
             onCancel = onSharedHandled,
         )
     }

@@ -218,6 +218,13 @@ interface BrainDao {
     @Query("UPDATE ideas SET done = :done WHERE id = :id")
     suspend fun setIdeaDone(id: Long, done: Boolean)
 
+    /**
+     * The Daily reset: unticks only rows still ticked from before [before] (their last change), so a tick made today stays. Stamped
+     * [before] itself, not now: newer than yesterday's tick but older than any tick made today on another device, so a late reset never wins.
+     */
+    @Query("UPDATE ideas SET done = 0, syncAt = :before WHERE done = 1 AND syncAt < :before AND lobeId IN (:lobeIds)")
+    suspend fun clearDoneBefore(lobeIds: List<Long>, before: Long): Int
+
     @Insert
     suspend fun insertBranch(branch: Branch): Long
 
@@ -400,6 +407,75 @@ interface LearnDao {
     suspend fun deleteStep(id: Long)
 }
 
+/** A card on the Bible canvas: a person (a plain box) or a thing or event ([BIBLE_THING], a rounded dashed box). [x]/[y] is its middle, canvas dp. */
+@Entity(tableName = "bible_cards", indices = [Index(value = ["uid"], unique = true)])
+data class BibleCard(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val note: String = "",
+    val kind: String = BIBLE_PERSON,
+    val x: Float,
+    val y: Float,
+    val locked: Boolean = false,
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+)
+
+const val BIBLE_PERSON = "person"
+const val BIBLE_THING = "thing"
+
+/** A labelled line from one Bible card to another, by their uids (no FK: deleting a card deletes its links, see [BibleDao.deleteLinksOf]). */
+@Entity(tableName = "bible_links", indices = [Index(value = ["uid"], unique = true)])
+data class BibleLink(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val fromUid: String,
+    val toUid: String,
+    val label: String,
+    @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+)
+
+@Dao
+interface BibleDao {
+    @Query("SELECT * FROM bible_cards ORDER BY id ASC")
+    fun observeCards(): Flow<List<BibleCard>>
+
+    @Query("SELECT * FROM bible_links ORDER BY id ASC")
+    fun observeLinks(): Flow<List<BibleLink>>
+
+    @Insert suspend fun insertCard(card: BibleCard): Long
+    @Insert suspend fun insertLink(link: BibleLink): Long
+
+    // Named columns only: a whole-row write from a held copy would put back whatever sync changed since.
+    @Query("UPDATE bible_cards SET name = :name WHERE id = :id")
+    suspend fun renameCard(id: Long, name: String)
+
+    @Query("UPDATE bible_cards SET note = :note WHERE id = :id")
+    suspend fun setNote(id: Long, note: String)
+
+    @Query("UPDATE bible_cards SET kind = :kind WHERE id = :id")
+    suspend fun setKind(id: Long, kind: String)
+
+    /** A locked card stays put, whatever asks. */
+    @Query("UPDATE bible_cards SET x = :x, y = :y WHERE id = :id AND locked = 0")
+    suspend fun moveCard(id: Long, x: Float, y: Float)
+
+    @Query("UPDATE bible_cards SET locked = :locked WHERE id = :id")
+    suspend fun setLocked(id: Long, locked: Boolean)
+
+    @Query("UPDATE bible_links SET label = :label WHERE id = :id")
+    suspend fun renameLink(id: Long, label: String)
+
+    @Query("DELETE FROM bible_links WHERE id = :id")
+    suspend fun deleteLink(id: Long)
+
+    @Query("DELETE FROM bible_links WHERE fromUid = :uid OR toUid = :uid")
+    suspend fun deleteLinksOf(uid: String)
+
+    @Query("DELETE FROM bible_cards WHERE id = :id")
+    suspend fun deleteCardRow(id: Long)
+}
+
 /**
  * A phone alarm. Local only, never synced: each device rings its own. [repeatDays] is a bitmask, bit 0 = Monday .. bit 6 =
  * Sunday; 0 = one time, on [oneTimeDate] (epoch day). A one-time alarm that has rung keeps its row with [firedAt] set (history).
@@ -446,6 +522,8 @@ interface SyncDao {
     @Query("SELECT * FROM plans") suspend fun plans(): List<Plan>
     @Query("SELECT * FROM goals") suspend fun goals(): List<Goal>
     @Query("SELECT * FROM steps") suspend fun steps(): List<Step>
+    @Query("SELECT * FROM bible_cards") suspend fun bibleCards(): List<BibleCard>
+    @Query("SELECT * FROM bible_links") suspend fun bibleLinks(): List<BibleLink>
     @Query("SELECT * FROM sync_tombstones") suspend fun tombstones(): List<SyncTombstone>
 
     /** Rises on every change to a synced table, deletes included: the triggers keep each term moving. */
@@ -453,6 +531,7 @@ interface SyncDao {
         "SELECT IFNULL((SELECT MAX(syncAt) FROM notes), 0) + IFNULL((SELECT MAX(syncAt) FROM tasks), 0) + IFNULL((SELECT MAX(syncAt) FROM lobes), 0) + " +
             "IFNULL((SELECT MAX(syncAt) FROM branches), 0) + IFNULL((SELECT MAX(syncAt) FROM ideas), 0) + IFNULL((SELECT MAX(syncAt) FROM plans), 0) + " +
             "IFNULL((SELECT MAX(syncAt) FROM goals), 0) + IFNULL((SELECT MAX(syncAt) FROM steps), 0) + " +
+            "IFNULL((SELECT MAX(syncAt) FROM bible_cards), 0) + IFNULL((SELECT MAX(syncAt) FROM bible_links), 0) + " +
             "IFNULL((SELECT MAX(deletedAt) FROM sync_tombstones), 0)",
     )
     fun observeChanges(): Flow<Long>
@@ -465,6 +544,8 @@ interface SyncDao {
     @Insert suspend fun insert(row: Plan): Long
     @Insert suspend fun insert(row: Goal): Long
     @Insert suspend fun insert(row: Step): Long
+    @Insert suspend fun insert(row: BibleCard): Long
+    @Insert suspend fun insert(row: BibleLink): Long
     @Insert suspend fun insert(rows: List<SyncTombstone>)
 
     @Update suspend fun update(row: Note)
@@ -475,6 +556,8 @@ interface SyncDao {
     @Update suspend fun update(row: Plan)
     @Update suspend fun update(row: Goal)
     @Update suspend fun update(row: Step)
+    @Update suspend fun update(row: BibleCard)
+    @Update suspend fun update(row: BibleLink)
 
     @Query("DELETE FROM notes WHERE uid = :uid") suspend fun deleteNote(uid: String)
     @Query("DELETE FROM tasks WHERE uid = :uid") suspend fun deleteTask(uid: String)
@@ -484,6 +567,8 @@ interface SyncDao {
     @Query("DELETE FROM plans WHERE uid = :uid") suspend fun deletePlan(uid: String)
     @Query("DELETE FROM goals WHERE uid = :uid") suspend fun deleteGoal(uid: String)
     @Query("DELETE FROM steps WHERE uid = :uid") suspend fun deleteStep(uid: String)
+    @Query("DELETE FROM bible_cards WHERE uid = :uid") suspend fun deleteBibleCard(uid: String)
+    @Query("DELETE FROM bible_links WHERE uid = :uid") suspend fun deleteBibleLink(uid: String)
     @Query("DELETE FROM sync_tombstones") suspend fun clearTombstones()
 }
 
@@ -495,7 +580,7 @@ data class SyncTombstone(val tbl: String, val uid: String, val deletedAt: Long)
 fun newUid(): String = kotlin.uuid.Uuid.random().toHexString()
 
 /** The tables that carry uid + syncAt. day_focus, posts and alarms are not synced. */
-val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "branches", "ideas", "plans", "goals", "steps")
+val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "branches", "ideas", "plans", "goals", "steps", "bible_cards", "bible_links")
 
 internal const val NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)"
 
@@ -517,7 +602,7 @@ fun syncTriggerSql(t: String) = listOf(
 )
 
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 11
+const val DB_VERSION = 12
 
 /**
  * v9 -> v10, as plain SQL so Android and desktop run the very same statements. Groups come in with ALTER, not a table
@@ -545,6 +630,14 @@ val MIGRATE_10_11_SQL = listOf(
     "CREATE TABLE IF NOT EXISTS `alarms` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `hour` INTEGER NOT NULL, `minute` INTEGER NOT NULL, `label` TEXT NOT NULL, `repeatDays` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, `oneTimeDate` INTEGER, `firedAt` INTEGER, `createdAt` INTEGER NOT NULL)",
 ) + syncTriggerSql("goals") + syncTriggerSql("steps")
 
+/** v11 -> v12: the Bible canvas's cards and links (synced). New tables only: no existing row is touched. */
+val MIGRATE_11_12_SQL = listOf(
+    "CREATE TABLE IF NOT EXISTS `bible_cards` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `note` TEXT NOT NULL, `kind` TEXT NOT NULL, `x` REAL NOT NULL, `y` REAL NOT NULL, `locked` INTEGER NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `syncAt` INTEGER NOT NULL DEFAULT 0)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_bible_cards_uid` ON `bible_cards` (`uid`)",
+    "CREATE TABLE IF NOT EXISTS `bible_links` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `fromUid` TEXT NOT NULL, `toUid` TEXT NOT NULL, `label` TEXT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `syncAt` INTEGER NOT NULL DEFAULT 0)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_bible_links_uid` ON `bible_links` (`uid`)",
+) + syncTriggerSql("bible_cards") + syncTriggerSql("bible_links")
+
 /** The desktop's first release was v9, so this is its whole list. Its driver has no SupportSQLiteDatabase, hence the connection. */
 val DESKTOP_MIGRATIONS = arrayOf<Migration>(
     object : Migration(9, 10) {
@@ -553,9 +646,12 @@ val DESKTOP_MIGRATIONS = arrayOf<Migration>(
     object : Migration(10, 11) {
         override fun migrate(connection: SQLiteConnection) = MIGRATE_10_11_SQL.forEach { connection.execSQL(it) }
     },
+    object : Migration(11, 12) {
+        override fun migrate(connection: SQLiteConnection) = MIGRATE_11_12_SQL.forEach { connection.execSQL(it) }
+    },
 )
 
-@Database(entities = [Note::class, Task::class, Lobe::class, Branch::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class, Goal::class, Step::class, Alarm::class], version = DB_VERSION, exportSchema = true)
+@Database(entities = [Note::class, Task::class, Lobe::class, Branch::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class, Goal::class, Step::class, Alarm::class, BibleCard::class, BibleLink::class], version = DB_VERSION, exportSchema = true)
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
@@ -566,6 +662,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun syncDao(): SyncDao
     abstract fun learnDao(): LearnDao
     abstract fun alarmDao(): AlarmDao
+    abstract fun bibleDao(): BibleDao
 }
 
 /** Room KMP: KSP generates the actual for each target. Android still builds through Room.databaseBuilder(context, AppDatabase::class.java, name). */

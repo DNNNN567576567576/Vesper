@@ -13,6 +13,8 @@ import app.vesper.data.Note
 import app.vesper.data.Plan
 import app.vesper.data.SYNC_TRIGGERS_CALLBACK
 import app.vesper.data.Task
+import androidx.room.immediateTransaction
+import androidx.room.useWriterConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -223,6 +225,48 @@ class SyncRoundTest {
         b.db.moonsDao().setPlanText(b.db.syncDao().plans().single().id, "edit B")
         converge(a, b)
         assertEquals(setOf("edit B", "edit A (other copy)"), a.db.syncDao().plans().map { it.text }.toSet())
+    }
+
+    /** The "Kurumi update" report: typing on one device while the other echoes each older version back must make no copy. */
+    @Test fun editingOnOneDeviceAcrossRoundsMakesNoCopy() = test {
+        val (a, b) = pair()
+        val lobe = a.db.brainDao().insertLobe(Lobe(name = "Tasks", colorIndex = 0, slot = 0))
+        val idea = a.db.brainDao().insertIdea(Idea(lobeId = lobe, title = "Kurumi update", body = "v0"))
+        val note = a.db.noteDao().insert(Note(title = "page", content = "v0"))
+        val plan = a.db.moonsDao().insertPlan(Plan(day = 20000, text = "v0"))
+        converge(a, b)
+        for (i in 1..6) {
+            tick()
+            a.db.brainDao().setIdeaFields(idea, "Kurumi update", "v$i", null, null, i.toLong())
+            a.db.noteDao().updateText(note, "page", "v$i", i.toLong())
+            a.db.moonsDao().setPlanText(plan, "v$i")
+            a.sync() // takes in b's echo of the previous version, then pushes this one
+            b.sync()
+        }
+        converge(a, b)
+        for (d in listOf(a, b)) {
+            assertEquals(listOf("v6"), d.db.syncDao().ideas().map { it.body })
+            assertEquals(listOf("v6"), d.notes().map { it.content })
+            assertEquals(listOf("v6"), d.db.syncDao().plans().map { it.text })
+        }
+    }
+
+    /** B pushed an older version of its own before it ever saw A's edit: a real conflict, still kept as a copy. */
+    @Test fun aRealConflictStillCopiesAfterOneSidedRounds() = test {
+        val (a, b) = pair()
+        val id = a.db.noteDao().insert(Note(title = "t", content = "base"))
+        converge(a, b)
+        val bid = b.notes().single().id
+        b.db.noteDao().updateText(bid, "t", "edit B", 1)
+        tick()
+        a.db.noteDao().updateText(id, "t", "edit A", 2)
+        a.sync()
+        b.sync() // merges A's newer edit: B's text loses and B makes the copy itself
+        a.sync()
+        converge(a, b)
+        assertEquals(setOf("edit A", "edit B"), a.notes().map { it.content }.toSet())
+        assertEquals("edit B", a.notes().single { it.title == "t (other copy)" }.content)
+        assertEquals(a.state(), b.state())
     }
 
     @Test fun onlyOneSideTickingAPlanMakesNoCopy() = test {
@@ -731,18 +775,218 @@ class SyncRoundTest {
         assertEquals("Work", a.db.syncDao().lobes().single().name)
         assertEquals(2, a.db.syncDao().steps().size)
         assertEquals("Panduri", a.db.syncDao().goals().single().name)
-        assertTrue(a.ownFile().contains("\"v\":3") && a.ownFile().contains("Suliko")) // pushed anyway
+        assertTrue(a.ownFile().contains("\"v\":$SNAPSHOT_VERSION") && a.ownFile().contains("Suliko")) // pushed anyway
     }
 
-    /** What a version 2 build does with our file: its validate() stops at the number before merging or pushing anything. */
-    @Test fun aVersion3FileCarriesItsNumberForOlderBuilds() = test {
+    /** What a version 2 or 3 build does with our file: its validate() stops at the number before merging or pushing anything. */
+    @Test fun aVersion4FileCarriesItsNumberForOlderBuilds() = test {
         val (a, _) = pair()
         a.seedLearn()
         a.sync()
         val file = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), a.ownFile())
-        assertEquals(3, file.v)
-        assertTrue(file.v > 2) // a v2 build's validate() throws "newer Vesper" on exactly this
+        assertEquals(4, file.v)
+        assertTrue(file.v > 3) // a v3 build's validate() throws "newer Vesper" on exactly this, before it merges or uploads
     }
 
     private fun java.util.Random.asKotlin() = kotlin.random.Random(nextLong())
+
+    // ---- 2.7.8 the Daily brain: ticks clear at midnight on every device, with no history and no conflict copies ----
+
+    private class MemSettings : app.vesper.Settings {
+        val m = HashMap<String, String>()
+        override fun getString(key: String) = m[key]
+        override fun putString(key: String, value: String) { m[key] = value }
+        override fun getBoolean(key: String, default: Boolean) = m[key]?.toBoolean() ?: default
+        override fun putBoolean(key: String, value: Boolean) { m[key] = value.toString() }
+    }
+    private val today = java.time.LocalDate.of(2026, 11, 24)
+    private suspend fun Device.seedDaily(): Map<String, Long> {
+        val lobe = db.brainDao().insertLobe(Lobe(name = "Daily", colorIndex = 3, slot = 3, uid = "daily"))
+        return listOf("pills", "workout", "read", "stretch").associateWith { db.brainDao().insertIdea(Idea(lobeId = lobe, title = it, body = "", uid = "d-$it")) }
+    }
+    private suspend fun Device.daily() = db.syncDao().ideas().filter { it.uid.startsWith("d-") || it.title.contains("(other copy)") }.associate { it.title to it.done }
+    private suspend fun Device.tickDaily(title: String, done: Boolean = true) =
+        db.brainDao().setIdeaDone(db.syncDao().ideas().single { it.title == title }.id, done)
+
+    /** Fake midnight: a moment between yesterday's ticks and today's on the real clock the triggers stamp with. */
+    private fun midnight(): Long { tick(); return System.currentTimeMillis().also { tick() } }
+
+    @Test fun bothDevicesResetAtMidnightAndEndUpTheSameWithNoCopies() = test {
+        val (a, b) = pair()
+        a.seedDaily()
+        converge(a, b)
+        a.tickDaily("pills"); b.tickDaily("workout"); b.tickDaily("pills")
+        converge(a, b)
+        val start = midnight()
+        val sa = MemSettings(); val sb = MemSettings()
+        assertEquals(2, app.vesper.resetDaily(a.db, sa, today, start))
+        assertEquals(2, app.vesper.resetDaily(b.db, sb, today, start)) // nearly the same moment, the same rows
+        assertEquals("only ticked rows are written: a second reset writes nothing", 0, app.vesper.resetDaily(a.db, sa, today, start))
+        converge(a, b)
+        val all = mapOf("pills" to false, "workout" to false, "read" to false, "stretch" to false)
+        assertEquals(all, a.daily()); assertEquals(all, b.daily())
+        assertEquals("no conflict copies", 4, a.db.syncDao().ideas().size)
+        assertEquals(today.toString(), sa.getString(app.vesper.KEY_DAILY_RESET))
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun aTickMadeAfterMidnightSurvivesTheOtherDevicesLateReset() = test {
+        val (a, b) = pair()
+        a.seedDaily()
+        a.tickDaily("pills")
+        converge(a, b)
+        val start = midnight()
+        app.vesper.resetDaily(a.db, MemSettings(), today, start)
+        a.tickDaily("workout") // today, after A's reset
+        converge(a, b) // B has not reset yet: it gets A's reset and A's new tick
+        assertEquals(0, app.vesper.resetDaily(b.db, MemSettings(), today, start)) // B opens late: today's tick is not stale
+        converge(a, b)
+        val want = mapOf("pills" to false, "workout" to true, "read" to false, "stretch" to false)
+        assertEquals(want, a.daily()); assertEquals(want, b.daily())
+        assertEquals(4, b.db.syncDao().ideas().size)
+    }
+
+    /** The PC opens hours after the phone: its reset of yesterday's tick must not beat the tick the phone made this morning. */
+    @Test fun aLateResetNeverUndoesATodayTickOfTheSameItem() = test {
+        val (a, b) = pair()
+        a.seedDaily()
+        a.tickDaily("pills") // yesterday, seen by both
+        converge(a, b)
+        val start = midnight()
+        app.vesper.resetDaily(a.db, MemSettings(), today, start)
+        a.tickDaily("pills") // this morning on the phone
+        tick()
+        assertEquals(1, app.vesper.resetDaily(b.db, MemSettings(), today, start)) // the PC starts later, before it syncs
+        converge(a, b)
+        assertEquals(true, a.daily()["pills"]); assertEquals(true, b.daily()["pills"])
+        assertEquals(4, a.db.syncDao().ideas().size)
+    }
+
+    @Test fun aDeviceThatResetsBeforeItSyncsStillGetsTheOthersTodayTick() = test {
+        val (a, b) = pair()
+        a.seedDaily()
+        converge(a, b)
+        b.tickDaily("stretch") // yesterday, on B
+        a.tickDaily("read")    // yesterday, on A
+        val start = midnight()
+        a.tickDaily("read", false); a.tickDaily("pills") // today on A, before anything synced: unticked read, ticked pills
+        app.vesper.resetDaily(b.db, MemSettings(), today, start) // B resets first, offline
+        app.vesper.resetDaily(a.db, MemSettings(), today, start)
+        converge(a, b)
+        val want = mapOf("pills" to true, "workout" to false, "read" to false, "stretch" to false)
+        assertEquals(want, a.daily()); assertEquals(want, b.daily())
+        assertEquals("no conflict copies", 4, a.db.syncDao().ideas().size)
+    }
+
+    // ---- 2.7.9 the Bible canvas between two devices ----
+
+    private suspend fun Device.cards() = db.syncDao().bibleCards().sortedBy { it.uid }
+    private suspend fun Device.links() = db.syncDao().bibleLinks().sortedBy { it.uid }
+    private suspend fun Device.cardId(uid: String) = db.syncDao().bibleCards().single { it.uid == uid }.id
+
+    private suspend fun Device.seedBible() {
+        val d = db.bibleDao()
+        d.insertCard(app.vesper.data.BibleCard(name = "Abraham", x = 0f, y = 0f, uid = "abraham"))
+        d.insertCard(app.vesper.data.BibleCard(name = "Isaac", note = "laughter", x = 0f, y = 120f, uid = "isaac"))
+        d.insertCard(app.vesper.data.BibleCard(name = "The ark", kind = app.vesper.data.BIBLE_THING, x = 200f, y = 0f, locked = true, uid = "ark"))
+        d.insertLink(app.vesper.data.BibleLink(fromUid = "isaac", toUid = "abraham", label = "son", uid = "l1"))
+        d.insertLink(app.vesper.data.BibleLink(fromUid = "abraham", toUid = "ark", label = "saw", uid = "l2"))
+    }
+
+    @Test fun bibleCardsAndLinksTravel() = test {
+        val (a, b) = pair()
+        a.seedBible()
+        converge(a, b)
+        assertEquals(listOf("Abraham", "Isaac", "The ark"), b.cards().map { it.name }.sorted())
+        val ark = b.cards().single { it.uid == "ark" }
+        assertEquals(listOf(app.vesper.data.BIBLE_THING, 200f, true), listOf(ark.kind, ark.x, ark.locked))
+        assertEquals("laughter", b.cards().single { it.uid == "isaac" }.note)
+        assertEquals(listOf("son", "saw"), b.links().map { it.label })
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun aMoveTravelsAndMovesOnBothSidesMakeNoCopy() = test {
+        val (a, b) = pair()
+        a.seedBible()
+        converge(a, b)
+        a.db.bibleDao().moveCard(a.cardId("isaac"), 30f, 300f)
+        converge(a, b)
+        assertEquals(30f to 300f, b.cards().single { it.uid == "isaac" }.let { it.x to it.y })
+        // both move the same card before syncing: the later one wins everywhere, no copy
+        a.db.bibleDao().moveCard(a.cardId("abraham"), -50f, 0f)
+        tick()
+        b.db.bibleDao().moveCard(b.cardId("abraham"), 70f, -20f)
+        converge(a, b)
+        assertEquals(3, a.cards().size)
+        assertEquals(70f to -20f, a.cards().single { it.uid == "abraham" }.let { it.x to it.y })
+        assertEquals(a.state(), b.state())
+    }
+
+    @Test fun renamedOnBothSidesKeepsBothNames() = test {
+        val (a, b) = pair()
+        a.seedBible()
+        converge(a, b)
+        a.db.bibleDao().renameCard(a.cardId("isaac"), "Yitzhak")
+        tick()
+        b.db.bibleDao().renameCard(b.cardId("isaac"), "Isaac ben Abraham")
+        converge(a, b)
+        assertEquals(setOf("Abraham", "The ark", "Isaac ben Abraham", "Yitzhak (other copy)"), a.cards().map { it.name }.toSet())
+        assertEquals(a.state(), b.state())
+        // the copy has no links; the card keeps its own
+        assertEquals(listOf("isaac"), b.links().filter { it.label == "son" }.map { it.fromUid })
+    }
+
+    @Test fun typingOnOneSideWhileTheOtherEchoesMakesNoCopy() = test {
+        val (a, b) = pair()
+        a.seedBible()
+        converge(a, b)
+        for (n in listOf("Is", "Isa", "Isaa", "Isaac!")) {
+            a.db.bibleDao().renameCard(a.cardId("isaac"), n); tick()
+            a.sync(); b.sync()
+        }
+        converge(a, b)
+        assertEquals(listOf("Abraham", "Isaac!", "The ark"), b.cards().map { it.name }.sorted())
+    }
+
+    @Test fun deletingACardWithLinksDeletesThemEverywhere() = test {
+        val (a, b) = pair()
+        a.seedBible()
+        converge(a, b)
+        val id = a.cardId("abraham")
+        a.db.useWriterConnection { w -> w.immediateTransaction { a.db.bibleDao().deleteLinksOf("abraham"); a.db.bibleDao().deleteCardRow(id) } }
+        converge(a, b)
+        assertEquals(listOf("isaac" to "Isaac", "ark" to "The ark").sortedBy { it.first }, b.cards().map { it.uid to it.name })
+        assertTrue(b.links().isEmpty())
+        assertEquals(a.state(), b.state())
+    }
+
+    /** B links Isaac to Abraham while A deletes Abraham: after syncing, no device shows a line to nowhere. */
+    @Test fun aLinkToACardDeletedOnTheOtherDeviceIsDropped() = test {
+        val (a, b) = pair()
+        a.seedBible()
+        converge(a, b)
+        val id = a.cardId("abraham")
+        a.db.useWriterConnection { w -> w.immediateTransaction { a.db.bibleDao().deleteLinksOf("abraham"); a.db.bibleDao().deleteCardRow(id) } }
+        tick()
+        b.db.bibleDao().insertLink(app.vesper.data.BibleLink(fromUid = "ark", toUid = "abraham", label = "carried", uid = "late"))
+        converge(a, b)
+        for (d in listOf(a, b)) {
+            val uids = d.cards().map { it.uid }.toSet()
+            assertTrue(d.links().all { it.fromUid in uids && it.toUid in uids })
+            assertTrue(d.links().none { it.uid == "late" })
+        }
+        assertEquals(a.state(), b.state())
+    }
+
+    /** A device still on version 3: its rows merge, our Bible stays, and the user hears to update it. */
+    @Test fun aVersion3DevicesFileMergesAndKeepsTheBible() = test {
+        val (a, _) = pair()
+        a.seedBible()
+        upload("old-device", Snapshot(v = 3, deviceId = "old-device", lobes = listOf(SyncLobe("L2", 5, "Work", 1, 0))))
+        val e = assertThrows(SyncException::class.java) { runBlocking { a.sync() } }
+        assertTrue(e.message!!, e.message!!.contains("older Vesper"))
+        assertEquals("Work", a.db.syncDao().lobes().single().name)
+        assertEquals(3, a.cards().size); assertEquals(2, a.links().size)
+        assertTrue(a.ownFile().contains("\"v\":4") && a.ownFile().contains("The ark")) // pushed anyway
+    }
 }

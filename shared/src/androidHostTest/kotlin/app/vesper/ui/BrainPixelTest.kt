@@ -1,7 +1,5 @@
 package app.vesper.ui
 
-import androidx.compose.ui.geometry.Offset
-
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
@@ -15,7 +13,6 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import app.vesper.res.Res
-import app.vesper.res.brain_lobe
 import app.vesper.res.brain_main
 import app.vesper.res.vault_heart
 import app.vesper.res.vault_heart_dead
@@ -27,10 +24,11 @@ import org.jetbrains.compose.resources.decodeToImageBitmap
 import org.jetbrains.compose.resources.getDrawableResourceBytes
 import org.jetbrains.compose.resources.getSystemResourceEnvironment
 import org.jetbrains.compose.resources.setResourceReaderAndroidContext
-import app.vesper.data.Branch
+import app.vesper.data.Goal
 import app.vesper.data.Idea
-import app.vesper.data.Lobe
 import org.junit.After
+import androidx.compose.ui.geometry.Offset
+import kotlin.math.hypot
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -83,6 +81,26 @@ import org.robolectric.annotation.GraphicsMode
  * now sets arcTopDp = 60). staleHeart, flyIn and glowLabel are untouched.
  * Learn brain: learnBrain is new (the small learn brain with three moons, beside the vault heart since 2.6.1). Every other frame is untouched: the
  * renderer draws it only when [BrainRenderer.learn] is set.
+ * 2.7.0 (no portals): every map frame changed on purpose. The main map lost its portal ring, worlds and fly-throughs; it now draws the
+ * main brain, the vault heart, the learn brain and a tasks brain with a node on a vein for every task. overview, beatFresh, staleHeart,
+ * learnBrain, small and blit3 were re-captured; noTasks is new; selectedZoom, selectedFar, showAll, flyIn and dimension are gone.
+ * glowLabel is untouched.
+ * 2.7.0 (compact map): beatFresh, blit3, learnBrain, noTasks, overview, small and staleHeart changed on purpose (heart and the small brains
+ * moved up under the main brain, tasks hang under the tasks brain). glowLabel is untouched.
+ * 2.7.2: beatFresh, blit3, overview, small and staleHeart changed on purpose (the main-brain note strands are gone, tasks are
+ * small pixel diamonds scattered round the tasks brain on their own strands, the learn brain's orbiting dots are gone). learnBrain changed
+ * on purpose too and now draws three goal moons (the new purple pixel moon) round the learn brain. noTasks and glowLabel are untouched.
+ * 2.7.4/2.7.5: every map frame except glowLabel changed on purpose: the pinned-notes corkboard (chunky frame, cork) hangs centred under everything,
+ * empty here; the tasks and goals are placed exactly as in 2.7.3.
+ * 2.7.6: every map frame except glowLabel changed on purpose (beatFresh, blit3, learnBrain, noTasks, overview, small, staleHeart): the
+ * small brains sit fixed on a symmetric ring round the main brain, no strands run to tasks or goals, the notes pack tighter and the board
+ * hangs closer under them.
+ * 2.7.7: beatFresh, blit3, learnBrain, overview, small and staleHeart changed on purpose: the tasks and goals are decorative flowers of
+ * diamonds and moons on rings round their brains (no names), and the board hangs under the flowers. noTasks and glowLabel are untouched.
+ * 2.7.8: dailyLit and dailyDim are new (the daily brain on the top-left ring spot with its nerve, lit and dimmed). Every other frame is
+ * untouched: the renderer draws the daily brain only when [BrainRenderer.daily] is set.
+ * 2.7.9: dailyBible is new (the bible brain on the top-right ring spot with its nerve, beside a lit daily brain). Every other frame is
+ * untouched: the renderer draws the bible brain only when [BrainRenderer.bible] is set.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -103,11 +121,11 @@ class BrainPixelTest {
     // Sprites come from :shared's Compose resources through the same reader and decoder imageResource() uses
     // (unqualified = mdpi, never upscaled), so this also proves they are packaged and not density-scaled.
     @OptIn(ExperimentalResourceApi::class)
-    private fun newRenderer(core: DrawableResource = Res.drawable.brain_main): BrainRenderer = runBlocking {
+    private fun newRenderer(): BrainRenderer = runBlocking {
         setResourceReaderAndroidContext(RuntimeEnvironment.getApplication()) // Robolectric doesn't start CMP's context provider
         val env = getSystemResourceEnvironment()
         suspend fun img(r: DrawableResource) = getDrawableResourceBytes(env, r).decodeToImageBitmap()
-        BrainRenderer(img(core), img(Res.drawable.vault_heart), img(Res.drawable.vault_heart_dead)).also { it.arcTopDp = 60f }
+        BrainRenderer(img(Res.drawable.brain_main), img(Res.drawable.vault_heart), img(Res.drawable.vault_heart_dead))
     }
     private fun pixels(r: BrainRenderer): IntArray = IntArray(r.W * r.H).also { r.pix.bmp.readPixels(it) }
     private fun blitPixels(r: BrainRenderer, px: Int): IntArray {
@@ -117,81 +135,144 @@ class BrainPixelTest {
     }
     // ----
 
-    private val lobes = listOf(
-        Lobe(id = 1, name = "Hollow", colorIndex = 0, slot = 0, uid = "lobe-1"),
-        Lobe(id = 2, name = "Ash", colorIndex = 1, slot = 1, uid = "lobe-2"),
-        Lobe(id = 5, name = "", colorIndex = 4, slot = 2, uid = "lobe-5"),
-        Lobe(id = 9, name = "Marrow", colorIndex = 3, slot = 7, uid = "lobe-9"),
+    private val tasks = listOf(
+        Idea(id = 1, lobeId = 6, title = "call the tailor", body = "", uid = "task-1"),
+        Idea(id = 2, lobeId = 6, title = "", body = "fix the bike", uid = "task-2", done = true),
+        Idea(id = 3, lobeId = 6, title = "taxes", body = "", uid = "task-3"),
     )
-    private val branches = listOf(Branch(id = 1, lobeId = 2, name = "Read", uid = "read"), Branch(id = 2, lobeId = 2, name = "Empty", uid = "empty"))
-    private val ideas = buildList {
-        for (k in 1..12) add(Idea(id = k.toLong(), lobeId = 1, title = "idea $k", body = "", updatedAt = 1000L + k * 37 % 11, uid = "idea-$k"))
-        for (k in 20..22) add(Idea(id = k.toLong(), lobeId = 2, title = "", body = "b$k", updatedAt = 5000L - k, uid = "idea-$k", branchId = 1, done = k == 21))
-        add(Idea(id = 40, lobeId = 9, title = "lone", body = "", updatedAt = 1L, uid = "idea-40"))
-    }
-    private val layout = buildLayout(lobes, placeIdeas(lobes, branches, ideas))
+    private val layout = buildLayout(tasks)
+    private val goals = listOf(
+        Goal(id = 1, name = "Panduri", uid = "g1", updatedAt = 0L), Goal(id = 2, name = "Spanish", uid = "g2", updatedAt = 0L), Goal(id = 3, name = "Run 5k", uid = "g3", updatedAt = 0L),
+    )
 
     @Test fun frames() {
         val r = newRenderer()
         r.resize(180, 390)
         // calm overview, fresh vault, no pulse flare
-        r.draw(0.5f, 0f, 0f, 0.85f, layout, -1, 0f, false)
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
         check("overview", pixels(r), E["overview"])
         // t = 2.3: beatPh just past 1, so the heart is mid swell with its glow up
-        r.draw(2.3f, 4f, -6f, 0.85f, layout, -1, 0f, false)
+        r.draw(2.3f, 4f, -6f, 0.85f, layout, 0f, false)
         check("beatFresh", pixels(r), E["beatFresh"])
-        // stale vault selected: dead grey heart, no beat
-        r.draw(2.3f, 0f, 60f, 1.4f, layout, -1, 1f, true)
+        // stale vault selected: dead grey heart, no beat, the map dimmed; zoomed past 2 (2px specks and drips)
+        r.draw(2.3f, -40f, 120f, 2.4f, layout, 1f, true)
         check("staleHeart", pixels(r), E["staleHeart"])
-        // half-stale, lobe 0 selected and zoomed past 2 (flipped sprites, 2px specks/drips)
-        r.draw(7.1f, 30f, -70f, 2.4f, layout, 0, 0.5f, false)
-        check("selectedZoom", pixels(r), E["selectedZoom"])
-        r.draw(11.9f, -40f, 20f, 0.6f, layout, 3, 0.25f, false)
-        check("selectedFar", pixels(r), E["selectedFar"])
-        // show-all on: each portal's stars are its groups and notes
-        r.contents = intArrayOf(0, 12, 2, 3, 0, 0, 0, 1)
-        r.draw(5.2f, 0f, 0f, 0.85f, layout, -1, 0f, false)
-        check("showAll", pixels(r), E["showAll"])
-        r.contents = null
-        // half way through flying into portal 1: it grows past the zoom cap
-        r.flyIdx = 1; r.flyP = 0.5f
-        r.draw(5.2f, layout.lx[1], layout.ly[1], 5f, layout, -1, 0f, false)
-        check("flyIn", pixels(r), E["flyIn"])
-        r.flyIdx = -1
-        // lobe 2's world: a group's constellation of three stars inside a ring of its shade
-        val dim = buildLayout(lobes, placeIdeas(lobes, branches, ideas, focus = 2))
-        r.draw(5.2f, 0f, 40f, 1f, dim, 1, 0f, false)
-        check("dimension", pixels(r), E["dimension"])
+        // no tasks at all: the tasks brain alone
+        r.draw(0.5f, 0f, 0f, 0.85f, buildLayout(emptyList()), 0f, false)
+        check("noTasks", pixels(r), E["noTasks"])
     }
 
-    @Test fun focusedMapShowsNothingOfTheCoreOrOtherLobes() {
-        val a = newRenderer(); a.resize(180, 390)
-        a.draw(2.3f, 0f, -20f, 1f, layout, 0, 0.5f, false)
-        val base = pixels(a)
-        // the same frame with the core sprite swapped and every other lobe moved: nothing may change
-        val moved = buildLayout(lobes, placeIdeas(lobes, branches, ideas))
-        for (i in 1 until moved.nL) moved.lx[i] += 9f
-        val b = newRenderer(core = Res.drawable.brain_lobe); b.resize(180, 390)
-        b.draw(2.3f, 0f, -20f, 1f, moved, 0, 0.5f, false)
-        assertTrue("a focused map still draws the core or another lobe", base.contentEquals(pixels(b)))
+    /** Main-brain notes draw without trouble and change the picture (no golden hash: they are not a pinned look). */
+    @Test fun notesDraw() {
+        val r = newRenderer(); r.resize(180, 390)
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        val base = pixels(r).contentHashCode()
+        val notes = (1..12).map { Idea(id = 100L + it, lobeId = 1, title = "n$it", body = "", uid = "note-$it") }
+        r.draw(0.5f, 0f, 0f, 0.85f, buildLayout(tasks, notes), 0f, false)
+        val withNotes = pixels(r).contentHashCode()
+        assertTrue("the notes show", withNotes != base)
+
     }
 
-    /** Learn (new): the small learn brain with three moons beside the core; without it the overview stays exactly as it was. */
+    /** Pinned papers (and a dragged one) draw on the board and change the picture; no golden hash, the board's look is checked by eye. */
+    @Test fun pinnedPapersDraw() {
+        val r = newRenderer(); r.resize(180, 390)
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        val base = pixels(r).contentHashCode()
+        val pins = (1..5).map { Idea(id = 200L + it, lobeId = 8, title = "pin $it", body = "", uid = "pin-$it") }
+        r.draw(0.5f, 0f, 0f, 0.85f, buildLayout(tasks, pinned = pins), 0f, false)
+        val withPins = pixels(r).contentHashCode()
+        assertTrue("the papers show", withPins != base)
+        NoteMoves.move("pin-2", 12f, -9f)
+        try {
+            r.draw(0.5f, 0f, 0f, 0.85f, buildLayout(tasks, pinned = pins), 0f, false)
+            assertTrue("a dragged paper shows", pixels(r).contentHashCode() != withPins)
+        } finally { NoteMoves.d.clear() }
+    }
+
+    /**
+     * No strand runs from the tasks brain to a task or from the learn brain to a goal: against a map with none, the frame changes only
+     * round their nodes (and round the board, which hangs lower under the flowers).
+     */
+    @Test fun noStrandsToTasksOrGoals() {
+        val r = newRenderer(); r.resize(180, 390); r.learnMoons = 3
+        val ts = (1..12).map { Idea(id = it.toLong(), lobeId = 6, title = "task $it", body = "", uid = "t$it") }
+        val l = buildLayout(ts, goals = goals)
+        val bare = buildLayout(emptyList())
+        r.draw(0.5f, 0f, 30f, 0.85f, l, 0f, false)
+        val home = pixels(r)
+        r.draw(0.5f, 0f, 30f, 0.85f, bare, 0f, false)
+        val gone = pixels(r)
+        fun sx(x: Float) = x * 0.85f + 90f
+        fun sy(y: Float) = (y - 30f) * 0.85f + 195f
+        val spots = l.tasks.indices.map { Offset(l.tx[it], l.ty[it]) } + l.goalAt
+        fun nearANode(x: Int, y: Int) = spots.any { hypot(x - sx(it.x), y - sy(it.y)) <= 14f }
+        // the board sits lower under a bigger flower: its frame, glow and shadow may change too
+        fun nearABoard(x: Int, y: Int) = listOf(l.boardAt, bare.boardAt).any { b -> boardBox(b).let { x >= sx(it[0]) - 70f && x <= sx(it[2]) + 70f && y >= sy(it[1]) - 70f && y <= sy(it[3]) + 70f } }
+        var changed = 0
+        for (y in 0 until 390) for (x in 0 until 180) if (home[y * 180 + x] != gone[y * 180 + x]) {
+            changed++
+            assertTrue("a pixel changed away from every node at ($x, $y): a strand?", nearANode(x, y) || nearABoard(x, y))
+        }
+        assertTrue("the nodes themselves show", changed > 20)
+    }
+
+    /** The small learn brain with three goal moons beside the heart; without it the overview stays exactly as it was. */
     @Test fun learnBrain() {
         val r = newRenderer(); r.resize(180, 390)
-        val spot = learnSpot((0 until layout.nL).map { Offset(layout.lx[it], layout.ly[it]) })
-        r.learn = floatArrayOf(spot.x, spot.y, 3f)
-        r.draw(0.5f, 0f, 0f, 0.85f, layout, -1, 0f, false)
+        r.learnMoons = 3
+        r.draw(0.5f, 0f, 0f, 0.85f, buildLayout(tasks, goals = goals), 0f, false)
         check("learnBrain", pixels(r), E["learnBrain"])
-        r.learn = null
-        r.draw(0.5f, 0f, 0f, 0.85f, layout, -1, 0f, false)
+        r.learnMoons = -1
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
         check("overview", pixels(r), E["overview"])
+    }
+
+    /** The daily brain on the top-left ring, fully lit and dimmed; without it the overview stays exactly as it was. */
+    @Test fun dailyBrain() {
+        val r = newRenderer(); r.resize(180, 390)
+        r.daily = 1f
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        val lit = pixels(r)
+        check("dailyLit", lit, E["dailyLit"])
+        r.daily = DAILY_DIM
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        val dim = pixels(r)
+        check("dailyDim", dim, E["dailyDim"])
+        fun lum(px: IntArray) = px.sumOf { (it shr 16 and 0xFF) + (it shr 8 and 0xFF) + (it and 0xFF) }
+        assertTrue("the dimmed brain is darker", lum(dim) < lum(lit))
+        r.daily = -1f
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        check("overview", pixels(r), E["overview"])
+    }
+
+    /** The bible brain on the top-right ring with its nerve: drawn, purple and white only (never pink), and gone when off. */
+    @Test fun bibleBrain() {
+        val r = newRenderer(); r.resize(180, 390)
+        r.daily = 1f
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        val without = pixels(r)
+        check("dailyLit", without, E["dailyLit"])
+        r.bible = true
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        val with = pixels(r)
+        check("dailyBible", with, E["dailyBible"])
+        val changed = with.indices.filter { with[it] != without[it] }
+        assertTrue("the bible brain shows (${changed.size} px)", changed.size > 200)
+        // it sits top right: every changed pixel is right of the middle or on its nerve from the core, above the core
+        val (bx, by) = (BIBLE_AT.x * 0.85f + 90f) to (BIBLE_AT.y * 0.85f + 195f)
+        assertTrue("changed pixels lie toward the top-right spot", changed.all { i -> (i % 180) >= 80 && (i / 180) <= 200 })
+        assertTrue("its middle is lit", changed.any { i -> hypot(i % 180 - bx, i / 180 - by) < 6f })
+        for (i in changed) assertTrue("pink pixel %06x at (%d, %d)".format(with[i] and 0xFFFFFF, i % 180, i / 180), !isPink(with[i]))
+        r.bible = false
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        check("dailyLit", pixels(r), E["dailyLit"])
     }
 
     @Test fun resizeAndBlit() {
         val r = newRenderer()
         r.resize(60, 90)
-        r.draw(3.3f, 0f, 0f, 0.7f, layout, 1, 0f, false)
+        r.draw(3.3f, -60f, 120f, 0.7f, layout, 0f, false)
         check("small", pixels(r), E["small"])
         check("blit3", blitPixels(r, 3), E["blit3"])
     }
@@ -217,8 +298,11 @@ class BrainPixelTest {
     }
 
     private companion object {
+        /** Red over blue: pink, magenta or warm. The app's purples and whites always have blue at least as strong as red. */
+        fun isPink(px: Int) = (px shr 16 and 0xFF) > (px and 0xFF) + 8
+
         val E = mapOf(
-            "beatFresh" to -1355989786, "blit3" to -417458193, "dimension" to -1725325892, "flyIn" to -1287240568, "glowLabel" to 1509847742, "learnBrain" to -448927150, "overview" to 1714630548, "selectedFar" to -1088837572, "selectedZoom" to -1813238531, "showAll" to 1955788307, "small" to -1724423207, "staleHeart" to -1729973114,
+            "beatFresh" to 333955742, "dailyDim" to -1543158383, "dailyLit" to -1515874354, "dailyBible" to -625859451, "blit3" to 509315180, "glowLabel" to 1509847742, "learnBrain" to -1943259253, "noTasks" to -1085405908, "overview" to 229685976, "small" to 1948659030, "staleHeart" to -1708098666,
         )
     }
 }

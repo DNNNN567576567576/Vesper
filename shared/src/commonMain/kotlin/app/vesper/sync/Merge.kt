@@ -23,14 +23,16 @@ interface SyncRow {
 @Serializable data class SyncPlan(override val uid: String, override val syncAt: Long, val day: Long, val text: String, val done: Boolean, val createdAt: Long) : SyncRow
 @Serializable data class SyncGoal(override val uid: String, override val syncAt: Long, val name: String, val position: Int, val createdAt: Long, val updatedAt: Long) : SyncRow
 @Serializable data class SyncStep(override val uid: String, override val syncAt: Long, val goalUid: String, val title: String, val note: String = "", val done: Boolean = false, val day: Long? = null, val position: Int, val createdAt: Long, val updatedAt: Long) : SyncRow
+@Serializable data class SyncBibleCard(override val uid: String, override val syncAt: Long, val name: String, val note: String = "", val kind: String = "person", val x: Float, val y: Float, val locked: Boolean = false) : SyncRow
+@Serializable data class SyncBibleLink(override val uid: String, override val syncAt: Long, val fromUid: String, val toUid: String, val label: String) : SyncRow
 @Serializable data class SyncTomb(val tbl: String, val uid: String, val deletedAt: Long)
 
-/** 2 added groups, links and done; 3 the learn brain's goals and steps. Bump it whenever an older build would silently drop part of a row. */
-const val SNAPSHOT_VERSION = 3
+/** 2 added groups, links and done; 3 the learn brain's goals and steps; 4 the Bible canvas's cards and links. Bump it whenever an older build would silently drop part of a row. */
+const val SNAPSHOT_VERSION = 4
 
 /**
- * The oldest snapshot that merges whole: its rows carry every field of every table it has. 3 only added tables, so a 2 simply
- * holds no goals or steps, and merging it can't touch ours (only tombstones delete). A 1 lacks groups, links and done.
+ * The oldest snapshot that merges whole: its rows carry every field of every table it has. 3 and 4 only added tables, so a 2
+ * simply holds no goals, steps or Bible cards, and merging it can't touch ours (only tombstones delete). A 1 lacks groups, links and done.
  */
 const val MERGEABLE_VERSION = 2
 
@@ -52,8 +54,10 @@ data class Snapshot(
     val tombstones: List<SyncTomb> = emptyList(),
     val goals: List<SyncGoal> = emptyList(),
     val steps: List<SyncStep> = emptyList(),
+    val bibleCards: List<SyncBibleCard> = emptyList(),
+    val bibleLinks: List<SyncBibleLink> = emptyList(),
 ) {
-    val rows: List<SyncRow> get() = notes + tasks + lobes + branches + ideas + plans + goals + steps
+    val rows: List<SyncRow> get() = notes + tasks + lobes + branches + ideas + plans + goals + steps + bibleCards + bibleLinks
 }
 
 /** Refuses a snapshot that could not have come from a healthy device, before anything is written. */
@@ -95,15 +99,15 @@ private fun <T : SyncRow> resolve(tbl: String, local: List<T>, remote: List<T>, 
 
 /**
  * The losers of real conflicts, as new rows. Real means both sides moved away from the version last [seen] from a
- * peer and the text differs. The copy's uid and stamp come from the loser, so both devices build the same row and a
+ * peer, the peer's is not a version we [sent] it ourselves, and the text differs. The copy's uid and stamp come from the loser, so both devices build the same row and a
  * copy the user deleted stays deleted, because its stamp never rises past that tombstone.
  */
-private fun <T : SyncRow> conflictCopies(tbl: String, local: List<T>, remote: List<T>, seen: Map<String, Long>, remoteWinsTie: Boolean, text: (T) -> Any, copy: (T, String) -> T): List<T> {
+private fun <T : SyncRow> conflictCopies(tbl: String, local: List<T>, remote: List<T>, seen: Map<String, Long>, sent: Map<String, List<Long>>, remoteWinsTie: Boolean, text: (T) -> Any, copy: (T, String) -> T): List<T> {
     val mine = local.associateBy { it.uid }
     return remote.mapNotNull { r ->
         val l = mine[r.uid] ?: return@mapNotNull null
         val base = seen["$tbl:${r.uid}"]
-        if (l.syncAt == base || r.syncAt == base || text(l) == text(r)) return@mapNotNull null
+        if (l.syncAt == base || r.syncAt == base || r.syncAt in sent["$tbl:${r.uid}"].orEmpty() || text(l) == text(r)) return@mapNotNull null
         val loser = if (newest(l, r, remoteWinsTie) === r) l else r
         copy(loser, copyUid(loser.uid, loser.syncAt))
     }
@@ -119,9 +123,9 @@ fun copyUid(uid: String, syncAt: Long) = "$uid~$syncAt"
  * to do. [seen] holds the syncAt last seen from a peer per "notes:uid" / "ideas:uid" / "plans:uid", see [seenAfter].
  * [pushedUpTo] is the newest syncAt this device has pushed: a local row above it was never seen by the peer, so a delete
  * can't have meant that version, however late it was. Such a row outlives its tombstone. A restore resets this to 0, which
- * is what keeps restored rows through the peers' older deletes.
+ * is what keeps restored rows through the peers' older deletes. [sent] holds our pushed versions, see [sentAfter].
  */
-fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo: Long = Long.MAX_VALUE): Snapshot {
+fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo: Long = Long.MAX_VALUE, sent: Map<String, List<Long>> = emptyMap()): Snapshot {
     val tie = remote.deviceId > local.deviceId
     val tombs: Tombs = (local.tombstones + remote.tombstones).groupBy({ it.tbl to it.uid }, { it.deletedAt }).mapValues { it.value.max() }
 
@@ -130,9 +134,12 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
         if (deletedAt != null && deletedAt >= r.syncAt && r.syncAt > pushedUpTo && seen["$tbl:${r.uid}"] != r.syncAt) r.stamp(deletedAt + 1) else r
     }
 
-    val noteCopies = conflictCopies("notes", local.notes, remote.notes, seen, tie, { it.title to it.content }) { n, uid -> n.copy(uid = uid, title = copyTitle(n.title)) }
-    val ideaCopies = conflictCopies("ideas", local.ideas, remote.ideas, seen, tie, { Triple(it.title, it.body, it.link) }) { i, uid -> i.copy(uid = uid, title = copyTitle(i.title)) }
-    val planCopies = conflictCopies("plans", local.plans, remote.plans, seen, tie, { it.text }) { p, uid -> p.copy(uid = uid, text = copyTitle(p.text)) }
+    val noteCopies = conflictCopies("notes", local.notes, remote.notes, seen, sent, tie, { it.title to it.content }) { n, uid -> n.copy(uid = uid, title = copyTitle(n.title)) }
+    val ideaCopies = conflictCopies("ideas", local.ideas, remote.ideas, seen, sent, tie, { Triple(it.title, it.body, it.link) }) { i, uid -> i.copy(uid = uid, title = copyTitle(i.title)) }
+    val planCopies = conflictCopies("plans", local.plans, remote.plans, seen, sent, tie, { it.text }) { p, uid -> p.copy(uid = uid, text = copyTitle(p.text)) }
+    // Only the name and note are text: a card moved, locked or turned into a thing on one side is no conflict, last writer wins.
+    // The copy sits a little below right of its card, so both show.
+    val cardCopies = conflictCopies("bible_cards", local.bibleCards, remote.bibleCards, seen, sent, tie, { it.name to it.note }) { c, uid -> c.copy(uid = uid, name = copyTitle(c.name), x = c.x + 24f, y = c.y + 24f) }
 
     // associateBy keeps the last: a copy the peer already holds (maybe edited since) beats the one just built.
     val notes = resolve("notes", local.notes.keepUnseen("notes") { copy(syncAt = it) }, (noteCopies + remote.notes).associateBy { it.uid }.values.toList(), tombs, tie)
@@ -144,6 +151,10 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
     // Goals and steps: last writer wins, no conflict copies (a step is a short title, a goal a name).
     val goals = resolve("goals", local.goals.keepUnseen("goals") { copy(syncAt = it) }, remote.goals, tombs, tie)
     val steps = resolve("steps", local.steps.keepUnseen("steps") { copy(syncAt = it) }, remote.steps, tombs, tie)
+    val cards = resolve("bible_cards", local.bibleCards.keepUnseen("bible_cards") { copy(syncAt = it) }, (cardCopies + remote.bibleCards).associateBy { it.uid }.values.toList(), tombs, tie)
+    // Links: last writer wins (a label is a word or two). A link never brings a deleted card back: it goes with it, never dangling.
+    val links = resolve("bible_links", local.bibleLinks.keepUnseen("bible_links") { copy(syncAt = it) }, remote.bibleLinks, tombs, tie)
+    links.live.values.removeAll { it.fromUid !in cards.live || it.toUid !in cards.live }
 
     // A surviving child keeps its parent: the parent is stamped just past its tombstone, the same on both devices.
     for (uid in (ideas.live.values.map { it.lobeUid } + branches.live.values.map { it.lobeUid }).toSet() - lobes.live.keys) {
@@ -182,15 +193,27 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
     }
 
     val live = mapOf("notes" to notes.live.keys, "tasks" to tasks.live.keys, "lobes" to lobes.live.keys, "branches" to branches.live.keys, "ideas" to ideas.live.keys, "plans" to plans.live.keys,
-        "goals" to goals.live.keys, "steps" to steps.live.keys)
+        "goals" to goals.live.keys, "steps" to steps.live.keys, "bible_cards" to cards.live.keys, "bible_links" to links.live.keys)
     return local.copy(
         notes = notes.rows(), tasks = tasks.rows(), lobes = lobes.rows(), branches = branches.rows(), ideas = ideas.rows(), plans = plans.rows(),
-        goals = goals.rows(), steps = steps.rows(),
+        goals = goals.rows(), steps = steps.rows(), bibleCards = cards.rows(), bibleLinks = links.rows(),
         // A live row's tombstone goes away (revive); the rest are kept forever so a long-offline device can't bring rows back.
         tombstones = tombs.filterKeys { (t, u) -> u !in live.getValue(t) }.map { (k, at) -> SyncTomb(k.first, k.second, at) }.sortedWith(compareBy({ it.tbl }, { it.uid })),
     )
 }
 
+/**
+ * [sent] after pushing [pushed]: per row, our versions the peer may still show back. Its copy of one we have typed past since is
+ * our own older text, not a conflict. A peer's stamp per row only rises, so versions at or below the one it last showed are dropped.
+ * shortcut: keeps the last 20 per row (no peer ever answering would grow it forever); an echo older than that makes one needless copy.
+ */
+fun sentAfter(sent: Map<String, List<Long>>, seen: Map<String, Long>, pushed: Snapshot): Map<String, List<Long>> =
+    (pushed.notes.map { "notes:${it.uid}" to it.syncAt } + pushed.ideas.map { "ideas:${it.uid}" to it.syncAt } + pushed.plans.map { "plans:${it.uid}" to it.syncAt } +
+        pushed.bibleCards.map { "bible_cards:${it.uid}" to it.syncAt })
+        .mapNotNull { (k, at) -> (sent[k].orEmpty() + at).distinct().filter { it > (seen[k] ?: Long.MIN_VALUE) }.takeLast(20).takeIf { it.isNotEmpty() }?.let { k to it } }
+        .toMap()
+
 /** [seen] after merging [remote]: remembers the peer's versions, never our own, so an unsent local edit still counts as changed. */
 fun seenAfter(seen: Map<String, Long>, remote: Snapshot): Map<String, Long> =
-    seen + remote.notes.map { "notes:${it.uid}" to it.syncAt } + remote.ideas.map { "ideas:${it.uid}" to it.syncAt } + remote.plans.map { "plans:${it.uid}" to it.syncAt }
+    seen + remote.notes.map { "notes:${it.uid}" to it.syncAt } + remote.ideas.map { "ideas:${it.uid}" to it.syncAt } + remote.plans.map { "plans:${it.uid}" to it.syncAt } +
+        remote.bibleCards.map { "bible_cards:${it.uid}" to it.syncAt }
