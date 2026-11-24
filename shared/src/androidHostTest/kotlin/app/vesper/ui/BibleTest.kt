@@ -101,6 +101,8 @@ class BibleTest {
         assertTrue(canDrag(BibleMode.Move, isaac))
         assertFalse("a locked card stays", canDrag(BibleMode.Move, isaac.copy(locked = true)))
         assertFalse(canDrag(BibleMode.Link, isaac)); assertFalse(canDrag(BibleMode.Lock, isaac))
+        // 2.8.1: a drag that starts on a locked card holds still: no card move and no pan that carries it along
+        assertTrue(dragHeld(isaac.copy(locked = true))); assertFalse(dragHeld(isaac)); assertFalse(dragHeld(null))
     }
 
     @Test fun cameraStartsOnTheCards() {
@@ -112,7 +114,7 @@ class BibleTest {
     @Test fun tapsOnTheBibleBrain() {
         val l = buildLayout(emptyList())
         val u = 2.28f * 2.75f * 0.6f; val dp = 2.75f
-        fun tap(w: Offset, double: Boolean = false, bible: Boolean = true) = l.mapHit(w, u, nodeScale(0.6f), dp, double, true, bible).first
+        fun tap(w: Offset, bible: Boolean = true) = l.mapHit(w, u, nodeScale(0.6f), dp, true, bible).first
         assertEquals(MapHit.Bible, tap(BIBLE_AT))
         assertEquals(MapHit.Bible, tap(BIBLE_AT + Offset(-4f, 3f)))
         assertEquals(MapHit.Daily, tap(DAILY_AT))

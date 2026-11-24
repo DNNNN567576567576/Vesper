@@ -25,11 +25,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -45,6 +53,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.defaultMinSize
@@ -90,7 +99,7 @@ private val ListGap = VisualTransformation { text ->
     TransformedText(out, OffsetMapping.Identity)
 }
 
-/** The title line of a page: PageFont 26sp, one line, Next moves on. Shared by the scroll editor and the Brain item page. */
+/** The title line of a page: PageFont 26sp, one line, Next moves on. */
 @Composable
 internal fun PageTitleField(value: String, onChange: (String) -> Unit, enabled: Boolean, modifier: Modifier = Modifier, onNext: () -> Unit) {
     BasicTextField(
@@ -146,8 +155,8 @@ internal fun PageBodyField(value: String, onChange: (String) -> Unit, enabled: B
 }
 
 /**
- * One Brain item on a full page, laid out like a scroll page (same wall, header, title, divider and body) with an
- * optional link line under the body and a burn word top right. Saves like a scroll does: 500 ms after typing stops, when
+ * One Brain item on a full page (wall, header, title, divider and body) with an
+ * optional link line under the body and a burn word top right. Saves 500 ms after typing stops, when
  * the app stops, when the page leaves composition (desktop) and on back.
  */
 @Composable
@@ -156,6 +165,8 @@ fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit, onMove: (() -> 
     val titleFocus = remember { FocusRequester() }
     val closeNow by rememberUpdatedState(onClose)
     var burning by remember { mutableStateOf(false) }
+    var ash by remember { mutableFloatStateOf(-1f) } // 0..1 while the burned page crumbles away (350 ms), then it goes
+    val scope = rememberCoroutineScope()
 
     fun leave() {
         vm.flush()
@@ -174,7 +185,8 @@ fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit, onMove: (() -> 
     // A brand-new item starts with the cursor in the title and the keyboard up.
     LaunchedEffect(Unit) { if (!vm.exists) titleFocus.requestFocus() }
 
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+    Box(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().graphicsLayer { if (ash >= 0f) alpha = (1f - ash * 1.6f).coerceIn(0f, 1f) }) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(58.dp), verticalAlignment = Alignment.CenterVertically) {
             SigilFab("Back", ::leave, back = true)
             Spacer(Modifier.weight(1f))
@@ -206,13 +218,21 @@ fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit, onMove: (() -> 
             }
         }
     }
+    if (ash >= 0f) Canvas(Modifier.fillMaxSize()) { // the page crumbles: ash pixels fall off it and fade
+        val px = 3.dp.toPx()
+        ashFall(Offset(size.width / 2f, size.height * 0.4f), size.width * 0.8f, size.height * 0.5f, ash, px, 48)
+    }
+    }
 
     if (burning) {
         TornNoteDialog(
             title = "Burn \"${vm.title.trim().ifEmpty { "Untitled" }}\"?",
             body = "No undo.",
             onKeep = { burning = false },
-            onBurn = { burning = false; vm.delete(); focusManager.clearFocus(); closeNow() },
+            onBurn = {
+                burning = false; focusManager.clearFocus(); vm.delete()
+                scope.launch { Animatable(0f).animateTo(1f, tween(350, easing = LinearEasing)) { ash = value }; closeNow() }
+            },
         )
     }
 }

@@ -779,13 +779,13 @@ class SyncRoundTest {
     }
 
     /** What a version 2 or 3 build does with our file: its validate() stops at the number before merging or pushing anything. */
-    @Test fun aVersion4FileCarriesItsNumberForOlderBuilds() = test {
+    @Test fun aVersion5FileCarriesItsNumberForOlderBuilds() = test {
         val (a, _) = pair()
         a.seedLearn()
         a.sync()
         val file = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), a.ownFile())
-        assertEquals(4, file.v)
-        assertTrue(file.v > 3) // a v3 build's validate() throws "newer Vesper" on exactly this, before it merges or uploads
+        assertEquals(5, file.v)
+        assertTrue(file.v > 4) // a v4 build's validate() throws "newer Vesper" on exactly this, before it merges or uploads
     }
 
     private fun java.util.Random.asKotlin() = kotlin.random.Random(nextLong())
@@ -876,6 +876,50 @@ class SyncRoundTest {
         val want = mapOf("pills" to true, "workout" to false, "read" to false, "stretch" to false)
         assertEquals(want, a.daily()); assertEquals(want, b.daily())
         assertEquals("no conflict copies", 4, a.db.syncDao().ideas().size)
+    }
+
+    // ---- 2.8.0 the daily log: each day's final state per item, kept through the midnight reset and synced as one row per item and day ----
+
+    private suspend fun Device.light(title: String, done: Boolean = true, day: java.time.LocalDate = today) =
+        app.vesper.tickDaily(db, db.syncDao().ideas().single { it.title == title }, done, day)
+    private suspend fun Device.log() = db.syncDao().dailyLog().sortedBy { it.uid }.map { "${it.uid}=${it.done}" }
+
+    @Test fun aTickUpsertsTodaysRowAndTheResetKeepsTheLog() = test {
+        val (a, _) = pair()
+        a.seedDaily()
+        a.light("pills"); a.light("pills", false); a.light("pills"); a.light("workout")
+        assertEquals(listOf("d-pills@2026-11-24=true", "d-workout@2026-11-24=true"), a.log())
+        assertEquals("the day's final state, one row each", 2, a.db.syncDao().dailyLog().size)
+        a.light("workout", false)
+        assertEquals(listOf("d-pills@2026-11-24=true", "d-workout@2026-11-24=false"), a.log())
+        val stamps = a.db.syncDao().dailyLog().map { it.syncAt }
+        a.light("pills") // already lit: nothing written
+        assertEquals(stamps, a.db.syncDao().dailyLog().map { it.syncAt })
+
+        val tomorrow = today.plusDays(1)
+        tick()
+        assertEquals(1, app.vesper.resetDaily(a.db, MemSettings(), tomorrow, System.currentTimeMillis().also { tick() }))
+        assertEquals(false, a.daily()["pills"])
+        assertEquals("the reset leaves the log alone", stamps, a.db.syncDao().dailyLog().map { it.syncAt })
+        assertEquals(listOf("d-pills"), app.vesper.dailyDoneOn(a.db, today))
+        assertEquals(emptyList<String>(), app.vesper.dailyDoneOn(a.db, tomorrow))
+        a.light("read", day = tomorrow)
+        assertEquals(listOf("d-read"), app.vesper.dailyDoneOn(a.db, tomorrow))
+        a.db.brainDao().deleteIdea(a.db.syncDao().ideas().single { it.title == "pills" }.id)
+        assertEquals("a deleted item's days stay", listOf("d-pills"), app.vesper.dailyDoneOn(a.db, today))
+    }
+
+    @Test fun bothDevicesLightTheSameCandleTheSameDayGiveOneRow() = test {
+        val (a, b) = pair()
+        a.seedDaily()
+        converge(a, b)
+        a.light("pills"); tick(); b.light("pills"); tick(); b.light("stretch"); tick(); a.light("stretch", false)
+        converge(a, b)
+        assertEquals(a.log(), b.log())
+        assertEquals(listOf("d-pills@2026-11-24=true", "d-stretch@2026-11-24=false"), a.log()) // stretch: A's later snuff wins
+        assertEquals("no copies", 4, a.db.syncDao().ideas().size)
+        assertEquals(listOf("d-pills"), app.vesper.dailyDoneOn(b.db, today))
+        assertEquals(a.state(), b.state())
     }
 
     // ---- 2.7.9 the Bible canvas between two devices ----
@@ -987,6 +1031,19 @@ class SyncRoundTest {
         assertTrue(e.message!!, e.message!!.contains("older Vesper"))
         assertEquals("Work", a.db.syncDao().lobes().single().name)
         assertEquals(3, a.cards().size); assertEquals(2, a.links().size)
-        assertTrue(a.ownFile().contains("\"v\":4") && a.ownFile().contains("The ark")) // pushed anyway
+        assertTrue(a.ownFile().contains("\"v\":5") && a.ownFile().contains("The ark")) // pushed anyway
+    }
+
+    /** 2.8.0: a 2.7.9 (v4) file still merges whole and keeps our daily log; its device hears to update. */
+    @Test fun aVersion4DevicesFileMergesAndKeepsTheLog() = test {
+        val (a, _) = pair()
+        a.seedDaily()
+        a.light("pills")
+        upload("old-device", Snapshot(v = 4, deviceId = "old-device", lobes = listOf(SyncLobe("L2", 5, "Work", 1, 1))))
+        val e = assertThrows(SyncException::class.java) { runBlocking { a.sync() } }
+        assertTrue(e.message!!, e.message!!.contains("older Vesper"))
+        assertEquals(setOf("Daily", "Work"), a.db.syncDao().lobes().map { it.name }.toSet())
+        assertEquals(listOf("d-pills@2026-11-24=true"), a.log())
+        assertTrue(a.ownFile().contains("\"v\":5") && a.ownFile().contains("d-pills@2026-11-24")) // pushed anyway
     }
 }

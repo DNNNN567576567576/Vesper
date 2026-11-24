@@ -9,12 +9,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -55,7 +59,7 @@ import java.time.ZoneId
 import java.time.format.TextStyle as DateTextStyle
 import java.util.Locale
 
-/** Everything the Moons alarms section needs; null on platforms that cannot ring alarms, which hides the section. */
+/** Everything the Alarms tab needs; the tab only exists on platforms that can ring alarms. */
 class AlarmUi(
     val alarms: List<Alarm>,
     val history: List<Alarm>,
@@ -80,9 +84,9 @@ private fun dayText(day: LocalDate, today: LocalDate): String = when (day) {
         day.month.getDisplayName(DateTextStyle.SHORT, Locale.ENGLISH)
 }
 
-/** The alarms card under the Moons calendar: once, repeating, history and the add button. */
+/** The Alarms tab: a header, then the alarms once, repeating, history and the add button. */
 @Composable
-internal fun AlarmsCard(ui: AlarmUi) {
+fun AlarmsScreen(ui: AlarmUi) {
     val today = LocalDate.now(alarmZone)
     // id 0 = a new alarm; null = closed.
     var editing by remember { mutableStateOf<Alarm?>(null) }
@@ -91,74 +95,76 @@ internal fun AlarmsCard(ui: AlarmUi) {
         .sortedWith(compareBy({ it.oneTimeDate ?: Long.MAX_VALUE }, { it.hour }, { it.minute }))
     val repeating = ui.alarms.filter { it.repeatDays and AlarmLogic.WEEK != 0 }
 
-    val shape = RoundedCornerShape(12.dp)
-    Column(
-        Modifier
-            .padding(horizontal = 12.dp)
-            .fillMaxWidth()
-            .clip(shape)
-            .background(MoonsSheetBg)
-            .border(2.dp, MoonsSheetLine, shape)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Alarms", Modifier.weight(1f), style = TextStyle(fontFamily = TitleFont, fontSize = 32.sp, color = Px.Lavender))
+    Box(Modifier.fillMaxSize().background(Px.Bg), contentAlignment = Alignment.TopCenter) {
+    Column(Modifier.fillMaxSize().widthIn(max = 560.dp)) {
+        Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 16.dp, top = 20.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Alarms",
+                    style = TextStyle(fontFamily = TitleFont, fontSize = 40.sp, color = Px.Lavender, shadow = Shadow(Color(0xFF441F6E), Offset(3f, 3f), 0f)),
+                )
+                Text(
+                    when (val n = ui.alarms.size) { 0 -> "none set"; 1 -> "1 set"; else -> "$n set" },
+                    style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, color = MoonsDim),
+                )
+            }
             PixelButton("+ ALARM", { editing = Alarm(hour = 7, minute = 0) })
         }
-        ui.problem?.let { p ->
-            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    when (p) {
-                        AlarmProblem.Exact -> "alarms need the exact alarm permission."
-                        AlarmProblem.Notifications -> "alarms need notifications turned on."
-                        AlarmProblem.FullScreen -> "alarms need full-screen notifications to show over the lock screen."
-                    },
-                    Modifier.weight(1f),
-                    style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, lineHeight = 19.sp, color = Px.Lavender),
-                )
-                MenuRowInline("allow", MoonsInk, ui.onFix)
-            }
-        }
-        if (once.isEmpty() && repeating.isEmpty()) {
-            Text(
-                "no alarms.",
-                Modifier.padding(vertical = 8.dp),
-                style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = DIM_TEXT),
-            )
-        }
-        if (once.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            SheetLabel("ONCE")
-            for (a in once) {
-                val date = LocalDate.ofEpochDay(a.oneTimeDate ?: AlarmLogic.defaultDate(a.hour, a.minute, System.currentTimeMillis(), alarmZone))
-                AlarmRow(a, dayText(date, today), null) { editing = a }
-            }
-        }
-        if (repeating.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            SheetLabel("REPEATING")
-            for (a in repeating) {
-                AlarmRow(a, AlarmLogic.daysLabel(a.repeatDays), { ui.onEnabled(a, it) }) { editing = a }
-            }
-        }
-        if (ui.history.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { SheetLabel("HISTORY") }
-                MenuRowInline("clear", MoonsDim) { clearing = true }
-            }
-            for (a in ui.history.take(HISTORY_SHOWN)) {
-                val rang = a.firedAt?.let { LocalDate.ofInstant(Instant.ofEpochMilli(it), alarmZone) }
-                Row(Modifier.fillMaxWidth().alpha(0.5f).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(AlarmLogic.timeLabel(a.hour, a.minute), style = TextStyle(fontFamily = PageFont, fontSize = 26.sp, color = MoonsInk))
-                    Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ui.problem?.let { p ->
+                Row(
+                    Modifier.fillMaxWidth().pixelCard(fill = Px.Surface, border = Px.Violet, shadow = false).padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
-                        listOf(a.label, rang?.let { dayText(it, today) }.orEmpty()).filter { it.isNotEmpty() }.joinToString(" - "),
-                        style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, color = MoonsDim),
+                        when (p) {
+                            AlarmProblem.Exact -> "alarms need the exact alarm permission."
+                            AlarmProblem.Notifications -> "alarms need notifications turned on."
+                            AlarmProblem.FullScreen -> "alarms need full-screen notifications to show over the lock screen."
+                        },
+                        Modifier.weight(1f).padding(vertical = 8.dp),
+                        style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, lineHeight = 19.sp, color = Px.Lavender),
                     )
+                    MenuRowInline("allow", MoonsInk, ui.onFix)
                 }
             }
+            if (once.isEmpty() && repeating.isEmpty()) {
+                Text("no alarms. add one with + ALARM.", Modifier.padding(vertical = 16.dp, horizontal = 10.dp), style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = DIM_TEXT))
+            }
+            if (once.isNotEmpty()) {
+                SheetLabel("ONCE")
+                for (a in once) {
+                    val date = LocalDate.ofEpochDay(a.oneTimeDate ?: AlarmLogic.defaultDate(a.hour, a.minute, System.currentTimeMillis(), alarmZone))
+                    AlarmRow(a, dayText(date, today), null) { editing = a }
+                }
+            }
+            if (repeating.isNotEmpty()) {
+                SheetLabel("REPEATING")
+                for (a in repeating) {
+                    AlarmRow(a, AlarmLogic.daysLabel(a.repeatDays), { ui.onEnabled(a, it) }) { editing = a }
+                }
+            }
+            if (ui.history.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { SheetLabel("HISTORY") }
+                    MenuRowInline("clear", MoonsDim) { clearing = true }
+                }
+                for (a in ui.history.take(HISTORY_SHOWN)) {
+                    val rang = a.firedAt?.let { LocalDate.ofInstant(Instant.ofEpochMilli(it), alarmZone) }
+                    Row(Modifier.fillMaxWidth().alpha(0.5f).padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(AlarmLogic.timeLabel(a.hour, a.minute), style = TextStyle(fontFamily = PageFont, fontSize = 26.sp, color = MoonsInk))
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            listOf(a.label, rang?.let { dayText(it, today) }.orEmpty()).filter { it.isNotEmpty() }.joinToString(" - "),
+                            style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, color = MoonsDim),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
         }
+    }
     }
 
     editing?.let { a ->
@@ -178,18 +184,36 @@ internal fun AlarmsCard(ui: AlarmUi) {
     }
 }
 
+/** One alarm as a panel: the time big on the left, its label and days under it, the switch on the right (repeating alarms only). */
 @Composable
 private fun AlarmRow(a: Alarm, sub: String, onSwitch: ((Boolean) -> Unit)?, onClick: () -> Unit) {
     val off = onSwitch != null && !a.enabled
+    val mask = a.repeatDays and AlarmLogic.WEEK
     Row(
-        Modifier.fillMaxWidth().alpha(if (off) 0.5f else 1f).clickable(role = Role.Button, onClick = onClick).padding(vertical = 6.dp),
+        Modifier
+            .fillMaxWidth()
+            .alpha(if (off) 0.5f else 1f)
+            .pixelCard(fill = Px.Surface, border = if (off) Px.Border else MoonsMenuLine, shadow = false)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(AlarmLogic.timeLabel(a.hour, a.minute), style = TextStyle(fontFamily = PageFont, fontSize = 40.sp, color = MoonsInk))
-        Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
+            Text(AlarmLogic.timeLabel(a.hour, a.minute), style = TextStyle(fontFamily = PageFont, fontSize = 48.sp, lineHeight = 48.sp, color = if (off) MoonsDim else MoonsInk))
             if (a.label.isNotBlank()) Text(a.label, style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, lineHeight = 21.sp, color = MoonsInk))
-            Text(sub, style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, lineHeight = 18.sp, color = MoonsDim))
+            if (mask == 0) {
+                Text(sub, style = TextStyle(fontFamily = PageFont, fontSize = 18.sp, lineHeight = 19.sp, color = MoonsDim))
+            } else {
+                Row(Modifier.padding(top = 3.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    for ((i, d) in listOf("M", "T", "W", "T", "F", "S", "S").withIndex()) {
+                        val on = mask and (1 shl i) != 0
+                        Box(
+                            Modifier.size(22.dp, 22.dp).background(if (on) Px.Primary else Color.Transparent).border(1.dp, if (on) Px.Lavender else Px.Border),
+                            contentAlignment = Alignment.Center,
+                        ) { Text(d, style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, lineHeight = 17.sp, color = if (on) Px.Text else DIM_TEXT)) }
+                    }
+                }
+            }
         }
         if (onSwitch != null) PixelSwitch(a.enabled, onSwitch)
     }
@@ -197,19 +221,19 @@ private fun AlarmRow(a: Alarm, sub: String, onSwitch: ((Boolean) -> Unit)?, onCl
 
 @Composable
 private fun PixelSwitch(on: Boolean, onChange: (Boolean) -> Unit) {
-    val track = RoundedCornerShape(4.dp)
+    val track = PixelShape(3.dp)
     Box(
         Modifier
-            .size(52.dp, 28.dp)
+            .size(60.dp, 32.dp)
             .clip(track)
             .background(if (on) Px.Primary else MoonsBarBg)
             .border(2.dp, if (on) Px.Lavender else MoonsMenuLine, track)
             .semantics { role = Role.Switch; contentDescription = if (on) "on" else "off" }
             .clickable(role = Role.Switch) { onChange(!on) }
-            .padding(3.dp),
+            .padding(4.dp),
         contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart,
     ) {
-        Box(Modifier.size(18.dp).background(if (on) Px.Text else MoonsDim))
+        Box(Modifier.size(20.dp).background(if (on) Px.Text else MoonsDim))
     }
 }
 
@@ -227,6 +251,9 @@ private fun TimeColumn(value: Int, name: String, onStep: (Int) -> Unit) {
     }
 }
 
+/** Held arrow: the gap (ms) after the [n]th repeat, 120 shrinking to 35, so a long way (:00 to :33) takes about two seconds. */
+internal fun repeatDelay(n: Int): Long = (120L - 6L * n).coerceAtLeast(35L)
+
 @Composable
 private fun StepButton(grid: List<String>, desc: String, onStep: () -> Unit) {
     val step by rememberUpdatedState(onStep)
@@ -242,7 +269,7 @@ private fun StepButton(grid: List<String>, desc: String, onStep: () -> Unit) {
                 detectTapGestures(onPress = {
                     step()
                     coroutineScope {
-                        val repeat = launch { delay(400); while (true) { step(); delay(70) } }
+                        val repeat = launch { delay(400); var n = 0; while (true) { step(); delay(repeatDelay(n++)) } }
                         tryAwaitRelease()
                         repeat.cancel()
                     }

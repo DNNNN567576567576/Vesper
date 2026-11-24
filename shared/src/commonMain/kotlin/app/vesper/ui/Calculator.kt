@@ -45,6 +45,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.sin
+import kotlin.math.roundToInt
+import kotlin.math.floor
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
 
 /** What the calculator holds: the typed expression, and (after "=") its result. */
 data class CalcState(val expr: String = "", val result: String? = null)
@@ -171,9 +178,12 @@ object CalcEngine {
     }
 }
 
-private val KEY_DIGIT = Color(0xFF2A1745)
-private val KEY_OP = Px.Primary
-private val KEY_EQ = Px.Text
+// Carved keys: each has a face and a light and a dark edge (light top-left, dark bottom-right, like chiselled stone).
+private class KeyLook(val face: Color, val light: Color, val dark: Color, val ink: Color)
+
+private val STONE = KeyLook(Color(0xFF3E3358), Color(0xFF6A5C92), Color(0xFF1C1430), Px.Text)
+private val OPKEY = KeyLook(Color(0xFF2A1450), Color(0xFF51308C), Color(0xFF120828), Px.Lavender)
+private val EQKEY = KeyLook(Color(0xFFB69AFF), Color(0xFFE6DAFF), Color(0xFF6E52B4), Px.Bg)
 
 private val KEYPAD = listOf(
     listOf("C", "⌫", "%", "÷"),
@@ -196,17 +206,106 @@ private val CalcSaver = listSaver<CalcState, String>(
     restore = { CalcState(it[0], it[1].takeIf { r -> r != "\u0000" }) },
 )
 
+/** Display only: thousands commas in every whole-number part ("1280 + 4.5" -> "1,280 + 4.5"); the engine never sees them. */
+internal fun groupDigits(s: String): String {
+    val out = StringBuilder()
+    var i = 0
+    while (i < s.length) {
+        if (!s[i].isDigit()) { out.append(s[i]); i++; continue }
+        var j = i
+        while (j < s.length && s[j].isDigit()) j++
+        val run = s.substring(i, j)
+        val whole = (i == 0 || (s[i - 1] != '.' && s[i - 1] != 'e'))
+        if (whole) run.forEachIndexed { k, c -> if (k > 0 && (run.length - k) % 3 == 0) out.append(','); out.append(c) } else out.append(run)
+        i = j
+    }
+    return out.toString()
+}
+
+private const val CALC_MIN_SP = 28f
+private const val CALC_MAX_SP = 72f
+private const val CALC_EM = 0.45f // VT323 digits and commas are ~0.4em wide; a little room over
+
+/**
+ * The big line's text and font size (sp) for [text] in [widthDp]: shrink down to [CALC_MIN_SP], and if it still does not fit, write the
+ * number in scientific notation with as many digits as fit, so nothing is ever clipped. Text that is not a plain number is only shrunk.
+ */
+internal fun fitDisplay(text: String, widthDp: Float): Pair<String, Float> {
+    fun size(t: String) = widthDp / (t.length.coerceAtLeast(1) * CALC_EM)
+    if (size(text) >= CALC_MIN_SP) return text to size(text).coerceAtMost(CALC_MAX_SP)
+    val plain = text.replace(",", "")
+    val neg = plain.startsWith("−")
+    val num = plain.removePrefix("−")
+    if (num.isEmpty() || num.any { !it.isDigit() && it != '.' }) return text to CALC_MIN_SP
+    val whole = num.substringBefore('.').trimStart('0'); val frac = num.substringAfter('.', "")
+    val digits = (whole + frac).trimStart('0').trimEnd('0')
+    if (digits.isEmpty()) return "0" to CALC_MAX_SP
+    val exp = if (whole.isNotEmpty()) whole.length - 1 else -(frac.length - frac.trimStart('0').length) - 1
+    for (n in (digits.length - 1).coerceAtMost(11) downTo 0) {
+        val t = (if (neg) "−" else "") + digits.take(1) + (if (n > 0) "." + digits.drop(1).take(n) else "") + "e" + exp
+        if (size(t) >= CALC_MIN_SP || n == 0) return t to size(t).coerceIn(CALC_MIN_SP, CALC_MAX_SP)
+    }
+    return text to CALC_MIN_SP
+}
+
+private val CalcBg = Color(0xFF0A0510)
+private val AshA = Color(0xFF1B1028)
+private val AshB = Color(0xFF26163A)
+private val AshC = Color(0xFF331F4D)
+private val Ember = Color(0xFF935AD4)
+
+/**
+ * The calculator's backdrop: near-black violet, crumbling ash at the four corners (square flakes thinning out from each corner, a
+ * few embers glowing in them) and a handful of ash specks drifting slowly up and across. Pixel squares only.
+ */
+private fun DrawScope.drawAsh(t: Float) {
+    val cell = 4.dp.toPx().roundToInt().coerceAtLeast(2)
+    val cols = (size.width / cell).toInt() + 1
+    val rows = (size.height / cell).toInt() + 1
+    val reachX = (cols * 0.34f).coerceAtMost(26f)
+    val reachY = (rows * 0.17f).coerceAtMost(30f)
+    for (cy in 0 until rows) for (cx in 0 until cols) {
+        // distance from the nearest corner, as a fraction of the reach, so each corner burns away along a ragged edge
+        val ux = minOf(cx, cols - 1 - cx) / reachX
+        val uy = minOf(cy, rows - 1 - cy) / reachY
+        val d = ux + uy
+        if (d >= 1f) continue
+        val h = hf(cx, cy * 7 + 3)
+        val keep = (1f - d) * 1.25f - 0.1f
+        if (h > keep) continue
+        val deep = keep - h
+        val c = when {
+            h < 0.012f && d < 0.7f -> Ember // a few embers deep in the corner
+            deep > 0.55f -> AshC
+            deep > 0.25f -> AshB
+            else -> AshA
+        }
+        drawRect(c, Offset((cx * cell).toFloat(), (cy * cell).toFloat()), Size(cell.toFloat(), cell.toFloat()))
+    }
+    // drifting specks
+    for (k in 0 until 16) {
+        val speed = 0.012f + 0.02f * hf(k, 1)
+        val fy = (hf(k, 2) - t * speed).let { it - floor(it) }
+        val fx = (hf(k, 3) + t * 0.004f * (1 + hf(k, 4)) + 0.03f * sin(t * 0.6f + k)).let { it - floor(it) }
+        val s = if (k % 3 == 0) 3.dp.toPx() else 2.dp.toPx()
+        val a = 0.12f + 0.25f * hf(k, 5)
+        drawRect((if (k % 4 == 0) Ember else Px.Lavender).copy(alpha = a), Offset((fx * size.width).roundToInt().toFloat(), (fy * size.height).roundToInt().toFloat()), Size(s, s))
+    }
+}
+
 @Composable
 fun CalculatorScreen() {
     var state by rememberSaveable(stateSaver = CalcSaver) { mutableStateOf(CalcState()) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     val press = { k: Char -> state = CalcEngine.press(state, k) }
+    val time = rememberRotTime()
 
     Column(
         Modifier
             .fillMaxSize()
-            .background(Px.Bg)
+            .background(CalcBg)
+            .drawBehind { drawAsh(time.floatValue) }
             .focusRequester(focus)
             .focusable()
             .onPreviewKeyEvent { e ->
@@ -228,24 +327,31 @@ fun CalculatorScreen() {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Column(
-            Modifier.weight(1f).widthIn(max = 420.dp).fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.weight(1f).widthIn(max = 420.dp).fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.Bottom,
         ) {
-            Text(
-                state.expr.replace(Regex("([+−×÷])"), " $1 ").trim() + if (state.result != null) " =" else "",
-                modifier = Modifier.fillMaxWidth().height(24.dp),
-                style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = Px.Lavender.copy(alpha = 0.7f), textAlign = TextAlign.End),
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-            val big = CalcEngine.shown(state)
-            BoxWithConstraints(Modifier.fillMaxWidth().height(80.dp), contentAlignment = Alignment.CenterEnd) {
-                // VT323 glyphs are ~0.4em wide: shrink until the number fits.
-                val size = (maxWidth.value / (big.length.coerceAtLeast(1) * 0.42f)).coerceIn(28f, 72f)
-                Text(
-                    big,
-                    style = TextStyle(fontFamily = PageFont, fontSize = size.sp, color = Px.Text, textAlign = TextAlign.End),
-                    maxLines = 1, softWrap = false,
-                )
+            // the framed display: a lavender edge, a thin dark line inside it, then the black glass
+            val frame = PixelShape(4.dp)
+            Box(Modifier.fillMaxWidth().clip(frame).background(Px.Lavender).padding(2.dp)) {
+                Box(Modifier.fillMaxWidth().clip(frame).background(Px.Violet.copy(alpha = 0.55f)).padding(2.dp)) {
+                    Column(Modifier.fillMaxWidth().clip(frame).background(Color(0xFF07030B)).padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Text(
+                            groupDigits(state.expr.replace(Regex("([+−×÷])"), " $1 ").trim() + if (state.result != null) " =" else ""),
+                            modifier = Modifier.fillMaxWidth().height(26.dp),
+                            style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = Px.Lavender.copy(alpha = 0.75f), textAlign = TextAlign.End),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                        val big = groupDigits(CalcEngine.shown(state))
+                        BoxWithConstraints(Modifier.fillMaxWidth().height(76.dp), contentAlignment = Alignment.CenterEnd) {
+                            val (fitted, size) = fitDisplay(big, maxWidth.value)
+                            Text(
+                                fitted,
+                                style = TextStyle(fontFamily = PageFont, fontSize = size.sp, color = Px.Text, textAlign = TextAlign.End),
+                                maxLines = 1, softWrap = false,
+                            )
+                        }
+                    }
+                }
             }
         }
         Column(
@@ -265,12 +371,12 @@ fun CalculatorScreen() {
 private fun RowScope.CalcKey(label: String, press: (Char) -> Unit) {
     val src = remember { MutableInteractionSource() }
     val down by src.collectIsPressedAsState()
-    val eq = label == "="
-    val fill = when {
-        eq -> KEY_EQ
-        label[0].isDigit() || label == "." -> KEY_DIGIT
-        else -> KEY_OP
+    val look = when {
+        label == "=" -> EQKEY
+        label[0].isDigit() || label == "." -> STONE
+        else -> OPKEY
     }
+    val seed = label[0].code
     val shape = PixelShape(3.dp)
     Box(
         Modifier
@@ -278,13 +384,31 @@ private fun RowScope.CalcKey(label: String, press: (Char) -> Unit) {
             .height(64.dp)
             .offset(y = if (down) 2.dp else 0.dp)
             .clip(shape)
-            .background(if (down) fill.copy(alpha = 0.75f) else fill)
-            .border(2.dp, if (eq) Px.Lavender else Px.Border, shape)
+            .background(look.face)
+            .drawBehind {
+                if (down) drawRect(Color.Black.copy(alpha = 0.22f)) // a pressed key goes darker as well as 2 dp down
+                val e = 4.dp.toPx().roundToInt().toFloat()
+                val (tl, br) = if (down) look.dark to look.light else look.light to look.dark
+                drawRect(tl, Offset.Zero, Size(size.width, e)) // top edge
+                drawRect(tl, Offset.Zero, Size(e, size.height)) // left edge
+                drawRect(br, Offset(0f, size.height - e), Size(size.width, e)) // bottom edge
+                drawRect(br, Offset(size.width - e, 0f), Size(e, size.height)) // right edge
+                // the corners where light meets dark, chipped to the middle tone
+                drawRect(look.face, Offset(size.width - e, 0f), Size(e, e))
+                drawRect(look.face, Offset(0f, size.height - e), Size(e, e))
+                // stone grain: a few darker and lighter flecks, fixed per key
+                val f = 3.dp.toPx().roundToInt().toFloat()
+                for (g in 0 until 7) {
+                    val gx = e + (size.width - 2 * e - f) * hf(seed, g * 2)
+                    val gy = e + (size.height - 2 * e - f) * hf(seed, g * 2 + 1)
+                    drawRect((if (g % 2 == 0) look.dark else look.light).copy(alpha = 0.35f), Offset(gx.roundToInt().toFloat(), gy.roundToInt().toFloat()), Size(f, f))
+                }
+            }
             .clickable(interactionSource = src, indication = null, role = Role.Button) { press(label[0]) },
         contentAlignment = Alignment.Center,
     ) {
         val glyph = OP_GLYPHS[label]
-        if (glyph != null) PixelIcon(glyph, Px.Text, 3.dp)
-        else Text(label, style = TextStyle(fontFamily = PixelFont, fontSize = 18.sp, color = if (eq) Px.Bg else Px.Text))
+        if (glyph != null) PixelIcon(glyph, look.ink, 3.dp)
+        else Text(label, style = TextStyle(fontFamily = PixelFont, fontSize = 18.sp, color = look.ink))
     }
 }

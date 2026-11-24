@@ -20,7 +20,6 @@ import java.io.File
 class NotebookApp : Application(), VesperHost {
     override fun onCreate() {
         super.onCreate()
-        app.vesper.ui.initSounds(this)
         AlarmKeys.ensureChannel(this)
         appScope.launch { try { alarms.rescheduleAll(afterGap = false) } catch (e: Exception) { Log.e("Vesper", "alarm reschedule", e) } }
         // One-time safety net before the v3 -> v4 migration: runs before the lazy [db] is ever opened.

@@ -1,6 +1,10 @@
 package app.vesper.ui
 
 import androidx.compose.foundation.Canvas
+import kotlin.math.exp
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -119,50 +123,58 @@ internal fun learnWorldLayout(labels: List<Size>, w: Float, viewH: Float, moon: 
 /** A lantern's name: at most 20 letters, then "…". */
 internal fun lanternName(task: Idea): String = ideaLabel(task).trim().ifEmpty { "..." }.let { if (it.length > 20) it.take(20).trimEnd() + "…" else it }
 
-/** dp under the lanterns kept for the tasks brain (its middle sits [LANTERN_BRAIN_Y] dp above the world's bottom). */
-internal const val LANTERN_BRAIN_ZONE = 140f
-internal const val LANTERN_BRAIN_Y = 72f
-
 /**
- * The lantern sky [w] x [viewH] dp for tasks with [seeds] (from their uids, in the order they came), each lantern's box [box] dp
- * (lantern and name). The tasks brain sits low in the middle; the sky above it is cut into cells, and each lantern takes, of its own
- * seeded cells that are still free, the one farthest from the lanterns before it, at a seeded spot inside it, so they never overlap
- * and spread over the whole sky. A lantern's spot depends only on its uid and the lanterns that came before it, so a new task never
- * moves an old one (until the sky must grow). The sky grows taller (and scrolls) when the screen has too few cells.
+ * The tasks world's calm cloud for tasks with [seeds] (from their uids, in the order they came), each lantern's box [box] dp (lantern
+ * and name), round the tasks brain at (0, 0) with [brainR] dp kept clear. Each lantern tries its own seeded angle first, then golden-ratio
+ * steps round the ring, on growing rings ([CLOUD_TALL] times taller than wide, like a phone), and takes the first spot clear of the brain and of
+ * every lantern before it. A lantern's spot depends only on its uid and the ones that came before it, so a new task never moves an old one.
  */
-internal fun lanternLayout(seeds: List<Int>, w: Float, viewH: Float, box: Size): WorldLayout {
-    // the sky is cut into cells a lantern fits in with room to drift; each lantern takes a free cell and a seeded spot inside it
-    val g = BOX_GAP + 1f
-    val cols = max(1, ((w - 2f * WORLD_M) / (box.width + g)).toInt())
-    val fitRows = ((viewH - LANTERN_BRAIN_ZONE - WORLD_M) / (box.height + g)).toInt()
-    val rows = max(max(1, fitRows), (seeds.size + cols - 1) / cols)
-    val cw = (w - 2f * WORLD_M) / cols
-    val ch = max(box.height + g, (viewH - LANTERN_BRAIN_ZONE - WORLD_M) / rows)
-    val h = max(viewH, WORLD_M + rows * ch + LANTERN_BRAIN_ZONE)
-    val cells = cols * rows
-    val taken = BooleanArray(cells)
-    val centres = ArrayList<Offset>()
+internal fun lanternCloud(seeds: List<Int>, box: Size, brainR: Float): List<FloatArray> {
+    val brainBox = floatArrayOf(-brainR, -brainR, brainR, brainR)
     val boxes = ArrayList<FloatArray>()
-    fun centre(c: Int) = Offset(WORLD_M + (c % cols + 0.5f) * cw, WORLD_M + (c / cols + 0.5f) * ch)
     for (seed in seeds) {
-        val r = Rng(seed * 31 + 17)
-        // of a few seeded cells that are free, the one farthest from the lanterns before it, so they spread over the whole sky
-        var cell = -1; var bestD = -1f
-        repeat(24) {
-            val c = (r.next() * cells).toInt().coerceIn(0, cells - 1)
-            if (taken[c]) return@repeat
-            val d = centres.minOfOrNull { (it - centre(c)).getDistance() } ?: Float.MAX_VALUE
-            if (d > bestD) { cell = c; bestD = d }
+        val a0 = Rng(seed * 31 + 17).next() * TAU
+        var r = brainR + box.height / 2f + BOX_GAP
+        var placed: FloatArray? = null
+        while (placed == null) {
+            val m = max(8, (TAU * r / (box.width * 0.45f)).toInt())
+            for (q in 0 until m) {
+                val a = a0 + ((q * 0.618034f) % 1f) * TAU
+                val c = Offset(cos(a) * r, sin(a) * r * CLOUD_TALL)
+                val b = floatArrayOf(c.x - box.width / 2f, c.y - box.height / 2f, c.x + box.width / 2f, c.y + box.height / 2f)
+                if (boxesHit(b, brainBox) || boxes.any { boxesHit(b, it) }) continue
+                placed = b; break
+            }
+            r += 10f
         }
-        if (cell < 0) { val start = (r.next() * cells).toInt(); cell = (0 until cells).map { (start + it) % cells }.first { !taken[it] } }
-        taken[cell] = true
-        centres.add(centre(cell))
-        val x = WORLD_M + (cell % cols) * cw + g / 2f + r.next() * max(0f, cw - box.width - g)
-        val y = WORLD_M + (cell / cols) * ch + g / 2f + r.next() * max(0f, ch - box.height - g)
-        boxes.add(floatArrayOf(x, y, x + box.width, y + box.height))
+        boxes.add(placed)
     }
-    return WorldLayout(boxes, Offset(w / 2f, h - LANTERN_BRAIN_Y), h)
+    return boxes
 }
+
+/** The box (l, t, r, b, dp) round the brain at (0, 0) ([brainR] dp) and every one of [boxes]. */
+internal fun cloudBounds(boxes: List<FloatArray>, brainR: Float) = floatArrayOf(
+    min(-brainR, boxes.minOfOrNull { it[0] } ?: 0f), min(-brainR, boxes.minOfOrNull { it[1] } ?: 0f),
+    max(brainR, boxes.maxOfOrNull { it[2] } ?: 0f), max(brainR, boxes.maxOfOrNull { it[3] } ?: 0f),
+)
+
+/** The tasks world's zoom: its start (the whole cloud in a [w] x [h] dp view, never above 1) and its soft bounds. */
+internal fun cloudZoom(bounds: FloatArray, w: Float, h: Float): Float {
+    val fit = min(1f, min((w - 2f * WORLD_M) / (2f * max(-bounds[0], bounds[2])), (h - 2f * WORLD_M) / (2f * max(-bounds[1], bounds[3]))))
+    return fit.coerceAtLeast(CLOUD_MIN_Z)
+}
+internal const val CLOUD_MIN_Z = 0.75f
+internal const val CLOUD_TALL = 1.9f
+internal const val CLOUD_MAX_Z = 1.8f
+
+/** How far (dp, each way) the camera may pan from the brain at zoom [z] in a [w] x [h] dp view: just enough to bring the cloud's edge in. */
+internal fun cloudPan(bounds: FloatArray, w: Float, h: Float, z: Float) = Offset(
+    max(0f, max(-bounds[0], bounds[2]) - (w / 2f - WORLD_M) / z),
+    max(0f, max(-bounds[1], bounds[3]) - (h / 2f - WORLD_M) / z),
+)
+
+/** The lantern names' scale at zoom [z]: with the zoom below 1 (so they never overlap), a bit above it. */
+internal fun lanternNameScale(z: Float) = if (z <= 1f) z else 1f + 0.4f * (z - 1f)
 
 /** The index of the box under [p] (dp), or -1. */
 internal fun boxAt(boxes: List<FloatArray>, p: Offset, slack: Float = 4f) =
@@ -221,7 +233,9 @@ private fun Pix.nightSky(t: Float, seed: Int, stars: Int) {
 }
 
 /** A small brain in the world: the core sprite ([scale] of its size, low-res px) in two dotted rings and a soft glow. */
-private fun Pix.worldBrain(core: ImageBitmap, cx: Float, cy: Float, scale: Float, r: Float, t: Float, flip: Boolean, paint: androidx.compose.ui.graphics.Paint) {
+private fun Pix.worldBrain(core: ImageBitmap, cx: Float, cy: Float, scale0: Float, r: Float, t: Float, flip: Boolean, paint: androidx.compose.ui.graphics.Paint, tapAge: Float = 9f) {
+    val scale = scale0 * tapSquish(tapAge)
+    tapGlow(tapAge).let { if (it > 0f) glow(cx, cy, r * 1.3f, 0xD6C8FF, 0.55f * it) }
     glow(cx, cy, r * 1.6f, 0x7A4ACF, 0.3f + 0.15f * sin(t * 1.1f))
     glow(cx, cy, r * 1.1f, 0xB69AFF, 0.25f)
     for ((rr, dir, rgb) in listOf(Triple(r * 0.86f, 2f, 0xB69AFF), Triple(r, -1.5f, 0x8A6CF0))) {
@@ -246,6 +260,9 @@ private val WorldInk = Color(0xFFE6DCFF)
 private const val WORLD_BRAIN_SCALE = 0.42f // of the core sprite, low-res px
 private const val WORLD_BRAIN_R = 25f // low-res px: the outer dotted ring
 
+/** 8 whole screen pixels per font pixel at this [density] (rounded, at least 1): the pixel font's native grid, never smeared. */
+internal fun crispPx(density: Float): Float = 8f * Math.round(density).coerceAtLeast(1)
+
 /** The strip on top of a world: the way back to the map, its name, how many things are in it. */
 @Composable
 internal fun WorldHeader(title: String, count: String, onBack: () -> Unit, extra: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {}) {
@@ -256,17 +273,18 @@ internal fun WorldHeader(title: String, count: String, onBack: () -> Unit, extra
                 style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.Lavender),
             )
             Text(title, style = TextStyle(fontFamily = TitleFont, fontSize = 30.sp, color = Px.Lavender, shadow = Shadow(Px.Lavender.copy(alpha = 0.6f), blurRadius = 10f)))
-            if (count.isNotEmpty()) Text(count, Modifier.padding(start = 10.dp, top = 6.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim))
+            // Press Start 2P is an 8px grid: at a fractional pixel size an 8 smears into an &, so the count is sized in whole pixels
+            if (count.isNotEmpty()) Text(count, Modifier.padding(start = 10.dp, top = 6.dp), style = TextStyle(fontFamily = PixelFont, fontSize = with(LocalDensity.current) { crispPx(density).toSp() }, color = Px.TextDim))
             extra()
         }
         Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
     }
 }
 
-/** A world's scrolling canvas [h] dp tall under its header; [startAtBottom] scrolls to the bottom first (the lantern sky). */
+/** A world under its header: [content] gets the view's size (dp) and where it sits in the root. A [scroll]ing one scrolls when taller. */
 @Composable
 private fun WorldPage(
-    title: String, count: String, onBack: () -> Unit, startAtBottom: Boolean,
+    title: String, count: String, onBack: () -> Unit, scroll: Boolean,
     content: @Composable (w: Float, viewH: Float, origin: () -> Offset) -> Unit,
 ) {
     BackHandler(true, onBack)
@@ -274,31 +292,50 @@ private fun WorldPage(
         WorldHeader(title, count, onBack)
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             val w = maxWidth.value; val viewH = maxHeight.value
-            val scroll = rememberScrollState()
             var origin by remember { mutableStateOf(Offset.Zero) }
-            if (startAtBottom) LaunchedEffect(scroll.maxValue) { scroll.scrollTo(scroll.maxValue) }
-            Box(Modifier.fillMaxSize().verticalScroll(scroll).onGloballyPositioned { origin = it.positionInRoot() }) {
+            val m = if (scroll) Modifier.verticalScroll(rememberScrollState()) else Modifier
+            Box(Modifier.fillMaxSize().then(m).onGloballyPositioned { origin = it.positionInRoot() }) {
                 content(w, viewH) { origin }
             }
         }
     }
 }
 
+/** A dim hint line, measured once (not every frame). */
+@Composable
+private fun rememberHint(text: String, w: Float): TextLayoutResult {
+    val measurer = rememberTextMeasurer(cacheSize = 0)
+    val font = PixelFont
+    val density = LocalDensity.current.density
+    return remember(text, w, density) {
+        measurer.measure(text, TextStyle(fontFamily = font, fontSize = 8.sp, color = Px.TextDim, textAlign = TextAlign.Center), constraints = Constraints(maxWidth = ((w - 32f) * density).toInt().coerceAtLeast(1)))
+    }
+}
+
+/** A goal moon's gentle float (dp) at [t] seconds: at most [MOON_DRIFT] each way, its own pace by [seed]; its box keeps room for it. */
+internal fun moonDrift(t: Float, seed: Int): Offset {
+    val ph = (seed and 0xFFFF) / 65536f * TAU
+    return Offset(sin(t * 0.31f + ph) * MOON_DRIFT, cos(t * 0.43f + ph * 1.7f) * MOON_DRIFT)
+}
+internal const val MOON_DRIFT = 4f
+
 /**
- * The learn world: the learn brain in the middle with every goal a moon round it, each with its whole name. A double-tap on the brain
- * adds a goal ([onAdd]); a tap on a moon or its name ([onGoal], with where it sits, px in the root) offers rename and delete.
+ * The learn world: the learn brain in the middle with every goal a slowly floating moon round it, each with its whole name. A tap on the
+ * brain adds a goal ([onAdd]); a tap on a moon or its name ([onGoal], with where it sits, px in the root) offers rename and delete.
  */
 @Composable
 internal fun LearnWorld(goals: List<Goal>, onBack: () -> Unit, onAdd: () -> Unit, onGoal: (Goal, Offset) -> Unit) {
-    WorldPage("learn", if (goals.size == 1) "1 goal" else "${goals.size} goals", onBack, startAtBottom = false) { w, viewH, origin ->
+    WorldPage("learn", if (goals.size == 1) "1 goal" else "${goals.size} goals", onBack, scroll = true) { w, viewH, origin ->
         val density = LocalDensity.current.density
         val u = rememberRotPxSize()
         val core = imageResource(Res.drawable.brain_main)
         val pix = remember { Pix() }
+        val poke = remember { floatArrayOf(-9f) } // when the brain was last tapped (world seconds)
+        val births = remember { Births() }
         val paint = remember { pixPaint() }
         val dither = remember { makeDitherPaint(0.17f) }
         val measurer = rememberTextMeasurer(cacheSize = 0)
-        val font = PageFont; val pixelFont = PixelFont
+        val font = PageFont
         val time = rememberRotTime()
         val lowDp = u / density // dp per low-res pixel
         val moon = Size(11f * 2f * lowDp, 11f * 2f * lowDp)
@@ -307,52 +344,71 @@ internal fun LearnWorld(goals: List<Goal>, onBack: () -> Unit, onAdd: () -> Unit
                 measurer.measure(g.name, TextStyle(fontFamily = font, fontSize = 17.sp, lineHeight = 17.sp, color = WorldInk, textAlign = TextAlign.Center), constraints = Constraints(maxWidth = (GOAL_LABEL_W * density).toInt()))
             }
         }
-        val lay = remember(names, w, viewH) { learnWorldLayout(names.map { Size(it.size.width / density, it.size.height / density) }, w, viewH, moon, WORLD_BRAIN_R * lowDp + 8f, GOAL_GAP) }
+        // each box keeps [MOON_DRIFT] of room on every side, so two floating moons (and their names) never touch
+        val moonRoom = Size(moon.width + 2f * MOON_DRIFT, moon.height + 2f * MOON_DRIFT)
+        val lay = remember(names, w, viewH) { learnWorldLayout(names.map { Size(it.size.width / density + 2f * MOON_DRIFT, it.size.height / density) }, w, viewH, moonRoom, WORLD_BRAIN_R * lowDp + 8f, GOAL_GAP) }
+        val hint = rememberHint("TAP THE BRAIN TO ADD A GOAL", w)
+        val seeds = remember(goals) { goals.map { it.uid.hashCode() } }
         WorldCanvas(lay.h, Modifier.pointerInput(lay) {
-            detectTapGestures(
-                onDoubleTap = { p -> if ((p / density - lay.brain).getDistance() <= WORLD_BRAIN_R * lowDp + 16f) onAdd() },
-                onTap = { p -> boxAt(lay.boxes, p / density).takeIf { it >= 0 }?.let { i -> onGoal(goals[i], origin() + artAt(lay.boxes[i], moon) * density) } },
-            )
+            detectTapGestures { p ->
+                val q = p / density
+                if ((q - lay.brain).getDistance() <= WORLD_BRAIN_R * lowDp + 16f) { poke[0] = time.floatValue; onAdd() }
+                else boxAt(lay.boxes, q).takeIf { it >= 0 }?.let { i -> onGoal(goals[i], origin() + artAt(lay.boxes[i], moonRoom) * density) }
+            }
         }) {
             val t = time.floatValue
             pix.resize(ceil(size.width / u).toInt(), ceil(size.height / u).toInt())
             pix.nightSky(t, 41, (pix.w * pix.h / 300).coerceAtMost(240))
             val bc = lay.brain * density / u
-            pix.worldBrain(core, bc.x, bc.y, WORLD_BRAIN_SCALE, WORLD_BRAIN_R, t, true, paint)
-            lay.boxes.forEach { b ->
-                val m = artAt(b, moon) * density / u
-                pix.glow(m.x, m.y, 16f, 0x8F7BFF, 0.3f)
-                pix.goalMoon(rotRnd(m.x), rotRnd(m.y), 2, 1f)
+            pix.worldBrain(core, bc.x, bc.y, WORLD_BRAIN_SCALE, WORLD_BRAIN_R, t, true, paint, t - poke[0])
+            val drift = seeds.map { moonDrift(t, it) }
+            births.update(goals.map { it.uid }, t)
+            // a moon that was there when the world opened drifts out of the brain into place; a new one pops in from 60 %
+            fun home(i: Int) = lay.brain + (artAt(lay.boxes[i], moonRoom) - lay.brain) * births.drift(goals[i].uid, t)
+            lay.boxes.forEachIndexed { i, b ->
+                val m = (home(i) + drift[i]) * density / u
+                val k = births.pop(goals[i].uid, t)
+                pix.popped(m.x, m.y, k, appearAlpha(k) * births.drift(goals[i].uid, t)) {
+                    pix.glow(m.x, m.y, 16f, 0x8F7BFF, 0.3f)
+                    pix.goalMoon(rotRnd(m.x), rotRnd(m.y), 2, 1f)
+                }
             }
             pix.canvas.drawRect(0f, 0f, pix.w.toFloat(), pix.h.toFloat(), dither)
             drawIntoCanvas { pix.blit(it, 0, 0, u.toInt()) }
             lay.boxes.forEachIndexed { i, b ->
                 val tl = names[i]
-                drawText(tl, topLeft = Offset((b[0] + b[2]) / 2f * density - tl.size.width / 2f, (b[1] + moon.height + GOAL_GAP) * density))
+                val k = births.pop(goals[i].uid, t)
+                val c = home(i) - artAt(b, moonRoom) // how far the drift-in still has it from its box
+                val top = Offset(((b[0] + b[2]) / 2f + drift[i].x + c.x) * density - tl.size.width / 2f, (b[1] + MOON_DRIFT + moon.height + GOAL_GAP + drift[i].y + c.y) * density)
+                withTransform({ scale(k, k, Offset(top.x + tl.size.width / 2f, top.y)) }) { drawText(tl, topLeft = top, alpha = appearAlpha(k) * births.drift(goals[i].uid, t)) }
             }
-            if (goals.isEmpty()) hint(measurer, pixelFont, "DOUBLE-TAP THE BRAIN TO ADD A GOAL", lay.brain.y + WORLD_BRAIN_R * lowDp + 18f, density)
+            if (goals.isEmpty()) drawText(hint, topLeft = Offset(size.width / 2f - hint.size.width / 2f, (lay.brain.y + WORLD_BRAIN_R * lowDp + 18f) * density))
         }
     }
 }
 
 /**
- * The tasks world: a calm night sky, the tasks brain low in the middle, every task a softly drifting lantern with its name. A tap on a
- * lantern opens its card ([onOpen], with where it sits, px in the root); a double-tap on the brain starts a new task ([onAdd]).
+ * The tasks world: a calm night sky, the tasks brain in the middle and every task a softly drifting lantern round it with its name. A
+ * drag pans a little and a pinch (or the wheel) zooms a little, within soft bounds; zoomed in, the names grow a bit. A tap on a lantern
+ * opens its card ([onOpen], with where it sits, px in the root); a tap on the brain starts a new task ([onAdd]).
  */
 @Composable
 internal fun LanternWorld(tasks: List<Idea>, onBack: () -> Unit, onAdd: (Offset) -> Unit, onOpen: (Idea, Offset) -> Unit) {
-    WorldPage("tasks", if (tasks.size == 1) "1 lantern" else "${tasks.size} lanterns", onBack, startAtBottom = true) { w, viewH, origin ->
+    WorldPage("tasks", if (tasks.size == 1) "1 lantern" else "${tasks.size} lanterns", onBack, scroll = false) { w, viewH, origin ->
         val density = LocalDensity.current.density
         val u = rememberRotPxSize()
         val core = imageResource(Res.drawable.brain_main)
         val pix = remember { Pix() }
+        val poke = remember { floatArrayOf(-9f) } // when the brain was last tapped (world seconds)
+        val births = remember { Births() }
         val paint = remember { pixPaint() }
         val dither = remember { makeDitherPaint(0.17f) }
         val measurer = rememberTextMeasurer(cacheSize = 0)
-        val font = PageFont; val pixelFont = PixelFont
+        val font = PageFont
         val time = rememberRotTime()
         val lowDp = u / density
         val art = Size(LANTERN_W * lowDp, LANTERN_H * lowDp)
+        val brainR = WORLD_BRAIN_R * lowDp + 8f
         val order = remember(tasks) { tasks.sortedWith(compareBy({ it.id }, { it.uid })) } // the order they came: a new one never moves an old one
         val names = remember(order, density, font) {
             order.map { tk ->
@@ -360,32 +416,102 @@ internal fun LanternWorld(tasks: List<Idea>, onBack: () -> Unit, onAdd: (Offset)
             }
         }
         val box = Size(LANTERN_LABEL_W + 2f * LANTERN_DRIFT, art.height + LANTERN_GAP + 32f + 2f * LANTERN_DRIFT)
-        val lay = remember(order, w, viewH, box) { lanternLayout(order.map { it.uid.hashCode() }, w, viewH, box) }
-        WorldCanvas(lay.h, Modifier.pointerInput(lay, order) {
-            detectTapGestures(
-                onDoubleTap = { p -> if ((p / density - lay.brain).getDistance() <= WORLD_BRAIN_R * lowDp + 16f) onAdd(origin() + lay.brain * density) },
-                onTap = { p -> boxAt(lay.boxes, p / density).takeIf { it >= 0 }?.let { i -> onOpen(order[i], origin() + lanternAt(lay.boxes[i], art, 0f, 0) * density) } },
-            )
-        }) {
+        val boxes = remember(order, box, brainR) { lanternCloud(order.map { it.uid.hashCode() }, box, brainR) }
+        val bounds = remember(boxes, brainR) { cloudBounds(boxes, brainR) }
+        val hint = rememberHint("TAP THE BRAIN FOR A NEW TASK", w)
+        // the camera: the world point (dp, the brain at 0, 0) in the view's middle, and the zoom; plain fields, read only while drawing
+        val startZ = remember(bounds, w, viewH) { cloudZoom(bounds, w, viewH) }
+        val cam = remember(startZ) { floatArrayOf(0f, 0f, startZ) }
+        fun zoomBy(at: Offset, pan: Offset, k: Float) { // [at], [pan] in px of the view
+            val mid = Offset(w / 2f, viewH / 2f)
+            val z = cam[2]
+            val nz = (z * k).coerceIn(min(startZ, CLOUD_MIN_Z), CLOUD_MAX_Z)
+            val world = Offset(cam[0], cam[1]) + (at / density - mid) / z // the point under the fingers stays put
+            val c = world - (at / density + pan / density - mid) / nz
+            val b = cloudPan(bounds, w, viewH, nz)
+            cam[0] = c.x.coerceIn(-b.x, b.x); cam[1] = c.y.coerceIn(-b.y, b.y); cam[2] = nz
+        }
+        fun camAt() = Offset(cam[0], cam[1])
+        WorldCanvas(viewH, Modifier
+            .pointerInput(bounds, w, viewH) { detectTransformGestures { c, pan, k, _ -> zoomBy(c, pan, k) } }
+            .pointerInput(bounds, w, viewH) {
+                awaitPointerEventScope { // the mouse wheel; touch screens never send it
+                    while (true) {
+                        val e = awaitPointerEvent()
+                        if (e.type != PointerEventType.Scroll) continue
+                        val c = e.changes.first()
+                        zoomBy(c.position, Offset.Zero, exp(-c.scrollDelta.y * 0.18f))
+                        c.consume()
+                    }
+                }
+            }
+            .pointerInput(boxes, order, w, viewH) {
+                detectTapGestures { p ->
+                    val q = p / density
+                    val z = cam[2]
+                    val brain = Offset(w / 2f, viewH / 2f) - camAt() * z
+                    if ((q - brain).getDistance() <= (WORLD_BRAIN_R * lowDp + 16f) * max(1f, z)) { poke[0] = time.floatValue; onAdd(origin() + brain * density); return@detectTapGestures }
+                    val s = artScale(z); val ts = lanternNameScale(z)
+                    val hit = boxes.indices.firstOrNull { i ->
+                        val c = lanternScreen(boxes[i], art, 0f, 0, camAt(), z, w, viewH)
+                        val half = max(art.width * s, names[i].size.width / density * ts) / 2f + 4f
+                        q.x in c.x - half..c.x + half && q.y in c.y - art.height * s / 2f - 4f..c.y + art.height * s / 2f + LANTERN_GAP + names[i].size.height / density * ts + 4f
+                    }
+                    hit?.let { i -> onOpen(order[i], origin() + lanternScreen(boxes[i], art, 0f, 0, camAt(), z, w, viewH) * density) }
+                }
+            }) {
             val t = time.floatValue
+            val z = cam[2]
             pix.resize(ceil(size.width / u).toInt(), ceil(size.height / u).toInt())
             pix.nightSky(t, 73, (pix.w * pix.h / 200).coerceAtMost(400))
-            val bc = lay.brain * density / u
-            pix.worldBrain(core, bc.x, bc.y, WORLD_BRAIN_SCALE, WORLD_BRAIN_R, t, false, paint)
-            val at = lay.boxes.indices.map { i -> lanternAt(lay.boxes[i], art, t, order[i].uid.hashCode()) }
+            val brain = Offset(w / 2f, viewH / 2f) - camAt() * z
+            val bc = brain * density / u
+            pix.worldBrain(core, bc.x, bc.y, WORLD_BRAIN_SCALE, WORLD_BRAIN_R, t, false, paint, t - poke[0])
+            val s = artScale(z); val ts = lanternNameScale(z)
+            births.update(order.map { it.uid }, t)
+            // a lantern that was there when the world opened drifts out of the brain into place; a new one pops in from 60 %
+            val at = boxes.indices.map { i -> brain + (lanternScreen(boxes[i], art, t, order[i].uid.hashCode(), camAt(), z, w, viewH) - brain) * births.drift(order[i].uid, t) }
             at.forEachIndexed { i, p ->
                 val q = p * density / u
-                pix.lantern(rotRnd(q.x), rotRnd(q.y), 1, 0.5f + 0.5f * sin(t * 2.3f + (order[i].uid.hashCode() and 0xFF) * 0.1f), 1f)
+                val k = births.pop(order[i].uid, t)
+                pix.popped(q.x, q.y, k, appearAlpha(k) * births.drift(order[i].uid, t)) {
+                    pix.lantern(rotRnd(q.x), rotRnd(q.y), s, 0.5f + 0.5f * sin(t * 2.3f + (order[i].uid.hashCode() and 0xFF) * 0.1f), 1f)
+                }
             }
             pix.canvas.drawRect(0f, 0f, pix.w.toFloat(), pix.h.toFloat(), dither)
             drawIntoCanvas { pix.blit(it, 0, 0, u.toInt()) }
             at.forEachIndexed { i, p ->
                 val tl = names[i]
-                drawText(tl, topLeft = Offset(p.x * density - tl.size.width / 2f, (p.y + art.height / 2f + LANTERN_GAP) * density))
+                val k = births.pop(order[i].uid, t)
+                val top = (p.y + art.height * s / 2f + LANTERN_GAP) * density
+                val pivot = Offset(p.x * density, top)
+                withTransform({ scale(ts * k, ts * k, pivot) }) { drawText(tl, topLeft = Offset(pivot.x - tl.size.width / 2f, top), alpha = appearAlpha(k) * births.drift(order[i].uid, t)) }
             }
-            if (tasks.isEmpty()) hint(measurer, pixelFont, "DOUBLE-TAP THE BRAIN FOR A NEW TASK", lay.brain.y - WORLD_BRAIN_R * lowDp - 28f, density)
+            if (tasks.isEmpty()) drawText(hint, topLeft = Offset(size.width / 2f - hint.size.width / 2f, (brain.y - WORLD_BRAIN_R * lowDp - 28f) * density))
         }
     }
+}
+
+/** How opaque a thing is while it pops in at [k] (0.6..1): clear from 0 to full. */
+internal fun appearAlpha(k: Float) = ((k - 0.6f) * 2.5f).coerceIn(0f, 1f)
+
+/** Draws [draw] scaled by [k] about ([cx], [cy]) at [a] opacity; at rest (1, 1) it is just [draw]. */
+private inline fun Pix.popped(cx: Float, cy: Float, k: Float, a: Float, draw: () -> Unit) {
+    if (k >= 1f && a >= 1f) { draw(); return }
+    val old = ma
+    canvas.save(); canvas.translate(cx, cy); canvas.scale(k, k); canvas.translate(-cx, -cy); ma = old * a
+    draw()
+    ma = old; canvas.restore()
+}
+
+/** The lantern art's pixel scale at zoom [z]: twice as big from 1.5. */
+internal fun artScale(z: Float) = if (z >= 1.5f) 2 else 1
+
+/** A lantern's art middle on screen (dp in a [w] x [h] view) at [t]: its spot in its [box] seen by the camera at [cam], [z], plus its small drift. */
+internal fun lanternScreen(box: FloatArray, art: Size, t: Float, seed: Int, cam: Offset, z: Float, w: Float, h: Float): Offset {
+    val home = Offset((box[0] + box[2]) / 2f, box[1] + LANTERN_DRIFT + art.height / 2f)
+    val drift = lanternAt(box, art, t, seed) - home // a few dp, never scaled
+    return Offset(w / 2f, h / 2f) + (home - cam) * z + drift
 }
 
 internal const val GOAL_LABEL_W = 118f // dp: a goal's whole name wraps to this width
@@ -403,8 +529,3 @@ internal fun lanternAt(box: FloatArray, art: Size, t: Float, seed: Int): Offset 
 @Composable
 private fun WorldCanvas(h: Float, modifier: Modifier, draw: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit) =
     Canvas(Modifier.fillMaxWidth().height(h.dp).then(modifier), onDraw = draw)
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.hint(measurer: androidx.compose.ui.text.TextMeasurer, font: androidx.compose.ui.text.font.FontFamily, text: String, yDp: Float, density: Float) {
-    val tl: TextLayoutResult = measurer.measure(text, TextStyle(fontFamily = font, fontSize = 8.sp, color = Px.TextDim, textAlign = TextAlign.Center), constraints = Constraints(maxWidth = (size.width - 32f * density).toInt().coerceAtLeast(1)))
-    drawText(tl, topLeft = Offset(size.width / 2f - tl.size.width / 2f, yDp * density))
-}

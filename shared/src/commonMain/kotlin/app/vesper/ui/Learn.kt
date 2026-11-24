@@ -93,8 +93,6 @@ internal const val DAY_MS = 86_400_000L
 /** A goal's name is a short sentence, so it may be this long. */
 internal const val GOAL_NAME_MAX = 60
 
-/** The learn brain's ring radius in world units: how deep a fly-through into it zooms. */
-internal const val LEARN_R = 12f
 /** The learn brain's core sprite scale on the main map (the main brain's is 0.64). */
 internal const val LEARN_SCALE = 0.24f
 
@@ -124,14 +122,10 @@ internal val LEARN_AT = Offset(RING_X, RING_Y)
 internal val RESERVED_AT = listOf(Offset(-RING_X, -RING_Y), Offset(RING_X, -RING_Y))
 internal val DAILY_AT = RESERVED_AT[0]
 internal val BIBLE_AT = RESERVED_AT[1]
-/** The "daily" label sits above its brain (the main brain's sparks fill the room below it): its box (l, t, r, b, world) when a world unit is [k] dp. */
-internal fun dailyLabelBox(k: Float, ns: Float = 1f) = floatArrayOf(DAILY_AT.x - LEARN_LABEL_W / 2f / k, DAILY_AT.y - 15f * ns - LEARN_LABEL_H / k, DAILY_AT.x + LEARN_LABEL_W / 2f / k, DAILY_AT.y - 15f * ns)
 
 // ---------------------------------------------------------------------------------------------
 // The learn view: the learn brain with its goals circling it
 // ---------------------------------------------------------------------------------------------
-
-private val MoonInk = Color(0xFFE6DCFF)
 
 /**
  * The goal moon, drawn in code: a chunky 11x11 purple pixel disc lit from the upper left (W white, L light, M mid, D the dark side),

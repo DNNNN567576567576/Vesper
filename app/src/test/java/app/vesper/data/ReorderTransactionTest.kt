@@ -16,7 +16,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * NotesViewModel.move writes all positions in `useWriterConnection { immediateTransaction { dao calls } }` (KMP Room)
+ * The app writes in `useWriterConnection { immediateTransaction { dao calls } }` (KMP Room, e.g. writeIdea)
  * instead of Android's withTransaction. On the phone's compatibility-mode DB (no driver) the DAO calls must join that
  * transaction (no deadlock) and a failure must roll every position back.
  */

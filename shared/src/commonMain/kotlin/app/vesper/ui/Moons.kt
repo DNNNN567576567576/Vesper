@@ -33,6 +33,15 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.LaunchedEffect
@@ -75,7 +84,12 @@ import androidx.compose.ui.window.DialogProperties
 import app.vesper.data.DayFocus
 import app.vesper.data.Goal
 import app.vesper.data.Lobe
-import app.vesper.data.Plan
+import app.vesper.DayKind
+import app.vesper.DayRecord
+import app.vesper.dayRecord
+import app.vesper.data.DailyLog
+import app.vesper.data.Idea
+import kotlin.math.roundToInt
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
@@ -89,7 +103,7 @@ import kotlin.math.max
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-// The Moons tab: a month calendar where every day wears its real moon phase, with Brain focus and plans per day.
+// The Moons tab: a month calendar where every day wears its real moon phase; a tapped day shows its Daily record.
 
 private const val MoonsBase = 0x06030C
 internal val MoonsText = Color(0xFFC9BCD9)
@@ -107,24 +121,10 @@ internal val MoonsSheetLine = Color(0xFF2A1A38)
 internal val MoonsMenuBg = Color(0xFF160D1F)
 internal val MoonsMenuLine = Color(0xFF3A2450)
 internal val MoonsInk = Color(0xFFEDE4F7)
-private val MoonsDelete = Color(0xFFAA7AE0)
-private val PlanDot = Color(0xFFF0E8FA)
 
 
 private val CHEV_L = listOf("...X", "..X.", ".X..", "X...", ".X..", "..X.", "...X")
 private val CHEV_R = listOf("X...", ".X..", "..X.", "...X", "..X.", ".X..", "X...")
-private val RING = listOf(
-    "..XXXXX..", ".X.....X.", "X.......X", "X.......X", "X.......X",
-    "X.......X", "X.......X", ".X.....X.", "..XXXXX..",
-)
-private val RING_DONE: List<String> = run {
-    val g = RING.map { it.toCharArray() }
-    for ((x, y) in listOf(2 to 4, 3 to 5, 4 to 6, 5 to 5, 6 to 4, 6 to 3)) g[y][x] = 'C'
-    g.map { String(it) }
-}
-private val RingOpen = mapOf('X' to Color(0xFFB69AFF))
-private val RingShut = mapOf('X' to Color(0xFF5F5070), 'C' to Color(0xFF935AD4))
-
 private val zone: ZoneId get() = ZoneId.systemDefault()
 
 // ---------------------------------------------------------------------------------------------
@@ -141,28 +141,40 @@ private fun moonFrac(day: LocalDate): Double {
 }
 
 // Crater centres (unit-disc coords) and radii; each shows only where the moon is lit.
-private val CRATERS = floatArrayOf(0.28f, 0.28f, 0.1f, 0.5f, -0.1f, 0.09f, -0.1f, 0.58f, 0.1f)
+private val CRATERS = floatArrayOf(0.28f, 0.28f, 0.16f, 0.5f, -0.1f, 0.13f, -0.1f, 0.58f, 0.12f, -0.45f, 0.3f, 0.1f, 0.12f, -0.62f, 0.09f)
+
+private fun mixRgb(a: Int, b: Int, t: Double): Int {
+    fun ch(sh: Int) = (((a shr sh) and 255) * (1 - t) + ((b shr sh) and 255) * t).toInt()
+    return (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+}
 
 internal fun moonBitmap(day: LocalDate, n: Int, lit: Int, hi: Int, crater: Int, dark: Int = 0x1A0F26): ImageBitmap = moonPhase(moonFrac(day), n, lit, hi, crater, dark)
 
-/** The moon at [frac] of its cycle: 0 new, 0.25 half (waxing), 0.5 full. */
+/**
+ * The moon at [frac] of its cycle: 0 new, 0.25 half (waxing), 0.5 full. Crisp pixels: the lit side has a bright limb ([hi]) and
+ * crater pixels; the dark side keeps a faint rim so a new moon still reads as a disc.
+ */
 internal fun moonPhase(frac: Double, n: Int, lit: Int, hi: Int, crater: Int, dark: Int = 0x1A0F26): ImageBitmap {
     val t = cos(frac * 2 * PI)
     val px = IntArray(n * n)
     val rad = n / 2.0 - 0.5
+    val limb = (1 - 1.1 / rad).let { it * it }
+    val rim = mixRgb(dark, lit, 0.3)
     for (y in 0 until n) for (x in 0 until n) {
         val dx = (x + 0.5 - n / 2.0) / rad
         val dy = (y + 0.5 - n / 2.0) / rad
-        if (dx * dx + dy * dy > 1.05) continue
+        val d2 = dx * dx + dy * dy
+        if (d2 > 1.05) continue
         val w = sqrt(max(0.0, 1 - dy * dy))
         val isLit = if (frac < 0.5) dx > t * w else dx < -t * w
         var c = when {
-            !isLit -> dark
-            dx < -0.3 || dy < -0.3 -> hi
+            !isLit -> if (d2 > limb) rim else dark
+            d2 > limb -> hi
             else -> lit
         }
-        if (isLit) for (k in 0 until 3) {
-            if (hypot(dx - CRATERS[k * 3], dy - CRATERS[k * 3 + 1]) <= CRATERS[k * 3 + 2]) c = crater
+        // a crater is at least one pixel across, so even the 12 px moons show them
+        if (isLit && d2 <= limb) for (k in 0 until CRATERS.size / 3) {
+            if (hypot(dx - CRATERS[k * 3], dy - CRATERS[k * 3 + 1]) <= max(CRATERS[k * 3 + 2].toDouble(), 0.7 / rad)) c = crater
         }
         px[y * n + x] = 0xFF000000.toInt() or c
     }
@@ -188,21 +200,12 @@ internal fun cloudBitmap(wc: Int, hc: Int, seed: Int): ImageBitmap {
 // Screen
 // ---------------------------------------------------------------------------------------------
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MoonsScreen(
-    plans: List<Plan>?,
-    focus: List<DayFocus>?,
-    lobes: List<Lobe>?,
+    items: List<Idea>,
+    log: List<DailyLog>,
+    doneOn: suspend (LocalDate) -> List<String>,
     resetSignal: Int,
-    draft: String,
-    onDraft: (String) -> Unit,
-    onAddPlan: (Long) -> Unit,
-    onSetDone: (Plan, Boolean) -> Unit,
-    onEditPlan: (Plan, String) -> Unit,
-    onDeletePlan: (Long) -> Unit,
-    onToggleFocus: (Long, Long, Boolean) -> Unit,
-    alarmUi: AlarmUi? = null,
 ) {
     val time = rememberRotTime()
     val pxSize = rememberRotPxSize()
@@ -225,164 +228,133 @@ fun MoonsScreen(
         }
     }
 
-    val plansByDay = remember(plans) { plans.orEmpty().groupBy { it.day } }
+    // The selected day's record: the uids done that day (re-read whenever the log changes, e.g. a candle lit on the Brain tab).
+    var doneUids by remember { mutableStateOf<List<String>?>(null) }
+    LaunchedEffect(selected, log) { doneUids = try { doneOn(selDate) } catch (e: Exception) { emptyList() } }
+    val record = remember(items, doneUids, selected) { doneUids?.let { dayRecord(items, it, selDate, today) } }
+    // Days where every Daily item was done, from the recent log (the Brain tab keeps 28 days of it).
+    val doneByDay = remember(log) { log.filter { it.done }.groupBy({ it.date }, { it.itemUid }) }
 
     var picking by remember { mutableStateOf(false) }
-    var menuFor by remember { mutableStateOf<Plan?>(null) }
-    var adding by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<Plan?>(null) }
-    var deleting by remember { mutableStateOf<Plan?>(null) }
-
-    // The bottom nav bar stays under the keyboard, so only lift the screen by what the keyboard covers above it.
-    val imeBottom = WindowInsets.ime.getBottom(density)
-    val navTotal = with(density) { 74.dp.roundToPx() } + WindowInsets.navigationBars.getBottom(density)
-    val lift = with(density) { (imeBottom - navTotal).coerceAtLeast(0).toDp() }
+    // the day-record sheet fades in (200 ms) each time another day is picked
+    val sheetA = remember { Animatable(1f) }
+    LaunchedEffect(selected) { sheetA.snapTo(0.3f); sheetA.animateTo(1f, tween(200)) }
 
     val goMonth = rememberUpdatedState { delta: Int -> monthIdx += delta }
 
     Box(Modifier.fillMaxSize()) {
         MoonsBackdrop(time, pxSize, today)
-        BoxWithConstraints(Modifier.fillMaxSize().padding(bottom = lift)) {
-            Column(Modifier.fillMaxSize()) {
-                MoonsHeader(month, onPrev = { goMonth.value(-1) }, onNext = { goMonth.value(1) }, onPick = { picking = true })
-                val gridPart: @Composable () -> Unit = {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-                        for (d in listOf("M", "T", "W", "T", "F", "S", "S")) {
-                            Text(
-                                d, Modifier.weight(1f), textAlign = TextAlign.Center,
-                                style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = MoonsDim),
-                            )
-                        }
+        Column(Modifier.fillMaxSize()) {
+            MoonsHeader(month, onPrev = { goMonth.value(-1) }, onNext = { goMonth.value(1) }, onPick = { picking = true })
+            val gridPart: @Composable () -> Unit = {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                    for (d in listOf("M", "T", "W", "T", "F", "S", "S")) {
+                        Text(
+                            d, Modifier.weight(1f), textAlign = TextAlign.Center,
+                            style = TextStyle(fontFamily = PageFont, fontSize = 17.sp, color = MoonsDim),
+                        )
                     }
-                    Spacer(Modifier.height(4.dp))
-                    val gridStart = remember(monthIdx) {
+                }
+                Spacer(Modifier.height(4.dp))
+                val swipePx = with(density) { 60.dp.toPx() }
+                // the month slides in from the side it lies on (a quarter of the width, 200 ms) while the old one slides off and fades
+                AnimatedContent(
+                    targetState = monthIdx,
+                    transitionSpec = {
+                        val dir = if (targetState > initialState) 1 else -1
+                        (slideInHorizontally(tween(200)) { it * dir / 4 } + fadeIn(tween(200))) togetherWith (slideOutHorizontally(tween(200)) { -it * dir / 4 } + fadeOut(tween(120)))
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .pointerInput(Unit) {
+                            var acc = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { acc = 0f },
+                                onDragCancel = { acc = 0f },
+                                onDragEnd = {
+                                    if (acc > swipePx) goMonth.value(-1) else if (acc < -swipePx) goMonth.value(1)
+                                    acc = 0f
+                                },
+                            ) { _, dx -> acc += dx }
+                        },
+                    label = "month",
+                ) { idx ->
+                    val month = YearMonth.of(idx / 12, idx % 12 + 1)
+                    val gridStart = remember(idx) {
                         val first = month.atDay(1)
                         first.minusDays((first.dayOfWeek.value - 1).toLong())
                     }
-                    val moons = remember(gridStart) { Array(42) { dayMoon(gridStart.plusDays(it.toLong()), 11) } }
-                    val swipePx = with(density) { 60.dp.toPx() }
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp)
-                            .pointerInput(Unit) {
-                                var acc = 0f
-                                detectHorizontalDragGestures(
-                                    onDragStart = { acc = 0f },
-                                    onDragCancel = { acc = 0f },
-                                    onDragEnd = {
-                                        if (acc > swipePx) goMonth.value(-1) else if (acc < -swipePx) goMonth.value(1)
-                                        acc = 0f
-                                    },
-                                ) { _, dx -> acc += dx }
-                            },
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        for (row in 0 until 6) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                                for (col in 0 until 7) {
-                                    val i = row * 7 + col
-                                    val date = gridStart.plusDays(i.toLong())
-                                    val ed = date.toEpochDay()
-                                    DayCell(
-                                        date = date,
-                                        inMonth = date.month == month.month && date.year == month.year,
-                                        isToday = date == today,
-                                        isSelected = ed == selected,
-                                        moon = moons[i],
-                                        unfinished = plansByDay[ed]?.any { !it.done } == true,
-                                        time = time,
-                                        modifier = Modifier.weight(1f),
-                                        onDoubleClick = { selected = ed; adding = true },
-                                    ) {
-                                        selected = ed
-                                        monthIdx = date.year * 12 + date.monthValue - 1
-                                    }
+                    val moons = remember(gridStart) { Array(42) { dayMoon(gridStart.plusDays(it.toLong()), MOON_CELL_PX) } }
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    for (row in 0 until 6) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                            for (col in 0 until 7) {
+                                val i = row * 7 + col
+                                val date = gridStart.plusDays(i.toLong())
+                                val ed = date.toEpochDay()
+                                DayCell(
+                                    date = date,
+                                    inMonth = date.month == month.month && date.year == month.year,
+                                    isToday = date == today,
+                                    isSelected = ed == selected,
+                                    moon = moons[i],
+                                    allDone = dayRecord(items, doneByDay[date.toString()].orEmpty(), date, today).allDone,
+                                    time = time,
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    selected = ed
+                                    monthIdx = date.year * 12 + date.monthValue - 1
                                 }
                             }
                         }
                     }
-                }
-                val sheetPart: @Composable () -> Unit = {
-                    val sheetShape = RoundedCornerShape(12.dp)
-                    Column(
-                        Modifier
-                            .padding(horizontal = 12.dp)
-                            .fillMaxWidth()
-                            .clip(sheetShape)
-                            .background(MoonsSheetBg)
-                            .border(2.dp, MoonsSheetLine, sheetShape)
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                    ) {
-                        Text(
-                            selDate.dayOfWeek.getDisplayName(DateTextStyle.FULL, Locale.ENGLISH) + ", " + selDate.dayOfMonth,
-                            style = TextStyle(fontFamily = TitleFont, fontSize = 26.sp, color = Px.Lavender),
-                        )
-                        Text(
-                            when (selDate) {
-                                today -> "today"
-                                today.plusDays(1) -> "tomorrow"
-                                today.minusDays(1) -> "yesterday"
-                                else -> monthTitle(YearMonth.from(selDate))
-                            },
-                            style = TextStyle(fontFamily = PageFont, fontSize = 16.sp, color = MoonsDim),
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        SheetLabel("PLANS")
-                        Spacer(Modifier.height(4.dp))
-                        val dayPlans = plansByDay[selected].orEmpty()
-                        if (dayPlans.isEmpty()) {
-                            Text(
-                                "nothing planned.",
-                                modifier = Modifier.padding(vertical = 4.dp),
-                                style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = Color(0xFF5F5070)),
-                            )
-                        }
-                        for (p in dayPlans) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .combinedClickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null,
-                                        onClick = { onSetDone(p, !p.done) },
-                                        onLongClick = { menuFor = p },
-                                    )
-                                    .padding(vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                if (p.done) PixelArt(RING_DONE, RingShut, 2.dp) else PixelArt(RING, RingOpen, 2.dp)
-                                Spacer(Modifier.width(10.dp))
-                                Text(
-                                    p.text,
-                                    modifier = Modifier.weight(1f),
-                                    style = TextStyle(
-                                        fontFamily = PageFont, fontSize = 20.sp, lineHeight = 22.sp,
-                                        color = if (p.done) Color(0xFF5F5070) else MoonsInk,
-                                        textDecoration = if (p.done) TextDecoration.LineThrough else null,
-                                    ),
-                                )
-                            }
-                        }
                     }
                 }
-                if (LocalWide.current) {
-                    // Wide: calendar left, selected-day sheet right.
-                    Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                        Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) { gridPart() }
-                        Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) {
-                            sheetPart()
-                            alarmUi?.let { Spacer(Modifier.height(12.dp)); AlarmsCard(it) }
-                        }
-                    }
-                } else {
-                    Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
-                        gridPart()
-                        Spacer(Modifier.height(12.dp))
-                        sheetPart()
-                        alarmUi?.let { Spacer(Modifier.height(12.dp)); AlarmsCard(it) }
-                        Spacer(Modifier.height(16.dp))
-                    }
+            }
+            val sheetPart: @Composable () -> Unit = {
+                val sheetShape = PixelShape(4.dp)
+                Column(
+                    Modifier
+                        .graphicsLayer { alpha = sheetA.value }
+                        .padding(horizontal = 12.dp)
+                        .fillMaxWidth()
+                        .clip(sheetShape)
+                        .background(MoonsSheetBg)
+                        .border(2.dp, MoonsSheetLine, sheetShape)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                ) {
+                    Text(
+                        selDate.dayOfWeek.getDisplayName(DateTextStyle.FULL, Locale.ENGLISH) + ", " + selDate.dayOfMonth,
+                        style = TextStyle(fontFamily = TitleFont, fontSize = 26.sp, color = Px.Lavender),
+                    )
+                    Text(
+                        when (selDate) {
+                            today -> "today"
+                            today.plusDays(1) -> "tomorrow"
+                            today.minusDays(1) -> "yesterday"
+                            else -> monthTitle(YearMonth.from(selDate))
+                        },
+                        style = TextStyle(fontFamily = PageFont, fontSize = 16.sp, color = MoonsDim),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    SheetLabel("DAILY")
+                    Spacer(Modifier.height(4.dp))
+                    DailyRecordList(record)
+                }
+            }
+            if (LocalWide.current) {
+                // Wide: calendar left, selected-day sheet right.
+                Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) { gridPart() }
+                    Column(Modifier.weight(1f).widthIn(max = 520.dp).verticalScroll(rememberScrollState())) { sheetPart() }
+                }
+            } else {
+                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+                    gridPart()
+                    Spacer(Modifier.height(12.dp))
+                    sheetPart()
+                    Spacer(Modifier.height(16.dp))
                 }
             }
         }
@@ -391,89 +363,50 @@ fun MoonsScreen(
     if (picking) {
         MonthPicker(monthIdx, onDismiss = { picking = false }) { monthIdx = it; picking = false }
     }
+}
 
-    menuFor?.let { p ->
-        Dialog(onDismissRequest = { menuFor = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Column(
-                Modifier
-                    .width(220.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MoonsMenuBg)
-                    .border(2.dp, MoonsMenuLine, RoundedCornerShape(10.dp))
-                    .padding(vertical = 6.dp),
-            ) {
-                MenuRow("edit", MoonsInk) { menuFor = null; editing = p }
-                MenuRow("delete", MoonsDelete) { menuFor = null; deleting = p }
-            }
-        }
-    }
-
-    if (adding) {
-        PixelDialog({ adding = false }) {
-            Text("ADD PLAN", style = TextStyle(fontFamily = PageFont, fontSize = 24.sp, color = Px.Lavender))
-            Spacer(Modifier.height(10.dp))
-            val shape = RoundedCornerShape(10.dp)
-            BasicTextField(
-                value = draft,
-                onValueChange = onDraft,
-                textStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = MoonsInk),
-                cursorBrush = SolidColor(Px.Lavender),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 60.dp, max = 220.dp)
-                    .clip(shape)
-                    .background(Color(0xFF08040C))
-                    .border(2.dp, Color(0xFF5A3E7A), shape)
-                    .padding(12.dp),
+/** The day sheet's body: lit candles for the items done that day, unlit for the rest; a line when there is nothing to show. */
+@Composable
+private fun DailyRecordList(r: DayRecord?) {
+    val note = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = Color(0xFF5F5070))
+    when {
+        r == null -> {}
+        r.kind == DayKind.Future -> Text("a day still to come.", Modifier.padding(vertical = 4.dp), style = note)
+        r.kind == DayKind.Empty -> Text("no daily record.", Modifier.padding(vertical = 4.dp), style = note)
+        else -> {
+            Text(
+                "${r.done.size + r.gone} of ${r.done.size + r.undone.size + r.gone} lit",
+                Modifier.padding(bottom = 4.dp),
+                style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = if (r.allDone) Px.Lavender else MoonsText),
             )
-            Spacer(Modifier.height(16.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("CANCEL", { adding = false })
-                PixelButton("ADD", { if (draft.isNotBlank()) onAddPlan(selected); adding = false }, primary = true)
-            }
+            for (i in r.done) CandleRow(i.title, lit = true)
+            for (i in r.undone) CandleRow(i.title, lit = false)
+            if (r.gone > 0) Text("+ ${r.gone} since removed", Modifier.padding(top = 4.dp), style = note.copy(fontSize = 17.sp))
         }
     }
+}
 
-    editing?.let { p ->
-        var text by remember(p.id) { mutableStateOf(p.text) }
-        PixelDialog({ editing = null }) {
-            Text("EDIT PLAN", style = TextStyle(fontFamily = PageFont, fontSize = 24.sp, color = Px.Lavender))
-            Spacer(Modifier.height(10.dp))
-            val shape = RoundedCornerShape(10.dp)
-            BasicTextField(
-                value = text,
-                onValueChange = { text = it },
-                textStyle = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = MoonsInk),
-                cursorBrush = SolidColor(Px.Lavender),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 60.dp, max = 220.dp)
-                    .clip(shape)
-                    .background(Color(0xFF08040C))
-                    .border(2.dp, Color(0xFF5A3E7A), shape)
-                    .padding(12.dp),
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("CANCEL", { editing = null })
-                PixelButton("SAVE", { editing = null; onEditPlan(p, text) }, primary = true)
-            }
-        }
+@Composable
+private fun CandleRow(title: String, lit: Boolean) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        CandleGlyph(lit)
+        Spacer(Modifier.width(12.dp))
+        Text(
+            title,
+            Modifier.weight(1f),
+            style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, lineHeight = 22.sp, color = if (lit) MoonsInk else Color(0xFF5F5070)),
+        )
     }
+}
 
-    deleting?.let { p ->
-        PixelDialog(onDismiss = { deleting = null }) {
-            Text("DELETE PLAN?", style = TextStyle(fontFamily = PageFont, fontSize = 24.sp, color = Px.Lavender))
-            Spacer(Modifier.height(8.dp))
-            Text("Gone for good. No undo.", style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = Px.TextDim))
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                PixelButton("KEEP", { deleting = null })
-                PixelButton("DELETE", { deleting = null; onDeletePlan(p.id) }, primary = true)
-            }
-        }
+/** The Daily candle, 2dp pixels (whole device pixels), lit or not. */
+@Composable
+private fun CandleGlyph(lit: Boolean) {
+    val density = LocalDensity.current
+    val px = with(density) { 2.dp.toPx().roundToInt().coerceAtLeast(1) }
+    val pixels = remember(lit) { candlePixels(lit, 1) }
+    Canvas(Modifier.size(with(density) { (CANDLE_W * px).toDp() }, with(density) { (CANDLE_H * px).toDp() })) {
+        for ((x, y, rgb) in pixels) drawRect(Color(0xFF000000.toInt() or rgb), Offset((x * px).toFloat(), (y * px).toFloat()), Size(px.toFloat(), px.toFloat()))
     }
 }
 
@@ -486,18 +419,9 @@ internal fun SheetLabel(text: String) {
 }
 
 @Composable
-private fun MenuRow(text: String, color: Color, onClick: () -> Unit) {
-    Text(
-        text,
-        modifier = Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(horizontal = 18.dp, vertical = 10.dp),
-        style = TextStyle(fontFamily = PageFont, fontSize = 21.sp, color = color),
-    )
-}
-
-@Composable
 private fun MoonsHeader(month: YearMonth, onPrev: () -> Unit, onNext: () -> Unit, onPick: () -> Unit) {
     // the title, then the month picker under it, so the picker stays clear of the big moon at the top right
-    Column(Modifier.fillMaxWidth().padding(start = 22.dp, end = 6.dp, top = 20.dp, bottom = 4.dp)) {
+    Column(Modifier.fillMaxWidth().padding(start = 22.dp, end = 6.dp, top = 20.dp, bottom = 10.dp)) {
         Text(
             "Moons",
             style = TextStyle(
@@ -507,34 +431,45 @@ private fun MoonsHeader(month: YearMonth, onPrev: () -> Unit, onNext: () -> Unit
                 shadow = Shadow(Color(0xFF441F6E), Offset(3f, 3f), 0f),
             ),
         )
-        Row(Modifier.offset(x = (-8).dp), verticalAlignment = Alignment.CenterVertically) {
-            ArrowButton(CHEV_L, "Previous month", onPrev, Alignment.CenterEnd)
-            Text(
-                monthTitle(month),
-                maxLines = 1,
-                softWrap = false,
-                modifier = Modifier
+        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ArrowButton(CHEV_L, "Previous month", onPrev)
+            val shape = PixelShape(3.dp)
+            Box(
+                Modifier
+                    .height(40.dp)
+                    .clip(shape)
+                    .background(MoonsBarBg)
+                    .border(2.dp, MoonsMenuLine, shape)
                     .clickable(role = Role.Button, onClick = onPick)
                     .semantics { contentDescription = "Pick month" }
-                    .padding(vertical = 12.dp),
-                style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = MoonsMonth),
-            )
-            ArrowButton(CHEV_R, "Next month", onNext, Alignment.CenterStart)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    monthTitle(month),
+                    maxLines = 1,
+                    softWrap = false,
+                    style = TextStyle(fontFamily = PageFont, fontSize = 24.sp, color = Px.Text),
+                )
+            }
+            ArrowButton(CHEV_R, "Next month", onNext)
         }
     }
 }
 
+/** A carved square button with a pixel chevron or arrow in it. */
 @Composable
-private fun ArrowButton(
-    grid: List<String>, description: String, onClick: () -> Unit,
-    align: Alignment = Alignment.Center, pixel: Dp = 2.dp,
-) {
+private fun ArrowButton(grid: List<String>, description: String, onClick: () -> Unit, pixel: Dp = 3.dp) {
+    val shape = PixelShape(3.dp)
     Box(
         Modifier
-            .size(44.dp)
+            .size(40.dp)
+            .clip(shape)
+            .background(MoonsBarBg)
+            .border(2.dp, MoonsMenuLine, shape)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics { contentDescription = description },
-        contentAlignment = align,
+        contentAlignment = Alignment.Center,
     ) {
         PixelIcon(grid, MoonsArrow, pixel = pixel)
     }
@@ -543,8 +478,15 @@ private fun ArrowButton(
 private val SPARK_X = floatArrayOf(0.14f, 0.84f, 0.08f, 0.92f, 0.8f)
 private val SPARK_Y = floatArrayOf(0.2f, 0.12f, 0.55f, 0.5f, 0.82f)
 private val SPARK_PERIOD = floatArrayOf(1.2f, 0.8f, 1.6f, 1.0f, 1.4f)
+private val Spark = Color(0xFFF0E8FA)
+private val TodayBg = Color(0xFF24123A)
 
-@OptIn(ExperimentalFoundationApi::class)
+/** The day-cell moons are this many pixels across, shown at a whole number of device pixels per moon pixel. */
+private const val MOON_CELL_PX = 12
+
+/** Today's corner mark: a lit diamond, 3 x 3 pixels. */
+private val TODAY_MARK = listOf(".X.", "XXX", ".X.")
+
 @Composable
 private fun DayCell(
     date: LocalDate,
@@ -552,50 +494,55 @@ private fun DayCell(
     isToday: Boolean,
     isSelected: Boolean,
     moon: ImageBitmap,
-    unfinished: Boolean,
+    allDone: Boolean,
     time: FloatState,
     modifier: Modifier,
-    onDoubleClick: () -> Unit,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(8.dp)
-    Column(
+    val shape = PixelShape(3.dp)
+    val density = LocalDensity.current
+    val scale = with(density) { (24.dp.toPx() / MOON_CELL_PX).toInt().coerceAtLeast(1) }
+    val moonDp = with(density) { (scale * MOON_CELL_PX).toDp() }
+    val pick = remember { Animatable(0f) } // a glow that fades off the day just picked (350 ms)
+    LaunchedEffect(isSelected) { if (isSelected) { pick.snapTo(1f); pick.animateTo(0f, tween(350)) } }
+    Box(
         modifier
-            .height(52.dp)
+            .height(56.dp)
             .clip(shape)
-            .background(if (isSelected) MoonsSelBg else Color.Transparent)
-            // today keeps a lavender frame even when selected; sparkles still mark the selection
-            .then(if (isToday) Modifier.border(2.dp, Px.Lavender.copy(alpha = 0.45f), shape) else if (isSelected) Modifier.border(2.dp, MoonsSelLine, shape) else Modifier)
+            .background(if (isToday) TodayBg else if (isSelected) MoonsSelBg else Color.Transparent)
+            // today keeps a solid lavender frame even when selected; sparkles mark the selection
+            .then(if (isToday) Modifier.border(2.dp, Px.Lavender, shape) else if (isSelected) Modifier.border(2.dp, MoonsSelLine, shape) else Modifier)
             .then(
                 if (!isSelected) Modifier else Modifier.drawWithContent {
                     drawContent()
+                    if (pick.value > 0f) drawRect(Color(0xFFD6C8FF).copy(alpha = 0.4f * pick.value))
                     val t = time.floatValue
                     for (k in 0 until 5) {
                         val a = 0.15f + 0.85f * max(0f, sin(t * 6.2832f / SPARK_PERIOD[k] + k * 1.7f))
                         val d = (if (k % 2 == 0) 3.dp else 2.dp).toPx()
-                        drawRect(PlanDot.copy(alpha = a), Offset(SPARK_X[k] * size.width, SPARK_Y[k] * size.height), Size(d, d))
+                        drawRect(Spark.copy(alpha = a), Offset(SPARK_X[k] * size.width, SPARK_Y[k] * size.height), Size(d, d))
                     }
                 },
             )
-            .tapOrDoubleTap(role = Role.Button, onDoubleTap = onDoubleClick, onTap = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+            .clickable(role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Text(
-            date.dayOfMonth.toString(),
-            style = TextStyle(
-                fontFamily = PageFont, fontSize = 17.sp, lineHeight = 16.sp,
-                color = if (isToday) MoonsToday else if (inMonth) MoonsText else MoonsOutside,
-            ),
-        )
-        Image(
-            moon, null,
-            Modifier.padding(top = 1.dp).size(20.dp).alpha(if (inMonth) 1f else 0.45f),
-            filterQuality = FilterQuality.None,
-        )
-        Canvas(Modifier.padding(top = 2.dp).size(width = 44.dp, height = 4.dp)) {
-            val d = 4.dp.toPx()
-            if (unfinished) drawRect(PlanDot, Offset((size.width - d) / 2f, 0f), Size(d, d))
+        if (isToday) PixelIcon(TODAY_MARK, Px.Lavender, 2.dp, Modifier.align(Alignment.TopEnd).padding(top = 3.dp, end = 3.dp))
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 3.dp)) {
+            Text(
+                date.dayOfMonth.toString(),
+                style = TextStyle(
+                    fontFamily = PageFont, fontSize = 17.sp, lineHeight = 16.sp,
+                    color = if (isToday) Px.Text else if (inMonth) MoonsText else MoonsOutside,
+                ),
+            )
+            Image(
+                moon, null,
+                Modifier.padding(top = 2.dp).size(moonDp).alpha(if (inMonth) 1f else 0.45f),
+                filterQuality = FilterQuality.None,
+            )
+            // every Daily item done that day: a small lit pip under the moon
+            if (allDone) Box(Modifier.padding(top = 3.dp).size(8.dp, 3.dp).background(if (inMonth) Px.Lavender else MoonsDim))
         }
     }
 }

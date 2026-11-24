@@ -65,4 +65,18 @@ class CalculatorTest {
         assertEquals("1", CalcEngine.format(0.9999999999999))
         assertEquals("1e20", CalcEngine.format(1e20))
     }
+
+    /** 2.8.1: a long number shrinks to the minimum size, then turns scientific, and never needs more room than there is. */
+    @Test fun displayFitsOrGoesScientific() {
+        assertEquals("123" to 72f, fitDisplay("123", 300f))
+        val (same, sp) = fitDisplay("12345678901234567890", 300f)
+        assertEquals("12345678901234567890", same); assertEquals(true, sp in 28f..40f)
+        assertEquals("1.23456789012e29", fitDisplay("123,456,789,012,345,678,901,234,567,890", 300f).first)
+        assertEquals("−1.5e-12", fitDisplay("−0.0000000000015000000000000000", 200f).first)
+        for (w in listOf(120f, 200f, 300f)) for (t in listOf("9".repeat(40), "−" + "7".repeat(30) + ".5", "0." + "0".repeat(30) + "1")) {
+            val (s, size) = fitDisplay(t, w)
+            assertEquals("$t fits $w", true, s.length * 0.45f * size <= w + 0.01f)
+        }
+        assertEquals("Can't divide by 0" to 28f, fitDisplay("Can't divide by 0", 120f).let { it.first to 28f })
+    }
 }

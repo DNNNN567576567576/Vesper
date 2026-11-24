@@ -19,8 +19,8 @@ android {
         applicationId = "app.vesper"
         minSdk = 26
         targetSdk = 35
-        versionCode = 45
-        versionName = "2.7.9-alt"
+        versionCode = 49
+        versionName = "3.0"
     }
 
     signingConfigs {
@@ -73,7 +73,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
 
     implementation("androidx.room:room-runtime:2.8.5")
     implementation("androidx.room:room-ktx:2.8.5")
@@ -83,7 +82,6 @@ dependencies {
     testImplementation("androidx.room:room-testing:2.8.5")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
-    testImplementation("androidx.test.ext:junit:1.2.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }

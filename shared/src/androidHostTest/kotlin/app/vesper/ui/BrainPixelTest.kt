@@ -29,6 +29,7 @@ import app.vesper.data.Idea
 import org.junit.After
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.hypot
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -267,6 +268,28 @@ class BrainPixelTest {
         r.bible = false
         r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
         check("dailyLit", pixels(r), E["dailyLit"])
+    }
+
+    /** 2.8.1: tiny candles round the daily brain and tiny cards round the bible brain; they draw, stay purple and white, and only while their brain is on. */
+    @Test fun dailyAndBibleFlowers() {
+        val r = newRenderer(); r.resize(180, 390)
+        r.daily = 1f; r.bible = true
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        val plain = pixels(r)
+        val items = (1..8).map { Idea(id = it.toLong(), lobeId = 4, title = "i$it", body = "", uid = "d$it", done = it % 2 == 0) }
+        val cards = (1..8).map { app.vesper.data.BibleCard(name = "c$it", x = 0f, y = 0f, kind = if (it % 2 == 0) app.vesper.data.BIBLE_THING else "person", uid = "b$it") }
+        val full = buildLayout(tasks, daily = items, bible = cards)
+        r.draw(0.5f, 0f, 0f, 0.85f, full, 0f, false)
+        val with = pixels(r)
+        val changed = with.indices.filter { with[it] != plain[it] }
+        assertTrue("the flowers show (${changed.size} px)", changed.size > 200)
+        for (i in changed) assertTrue("pink pixel %06x at (%d, %d)".format(with[i] and 0xFFFFFF, i % 180, i / 180), !isPink(with[i]))
+        r.daily = -1f; r.bible = false
+        r.draw(0.5f, 0f, 0f, 0.85f, full, 0f, false)
+        r.draw(0.5f, 0f, 0f, 0.85f, layout, 0f, false)
+        val off = pixels(r)
+        r.draw(0.5f, 0f, 0f, 0.85f, full, 0f, false)
+        assertEquals("no brain, no flowers", off.contentHashCode(), pixels(r).contentHashCode())
     }
 
     @Test fun resizeAndBlit() {

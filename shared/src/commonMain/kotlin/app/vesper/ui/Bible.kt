@@ -30,6 +30,10 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -97,6 +101,9 @@ internal fun topBoxAt(boxes: List<FloatArray>, p: Offset, slack: Float = 4f) =
 
 /** Only a free card in Move mode follows a drag; anything else pans the canvas. */
 internal fun canDrag(mode: BibleMode, card: BibleCard) = mode == BibleMode.Move && !card.locked
+
+/** A one-finger drag that starts on a locked card does nothing at all: no card move, and no pan that would carry the card along. */
+internal fun dragHeld(card: BibleCard?) = card?.locked == true
 
 /** What a tap does. */
 internal sealed interface BibleTap {
@@ -219,6 +226,7 @@ internal fun BibleWorld(
     var noting by remember { mutableStateOf<BibleCard?>(null) }
     var burning by remember { mutableStateOf<BibleCard?>(null) }
     var relabeling by remember { mutableStateOf<BibleLink?>(null) }
+    var menuClear by remember { mutableStateOf(Size.Zero) } // half the long-pressed card in dp: the chip ring stays outside it
     var dragging by remember { mutableStateOf<Pair<String, Offset>?>(null) } // a card following a finger, where it is now
     var dropped by remember { mutableStateOf<Pair<String, Offset>?>(null) } // shown there until the database says so
     LaunchedEffect(cards) { dropped = null }
@@ -257,6 +265,15 @@ internal fun BibleWorld(
     val mids = links.map { l -> val a = index[l.fromUid]; val b = index[l.toUid]; if (a == null || b == null) null else (at(a) + at(b)) / 2f }
     val pills = links.indices.map { i -> mids[i]?.let { boxAround(it, Size(labels[i].size.width / density + 2f * PILL_PAD, labels[i].size.height / density + 2f * PILL_PAD)) } ?: floatArrayOf(0f, 0f, -1f, -1f) }
 
+    // animations: stamped when cards or links change, then a frame loop runs only for the few hundred ms they last
+    val fx = remember { BibleFx() }
+    var clock by remember { mutableFloatStateOf(0f) }
+    remember(cards, links) { fx.sync(cards, boxes, names, links) }
+    LaunchedEffect(cards, links) {
+        while (fx.now() < fx.endAt) withFrameNanos { clock = fx.now() }
+        clock = fx.now(); fx.prune(clock)
+    }
+
     fun toCanvas(p: Offset) = Offset((p.x - view.width / 2f) / (zoom * density) + camX, (p.y - view.height / 2f) / (zoom * density) + camY)
     fun toView(c: Offset) = Offset((c.x - camX) * zoom * density + view.width / 2f, (c.y - camY) * zoom * density + view.height / 2f)
     fun zoomAt(at: Offset, pan: Offset, k: Float) {
@@ -272,11 +289,11 @@ internal fun BibleWorld(
         val ci = topBoxAt(boxes, w)
         val li = if (ci >= 0) -1 else topBoxAt(pills, w, 2f)
         when (val t = bibleTap(mode, cards.getOrNull(ci)?.uid, links.getOrNull(li)?.uid, selected, linkFrom, w)) {
-            is BibleTap.Create -> { pending = t.at; Sounds.play(Sfx.Tick) }
+            is BibleTap.Create -> { pending = t.at }
             is BibleTap.Select -> selected = t.uid
             is BibleTap.Pick -> linkFrom = t.uid
             is BibleTap.Link -> { linking = t.from to t.to; linkFrom = null }
-            is BibleTap.Lock -> { cards.firstOrNull { it.uid == t.uid }?.let(onLock); Sounds.play(Sfx.Tick) }
+            is BibleTap.Lock -> { cards.firstOrNull { it.uid == t.uid }?.let(onLock) }
             is BibleTap.EditLink -> links.firstOrNull { it.uid == t.uid }?.let { linkMenu = it to p }
             null -> {}
         }
@@ -284,7 +301,7 @@ internal fun BibleWorld(
     fun longPress(p: Offset) {
         if (mode != BibleMode.Move) return
         val ci = topBoxAt(boxes, toCanvas(p))
-        if (ci >= 0) cardMenu = cards[ci] to toView(at(ci))
+        if (ci >= 0) { menuClear = Size(sizes[ci].width / 2f * zoom, sizes[ci].height / 2f * zoom); cardMenu = cards[ci] to toView(at(ci)) }
     }
 
     val latest by rememberUpdatedState(Triple(boxes, cards, mode))
@@ -342,13 +359,14 @@ internal fun BibleWorld(
                             val (bx, cs, m) = latest
                             val ci = if (r == 2) topBoxAt(bx, toCanvas(start)) else -1
                             val card = cs.getOrNull(ci)?.takeIf { canDrag(m, it) }
+                            val held = dragHeld(cs.getOrNull(ci))
                             var pos = card?.let { Offset(it.x, it.y) }
                             while (true) {
                                 val e = awaitPointerEvent()
                                 val pressed = e.changes.count { it.pressed }
                                 if (pressed == 0) break
                                 if (pressed > 1 || card == null) {
-                                    zoomAt(e.calculateCentroid(useCurrent = true), e.calculatePan(), e.calculateZoom())
+                                    if (pressed > 1 || !held) zoomAt(e.calculateCentroid(useCurrent = true), e.calculatePan(), e.calculateZoom())
                                 } else {
                                     pos = onCanvas(pos!! + e.calculatePan() / (zoom * density))
                                     dragging = card.uid to pos
@@ -366,31 +384,50 @@ internal fun BibleWorld(
                 val lit = selected ?: linkFrom
                 fun touches(l: BibleLink, u: String?) = u != null && (l.fromUid == u || l.toUid == u)
                 // text is laid out in px: drawn in view px, scaled only by the zoom round its middle
-                fun text(tl: TextLayoutResult, c: Offset, alpha: Float = 1f) {
+                val now = clock
+                fun text(tl: TextLayoutResult, c: Offset, alpha: Float = 1f, grow: Float = 1f) {
                     val v = toView(c)
-                    withTransform({ scale(zoom, zoom, v) }) { drawText(tl, topLeft = Offset(v.x - tl.size.width / 2f, v.y - tl.size.height / 2f), alpha = alpha) }
+                    val zk = zoom * grow
+                    withTransform({ scale(zk, zk, v) }) { drawText(tl, topLeft = Offset(v.x - tl.size.width / 2f, v.y - tl.size.height / 2f), alpha = alpha) }
                 }
                 withTransform({ translate(size.width / 2f - camX * k, size.height / 2f - camY * k); scale(k, k, Offset.Zero) }) {
                     grid(camX, camY, size.width / k, size.height / k)
                     links.forEach { l ->
                         val a = index[l.fromUid] ?: return@forEach
                         val b = index[l.toUid] ?: return@forEach
-                        pixelLine(at(a), at(b), if (touches(l, lit)) Color.White else LineInk, 1.5f)
+                        val f = fx.line(l.uid, now) // a new link draws itself from card A to card B
+                        pixelLine(at(a), at(a) + (at(b) - at(a)) * f, if (touches(l, lit)) Color.White else LineInk, 1.5f)
                     }
-                    cards.forEachIndexed { i, c -> drawCard(boxes[i], c.kind == BIBLE_THING, c.locked, c.uid == selected || c.uid == linkFrom, c.uid == linkFrom) }
+                    cards.forEachIndexed { i, c ->
+                        val pk = fx.pop(c.uid, now)
+                        if (pk >= 1f) drawCard(boxes[i], c.kind == BIBLE_THING, c.locked, c.uid == selected || c.uid == linkFrom, c.uid == linkFrom)
+                        else withTransform({ scale(pk, pk, at(i)) }) { drawCard(boxes[i], c.kind == BIBLE_THING, c.locked, c.uid == selected || c.uid == linkFrom, c.uid == linkFrom) }
+                    }
+                    for (g in fx.ghosts) { // a deleted card fades out where it was
+                        val a = 1f - (now - g.t0) / BibleFx.GHOST_S
+                        if (a <= 0f) continue
+                        drawIntoCanvas { cv ->
+                            val bounds = Rect(g.box[0] - 12f, g.box[1] - 12f, g.box[2] + 12f, g.box[3] + 12f)
+                            val layer = Paint().apply { alpha = a }
+                            cv.saveLayer(bounds, layer)
+                            drawCard(g.box, g.thing, g.locked, false, false)
+                            cv.restore()
+                        }
+                    }
                     pending?.let { p -> drawCard(boxAround(p, Size(CARD_MIN_W, 28f)), false, false, true, true) }
                 }
-                cards.indices.forEach { i -> text(names[i], at(i)) }
+                cards.indices.forEach { i -> fx.pop(cards[i].uid, now).let { pk -> text(names[i], at(i), appearAlpha(pk), pk) } }
+                for (g in fx.ghosts) text(g.name, g.at, (1f - (now - g.t0) / BibleFx.GHOST_S).coerceIn(0f, 1f))
                 // the labels over every line and card edge, in a small dark pill
                 withTransform({ translate(size.width / 2f - camX * k, size.height / 2f - camY * k); scale(k, k, Offset.Zero) }) {
                     links.forEachIndexed { i, l ->
                         val q = pills[i]
-                        if (q[2] < q[0]) return@forEachIndexed
+                        if (q[2] < q[0] || fx.line(l.uid, now) < 1f) return@forEachIndexed // the label comes once the line has arrived
                         drawRoundRect(Night, Offset(q[0], q[1]), Size(q[2] - q[0], q[3] - q[1]), CornerRadius(5f))
                         drawRoundRect(if (touches(l, lit)) Color.White else Px.Border, Offset(q[0], q[1]), Size(q[2] - q[0], q[3] - q[1]), CornerRadius(5f), style = Stroke(1f))
                     }
                 }
-                links.forEachIndexed { i, l -> mids[i]?.let { text(labels[i], it, if (lit == null || touches(l, lit)) 1f else 0.6f) } }
+                links.forEachIndexed { i, l -> mids[i]?.takeIf { fx.line(l.uid, now) >= 1f }?.let { text(labels[i], it, if (lit == null || touches(l, lit)) 1f else 0.6f) } }
                 if (cards.isEmpty() && pending == null) {
                     val tl: TextLayoutResult = measurer.measure("TAP EMPTY SPACE TO ADD A CARD", TextStyle(fontFamily = pixelFont, fontSize = 8.sp, color = Px.TextDim, textAlign = TextAlign.Center),
                         constraints = Constraints(maxWidth = (size.width - 32f * density).toInt().coerceAtLeast(1)))
@@ -426,7 +463,7 @@ internal fun BibleWorld(
                     (if (c.kind == BIBLE_THING) "Make person" else "Make thing") to { onKind(c, if (c.kind == BIBLE_THING) BIBLE_PERSON else BIBLE_THING) },
                     "Note" to { noting = c },
                     "Delete" to { burning = c },
-                ), { cardMenu = null })
+                ), { cardMenu = null }, clearW = menuClear.width.dp, clearH = menuClear.height.dp)
             }
             linkMenu?.let { (l, p) -> BrainMenu(p, listOf("Rename" to { relabeling = l }, "Delete" to { onDeleteLink(l) }), { linkMenu = null }) }
         }
@@ -515,7 +552,9 @@ private fun DrawScope.pixelLine(a: Offset, b: Offset, c: Color, px: Float) {
 internal fun DrawScope.drawCard(q: FloatArray, thing: Boolean, locked: Boolean, hot: Boolean, picked: Boolean) {
     val tl = Offset(q[0], q[1]); val sz = Size(q[2] - q[0], q[3] - q[1])
     val edge = if (locked || picked) Color.White else Lilac
-    if (hot) drawRect(Lilac.copy(alpha = 0.22f), tl - Offset(5f, 5f), Size(sz.width + 10f, sz.height + 10f))
+    if (hot) drawRect(Lilac.copy(alpha = if (picked) 0.45f else 0.22f), tl - Offset(5f, 5f), Size(sz.width + 10f, sz.height + 10f))
+    // the first card of a link: a thick bright lilac frame round the card
+    if (picked) drawRect(Color(0xFFD6C8FF), tl - Offset(5f, 5f), Size(sz.width + 10f, sz.height + 10f), style = Stroke(3f))
     val fill = if (hot) CardFillLit else CardFill
     if (thing) {
         drawRoundRect(fill, tl, sz, CornerRadius(10f))
@@ -535,4 +574,57 @@ internal fun DrawScope.drawCard(q: FloatArray, thing: Boolean, locked: Boolean, 
         drawRect(Night, Offset(x0 - u, y0 - u), Size(7f * u, 8f * u))
         LOCK_ROWS.forEachIndexed { y, row -> row.forEachIndexed { x, ch -> if (ch == 'X') drawRect(Color.White, Offset(x0 + x * u, y0 + y * u), Size(u, u)) } }
     }
+}
+
+/** A deleted card, kept for [BibleFx.GHOST_S] so it can fade out where it was. */
+private class Ghost(val box: FloatArray, val thing: Boolean, val locked: Boolean, val name: TextLayoutResult, val at: Offset, val t0: Float)
+
+/**
+ * The Bible world's little animations: a new card pops in (0.6 to 1), a deleted one fades out, a new link line draws from card A to
+ * card B. Stamps are seconds on [now]; the screen only redraws every frame while one of them is running (see the loop in [BibleWorld]).
+ */
+private class BibleFx {
+    private val t0 = System.nanoTime()
+    private val born = HashMap<String, Float>()
+    private val linkBorn = HashMap<String, Float>()
+    private val known = HashMap<String, Ghost>()
+    private val knownLinks = HashSet<String>()
+    val ghosts = ArrayList<Ghost>()
+    private var first = true
+    var endAt = 0f
+        private set
+
+    fun now() = (System.nanoTime() - t0) / 1_000_000_000f
+
+    /** Compares the cards and links now with the last time: stamps the new ones and keeps the vanished cards as ghosts. */
+    fun sync(cards: List<BibleCard>, boxes: List<FloatArray>, names: List<TextLayoutResult>, links: List<BibleLink>) {
+        val t = now()
+        val uids = HashSet<String>()
+        for (i in cards.indices) {
+            val c = cards[i]; uids.add(c.uid)
+            if (!first && c.uid !in known) { born[c.uid] = t; endAt = maxOf(endAt, t + POP_S) }
+            known[c.uid] = Ghost(boxes[i], c.kind == BIBLE_THING, c.locked, names[i], Offset(c.x, c.y), 0f)
+        }
+        val iter = known.entries.iterator()
+        while (iter.hasNext()) {
+            val (u, g) = iter.next()
+            if (u in uids) continue
+            iter.remove(); born.remove(u)
+            if (!first) { ghosts.add(Ghost(g.box, g.thing, g.locked, g.name, g.at, t)); endAt = maxOf(endAt, t + GHOST_S) }
+        }
+        val ls = HashSet<String>()
+        for (l in links) {
+            ls.add(l.uid)
+            if (!first && l.uid !in knownLinks) { linkBorn[l.uid] = t; endAt = maxOf(endAt, t + LINK_S) }
+        }
+        knownLinks.clear(); knownLinks.addAll(ls); linkBorn.keys.retainAll(ls)
+        first = false
+    }
+
+    fun pop(uid: String, t: Float) = born[uid]?.let { popScale(t - it) } ?: 1f
+    /** 0..1: how much of a new link's line is drawn. */
+    fun line(uid: String, t: Float) = linkBorn[uid]?.let { easeOut((t - it) / LINK_S) } ?: 1f
+    fun prune(t: Float) { ghosts.removeAll { t - it.t0 >= GHOST_S } }
+
+    companion object { const val GHOST_S = 0.25f; const val LINK_S = 0.3f }
 }

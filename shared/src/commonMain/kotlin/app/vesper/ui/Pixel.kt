@@ -155,20 +155,3 @@ fun PixelArt(
 fun PixelIcon(grid: List<String>, tint: Color, pixel: Dp = 3.dp, modifier: Modifier = Modifier) =
     PixelArt(grid, mapOf('X' to tint), pixel, modifier)
 
-/** Single tap fires at once on finger-up; a second tap within the double-tap timeout/slop fires [onDoubleTap] too. */
-fun Modifier.tapOrDoubleTap(role: androidx.compose.ui.semantics.Role? = null, onDoubleTap: () -> Unit, onTap: () -> Unit): Modifier = composed {
-    val vc = androidx.compose.ui.platform.LocalViewConfiguration.current
-    val tap = androidx.compose.runtime.rememberUpdatedState(onTap)
-    val dbl = androidx.compose.runtime.rememberUpdatedState(onDoubleTap)
-    this
-        .semantics(mergeDescendants = true) { if (role != null) this.role = role; onClick { tap.value(); true } }
-        .pointerInput(Unit) {
-            var lastAt = 0L; var lastPos = Offset.Zero
-            detectTapGestures(onTap = { p ->
-                val now = System.nanoTime() / 1_000_000 // monotonic ms, like uptimeMillis
-                if (lastAt != 0L && now - lastAt <= vc.doubleTapTimeoutMillis && (p - lastPos).getDistance() <= 48.dp.toPx()) {
-                    lastAt = 0L; dbl.value()
-                } else { lastAt = now; lastPos = p; tap.value() }
-            })
-        }
-}

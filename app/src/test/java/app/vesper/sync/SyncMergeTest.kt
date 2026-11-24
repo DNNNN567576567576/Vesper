@@ -368,13 +368,38 @@ class SyncMergeTest {
         assertEquals("Panduri", m.goals.single().name)
     }
 
-    @Test fun aVersion4FileRoundTripsAndOlderBuildsStopAtItsNumber() {
-        val s = bible("a", listOf(card("i", 1, note = "laughter", locked = true)), listOf(link("l", 2, "i", "i")))
+    @Test fun aVersion5FileRoundTripsAndOlderBuildsStopAtItsNumber() {
+        val s = bible("a", listOf(card("i", 1, note = "laughter", locked = true)), listOf(link("l", 2, "i", "i"))).copy(dailyLog = listOf(log("p", "2026-11-24", 3)))
         val text = kotlinx.serialization.json.Json.encodeToString(Snapshot.serializer(), s)
-        assertTrue(text.contains("\"v\":4"))
+        assertTrue(text.contains("\"v\":5"))
         assertEquals(s, kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), text))
-        assertEquals(4, SNAPSHOT_VERSION)
-        assertThrows(SyncException::class.java) { s.copy(v = SNAPSHOT_VERSION + 1).validate() } // how a v3 build met our v4
+        assertEquals(5, SNAPSHOT_VERSION)
+        assertThrows(SyncException::class.java) { s.copy(v = SNAPSHOT_VERSION + 1).validate() } // how a v4 build meets our v5
+    }
+
+    // ---- 2.8.0 the daily log ----
+    private fun log(item: String, date: String, at: Long, done: Boolean = true) = SyncDailyLog(app.vesper.data.dailyLogUid(item, date), at, item, date, done)
+
+    /** A version 4 file (2.7.9) has no daily log: it still reads and merges, and keeps ours as it is. */
+    @Test fun aVersion4SnapshotLeavesTheLogAlone() {
+        val mine = Snapshot(v = SNAPSHOT_VERSION, deviceId = "a", lobes = listOf(lobe("L", 1)), dailyLog = listOf(log("p", "2026-11-23", 2), log("p", "2026-11-24", 3, done = false)))
+        val v4 = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), """{"v":4,"deviceId":"b","lobes":[{"uid":"L","syncAt":5,"name":"Daily","colorIndex":0,"slot":0}],"bibleCards":[{"uid":"c","syncAt":4,"name":"Abraham","x":1.0,"y":2.0}]}""")
+        v4.validate()
+        assertTrue(v4.v >= MERGEABLE_VERSION)
+        val m = merge(mine, v4, emptyMap())
+        assertEquals(mine.dailyLog, m.dailyLog)
+        assertEquals("Daily", m.lobes.single().name)
+        assertEquals(listOf("c"), m.bibleCards.map { it.uid })
+    }
+
+    /** Both devices log the same item on the same day under one uid: one row, the later tick wins, and nothing is ever copied. */
+    @Test fun theSameItemAndDayIsOneRow() {
+        val a = Snapshot(v = SNAPSHOT_VERSION, deviceId = "a", dailyLog = listOf(log("p", "2026-11-24", 10)))
+        val b = Snapshot(v = SNAPSHOT_VERSION, deviceId = "b", dailyLog = listOf(log("p", "2026-11-24", 12, done = false), log("w", "2026-11-24", 11)))
+        val ma = merge(a, b, emptyMap()); val mb = merge(b, a, emptyMap())
+        assertEquals(ma.dailyLog, mb.dailyLog)
+        assertEquals(listOf(log("p", "2026-11-24", 12, done = false), log("w", "2026-11-24", 11)), ma.dailyLog)
+        Snapshot(v = SNAPSHOT_VERSION, deviceId = "x", tombstones = listOf(SyncTomb("daily_log", "p@2026-11-24", 1))).validate() // a known table
     }
 
     @Test fun bibleTombstonesAreValidAndDamagedRowsAreNot() {

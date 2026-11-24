@@ -129,6 +129,7 @@ internal fun overviewBoxes(layout: Layout, vaultName: Size, z: Float, pxdp: Floa
     }
     val mh = (5.5f * moonScale(z) + 1.5f) * pxdp // a goal moon's half size, dp
     for (g in layout.goalAt) out.add(floatArrayOf(g.x * k - mh, g.y * k - mh, g.x * k + mh, g.y * k + mh))
+    for (q in layout.dailyAt + layout.bibleAt) world(decoBox(q))
     for (i in layout.tasks.indices) {
         val r = TASK_NODE_R * 2f * ns
         world(floatArrayOf(layout.tx[i] - r, layout.ty[i] - r, layout.tx[i] + r, layout.ty[i] + r))

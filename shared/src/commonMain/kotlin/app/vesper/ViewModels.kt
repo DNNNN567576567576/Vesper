@@ -33,158 +33,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-private const val KEY_BRAIN_SOUNDS = "brainSounds"
 
-
-/**
- * Editing session for one note. [noteId] == null means a brand-new note, which is only
- * inserted once it actually has content. [newParentId] makes a new note a page of that main scroll.
- */
-class NoteEditorViewModel(private val notebook: VesperHost, noteId: Long?, newParentId: Long? = null) : ViewModel() {
-    private val dao get() = notebook.db.noteDao()
-    private val mutex = Mutex()
-
-    var title by mutableStateOf("")
-        private set
-    var content by mutableStateOf("")
-        private set
-    var loaded by mutableStateOf(noteId == null)
-        private set
-
-    private var id: Long? by mutableStateOf(noteId)
-    private var deleted = false
-    private var savedTitle = ""
-    private var savedContent = ""
-    private var saveJob: Job? = null
-
-    // A sync round must carry what is on screen, so a conflict shows up as one instead of old text being merged around it.
-    private val stopFlushing = notebook.sync.beforeRound { flush().join() }
-
-    /** Non-null = this note is a page of that main scroll. */
-    var parentId: Long? by mutableStateOf(newParentId)
-        private set
-    var parentTitle by mutableStateOf("")
-        private set
-
-    val exists: Boolean get() = id != null
-    val noteId: Long? get() = id
-
-    /** Pages of this scroll (creation order); empty until the scroll has been saved once. */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val pages: StateFlow<List<Note>> = snapshotFlow { id }
-        .flatMapLatest { if (it == null) emptyFlow() else dao.observePages(it) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private val rowChanges = snapshotFlow { id }.flatMapLatest { if (it == null) emptyFlow() else dao.observe(it) }
-
-    init {
-        if (newParentId != null) loadParentTitle(newParentId)
-        if (noteId != null) {
-            viewModelScope.launch {
-                try {
-                    val n = dao.get(noteId)
-                    if (n != null) {
-                        title = n.title; content = n.content
-                        savedTitle = n.title; savedContent = n.content
-                        parentId = n.parentId
-                        n.parentId?.let { loadParentTitle(it) }
-                    } else {
-                        id = null // note vanished; treat as new
-                    }
-                } catch (e: Exception) {
-                    notebook.reportError("open note", e)
-                }
-                loaded = true
-            }
-        }
-        viewModelScope.launch { rowChanges.collect { refresh() } }
-    }
-
-    /** Takes in what sync wrote, unless there is typing on top of the old text: then [persist] keeps both. */
-    private suspend fun refresh() {
-        mutex.withLock {
-            val n = id?.let { dao.get(it) } ?: return // gone on another device: the text stays here, and typing brings it back
-            if (!loaded || deleted || title != savedTitle || content != savedContent) return
-            if (n.title == savedTitle && n.content == savedContent) return
-            title = n.title; content = n.content
-            savedTitle = n.title; savedContent = n.content
-        }
-    }
-
-    fun onTitle(v: String) { title = v; scheduleSave() }
-    fun onContent(v: String) { content = v; scheduleSave() }
-
-    private fun scheduleSave() {
-        saveJob?.cancel()
-        saveJob = viewModelScope.launch {
-            delay(500)
-            flush()
-        }
-    }
-
-    /** Persist the latest text now. Safe to call repeatedly; runs outside the UI lifecycle. */
-    fun flush(): Job {
-        saveJob?.cancel()
-        return notebook.appScope.launch { persist() }
-    }
-
-    private fun loadParentTitle(pid: Long) {
-        viewModelScope.launch {
-            try { parentTitle = dao.get(pid)?.title.orEmpty() } catch (e: Exception) { notebook.reportError("open note", e) }
-        }
-    }
-
-    private suspend fun persist(force: Boolean = false) {
-        mutex.withLock {
-            if (!loaded || deleted) return
-            val t = title
-            val c = content
-            if (t == savedTitle && c == savedContent && !(force && id == null)) return
-            try {
-                val current = id
-                if (current == null && t.isBlank() && c.isBlank() && !force) return // never store a note that was never written
-                // In one transaction, so sync can't slip in between the look and the write.
-                id = notebook.db.useWriterConnection { w ->
-                    w.immediateTransaction {
-                        val row = current?.let { dao.get(it) }
-                        if (row == null) {
-                            // New, or deleted on another device while it was open: the text gets a row either way.
-                            parentId = parentId?.takeIf { dao.get(it) != null }
-                            dao.insert(Note(title = t, content = c, position = (dao.minPosition() ?: 1) - 1, parentId = parentId))
-                        } else {
-                            val theirs = row.title to row.content
-                            if (theirs != (savedTitle to savedContent) && theirs != (t to c)) {
-                                dao.insertCopy(row.copy(id = 0, title = copyTitle(row.title), uid = copyUid(row.uid, row.syncAt)))
-                            }
-                            dao.updateText(row.id, t, c, System.currentTimeMillis())
-                            row.id
-                        }
-                    }
-                }
-                savedTitle = t; savedContent = c
-            } catch (e: Exception) {
-                notebook.reportError("save note", e)
-            }
-        }
-    }
-
-    fun delete() {
-        deleted = true
-        saveJob?.cancel()
-        notebook.appScope.launch {
-            mutex.withLock {
-                try { id?.let { dao.delete(it) } } catch (e: Exception) { notebook.reportError("delete note", e) }
-            }
-        }
-    }
-
-    override fun onCleared() {
-        stopFlushing()
-        // Last chance: anything typed but not yet written gets saved.
-        if (!deleted) notebook.appScope.launch { persist() }
-    }
-}
 
 /** Lobes and ideas for the Brain tab. `null` = first database emission has not arrived yet. */
 class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
@@ -196,6 +45,9 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val branches: StateFlow<List<app.vesper.data.Branch>?> = dao.observeBranches()
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** The daily log of the stats window (from the day this opened, so it only grows past it, which the stats ignore). */
+    val dailyLog: StateFlow<List<app.vesper.data.DailyLog>> = dao.observeLogSince(java.time.LocalDate.now().minusDays(STATS_DAYS - 1L).toString())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** A new sub brain called [name] in the first free slot. */
     private suspend fun insertLobe(name: String): Long {
@@ -224,14 +76,6 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
     fun saveLayout() = app.vesper.ui.NoteMoves.save(notebook.settings)
     fun resetLayout() = app.vesper.ui.NoteMoves.reset(notebook.settings)
 
-    /** The Brain's little sounds on or off (default on). Remembered across restarts. */
-    val sounds by lazy { MutableStateFlow(notebook.settings.getBoolean(KEY_BRAIN_SOUNDS, true).also { app.vesper.ui.Sounds.on = it }) }
-
-    fun toggleSounds() {
-        sounds.value = !sounds.value
-        app.vesper.ui.Sounds.on = sounds.value
-        notebook.settings.putBoolean(KEY_BRAIN_SOUNDS, sounds.value)
-    }
 
     /** Same rules as [writeIdea]; [base] is the idea as the caller last saw it, id 0 for a new one. */
     fun saveIdea(
@@ -264,9 +108,10 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         }
     }
 
-    fun setDone(id: Long, done: Boolean) {
+    /** Lights or snuffs a daily candle, and logs it for today. */
+    fun tickDaily(item: app.vesper.data.Idea, done: Boolean) {
         notebook.appScope.launch {
-            try { dao.setIdeaDone(id, done) } catch (e: Exception) { notebook.reportError("tick daily", e) }
+            try { app.vesper.tickDaily(notebook.db, item, done, java.time.LocalDate.now()) } catch (e: Exception) { notebook.reportError("tick daily", e) }
         }
     }
 
@@ -316,7 +161,7 @@ internal suspend fun writeIdea(notebook: VesperHost, base: Idea, title: String, 
 }
 
 /**
- * Editing session for one Brain item on its own page, like [NoteEditorViewModel]. [ideaId] null = a new item in [lobeId],
+ * Editing session for one Brain item on its own page. [ideaId] null = a new item in [lobeId],
  * which only gets a row once something is written. The page holds [base], the item as it was last saved or taken in; sync
  * changes are taken in while nothing is typed, and typing on top of an older text is saved by [writeIdea], which keeps both.
  */
@@ -528,69 +373,8 @@ class ShrineViewModel(private val notebook: VesperHost) : ViewModel() {
     }
 }
 
-/** Plans and per-day Brain focus for the Moons tab. Days are `LocalDate.toEpochDay()`. `null` = first emission pending. */
-class MoonsViewModel(private val notebook: VesperHost) : ViewModel() {
-    private val dao get() = notebook.db.moonsDao()
-
-    val plans: StateFlow<List<app.vesper.data.Plan>?> = dao.observeAllPlans()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-    val focus: StateFlow<List<app.vesper.data.DayFocus>?> = dao.observeFocus()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-
-    // The composer draft lives here so it survives rotation.
-    var draft by mutableStateOf("")
-
-    fun addPlan(day: Long) {
-        val clean = draft.trim()
-        if (clean.isEmpty()) return
-        draft = ""
-        notebook.appScope.launch {
-            try { dao.insertPlan(app.vesper.data.Plan(day = day, text = clean)) } catch (e: Exception) {
-                notebook.reportError("add plan", e)
-            }
-        }
-    }
-
-    fun setDone(plan: app.vesper.data.Plan, done: Boolean): Job = notebook.appScope.launch {
-        try { dao.setPlanDone(plan.id, done) } catch (e: Exception) { notebook.reportError("update plan", e) }
-    }
-
-    /** [plan] is the plan as the dialog opened it. Same rules as [BrainViewModel.saveIdea]. */
-    fun editPlan(plan: app.vesper.data.Plan, text: String): Job = notebook.appScope.launch {
-        val clean = text.trim()
-        if (clean.isEmpty() || clean == plan.text) return@launch
-        try {
-            notebook.db.useWriterConnection { w ->
-                w.immediateTransaction {
-                    val row = dao.getPlan(plan.id)
-                    when {
-                        row == null -> dao.insertPlan(plan.copy(id = 0, text = clean, syncAt = 0))
-                        row.text != clean -> {
-                            if (row.text != plan.text) dao.insertPlanCopy(row.copy(id = 0, text = copyTitle(row.text), uid = copyUid(row.uid, row.syncAt)))
-                            dao.setPlanText(row.id, clean)
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) { notebook.reportError("edit plan", e) }
-    }
-
-    /** Permanent. The caller confirms first. */
-    fun deletePlan(id: Long) {
-        notebook.appScope.launch {
-            try { dao.deletePlan(id) } catch (e: Exception) { notebook.reportError("delete plan", e) }
-        }
-    }
-
-    fun toggleFocus(day: Long, lobeId: Long, on: Boolean) {
-        notebook.appScope.launch {
-            try {
-                if (on) dao.insertFocus(app.vesper.data.DayFocus(day, lobeId)) else dao.deleteFocus(day, lobeId)
-            } catch (e: Exception) { notebook.reportError("update focus", e) }
-        }
-    }
-
-    // ---- Alarms (phone only; see AlarmScheduler). The DB row is the truth, the scheduler is told after every change. ----
+/** The Alarms tab (phone only; see AlarmScheduler). The DB row is the truth, the scheduler is told after every change. */
+class AlarmsViewModel(private val notebook: VesperHost) : ViewModel() {
     private val alarmDao get() = notebook.db.alarmDao()
 
     val alarms: StateFlow<List<app.vesper.data.Alarm>> = alarmDao.observeActive()

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.unit.dp
+import app.vesper.ui.BackHandler
 import app.vesper.ui.LocalWide
 import app.vesper.ui.PixelNavRail
 import androidx.compose.foundation.layout.WindowInsets
@@ -51,7 +52,10 @@ import app.vesper.ui.placeName
 import app.vesper.ui.MoonsScreen
 import app.vesper.ui.AlarmUi
 import app.vesper.ui.CalculatorScreen
+import app.vesper.ui.AlarmsScreen
+import app.vesper.ui.AppTab
 import app.vesper.ui.PixelNavBar
+import app.vesper.ui.navTabs
 import app.vesper.ui.Px
 import app.vesper.ui.SharePicker
 import app.vesper.ui.SharedText
@@ -61,12 +65,14 @@ import kotlinx.coroutines.launch
 private const val NO_PAGE = -2L
 
 /**
- * The whole app below the platform shell: three tabs (Brain, Grimoire, Moons) and an item's page over them.
+ * The whole app below the platform shell: the tabs (Brain, Grimoire, Moons, Alarms on phones, Calc) and an item's page over them.
  * [shared] is text just sent to Vesper from another app; the picker asks where to keep it.
  */
 @Composable
 fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
-    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = Brain (default), 1 = Shrine, 2 = Moons
+    val tabs = remember { navTabs(host.alarms.supported) }
+    var tabIdx by rememberSaveable { mutableIntStateOf(0) } // index into tabs; 0 = Brain (default)
+    val tab = tabs[tabIdx.coerceIn(tabs.indices)]
     val brainCamera = remember { BrainCamera() }
     // The open item page: its id (0 = a new item), where a new one goes, and a counter that gives each opening its own editor.
     var pageId by rememberSaveable { mutableLongStateOf(NO_PAGE) }
@@ -82,22 +88,20 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     val brainVm = viewModel { BrainViewModel(host) }
     remember(brainVm) { brainVm.loadLayout() } // where the notes were dragged, before the first frame
     val shrineVm = viewModel { ShrineViewModel(host) }
-    val moonsVm = viewModel { MoonsViewModel(host) }
+    val alarmsVm = viewModel { AlarmsViewModel(host) }
     val learnVm = viewModel { LearnViewModel(host) }
     val bibleVm = viewModel { BibleViewModel(host) }
     val goals by learnVm.goals.collectAsStateWithLifecycle()
-    val plans by moonsVm.plans.collectAsStateWithLifecycle()
-    val focus by moonsVm.focus.collectAsStateWithLifecycle()
     val moonsReset = remember { mutableIntStateOf(0) }
-    val alarms by moonsVm.alarms.collectAsStateWithLifecycle()
-    val alarmHistory by moonsVm.alarmHistory.collectAsStateWithLifecycle()
+    val alarms by alarmsVm.alarms.collectAsStateWithLifecycle()
+    val alarmHistory by alarmsVm.alarmHistory.collectAsStateWithLifecycle()
     var alarmProblem by remember { mutableStateOf(host.alarms.problem()) }
     LaunchedEffect(alarms) { alarmProblem = host.alarms.problem() }
     val posts by shrineVm.posts.collectAsStateWithLifecycle()
     val lobes by brainVm.lobes.collectAsStateWithLifecycle()
     val ideas by brainVm.ideas.collectAsStateWithLifecycle()
     val branches by brainVm.branches.collectAsStateWithLifecycle()
-    val brainSounds by brainVm.sounds.collectAsStateWithLifecycle()
+    val dailyLog by brainVm.dailyLog.collectAsStateWithLifecycle()
 
     // Hoisted so the Grimoire keeps its scroll position while another tab (or an item page) is shown.
     val shrineListState = rememberLazyListState()
@@ -108,12 +112,16 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     var resumes by remember { mutableIntStateOf(0) }
     var today by remember { mutableStateOf(java.time.LocalDate.now()) }
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(30_000); java.time.LocalDate.now().let { if (it != today) today = it } } }
+    // Runs once per start (App is composed once on Android and desktop), before anyone looks for the old notes; no-op after the flag is set.
+    LaunchedEffect(Unit) {
+        try { importLegacy(host.db, host.settings) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { host.reportError("legacy import", e) }
+    }
     LaunchedEffect(today, resumes, ideas) {
         val zone = java.time.ZoneId.systemDefault()
         val day = java.time.LocalDate.now(zone).also { if (it != today) today = it }
-        try { resetDaily(host.db, host.settings, day, dayStart(day, zone)) } catch (e: Exception) { host.reportError("reset daily", e) }
+        // A restart (new ideas) cancels this run and the next one redoes it, so a cancel is not an error.
+        try { resetDaily(host.db, host.settings, day, dayStart(day, zone)) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { host.reportError("reset daily", e) }
     }
-    var remindAt by remember { mutableStateOf(dailyRemindHour(host.settings)) }
 
     // Automatic sync runs only while the app is on screen.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -131,20 +139,22 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     // Wide (desktop window): left rail. Narrower than 700dp, and always on phones, the bottom-bar layout.
     val wide = maxWidth >= 700.dp
     val cardOpen = pageId != NO_PAGE
+    // Back on another tab's root goes to the Brain first. Registered before the tab's own handlers (pop-ups, editors), which win.
+    BackHandler(tab != AppTab.Brain && !cardOpen) { tabIdx = tabs.indexOf(AppTab.Brain) }
 
     val onNav: (Int) -> Unit = { index ->
-        if (index == tab) {
+        if (index == tabIdx) {
             // Re-tapping the active tab jumps back to the top.
             scope.launch {
-                when (index) {
-                    1 -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
-                    2 -> moonsReset.intValue++ // jump back to today
-                    3 -> {}
-                    else -> homeSignal++
+                when (tabs[index]) {
+                    AppTab.Grimoire -> shrineListState.animateScrollToItem(0) // reversed list: item 0 = newest
+                    AppTab.Moons -> moonsReset.intValue++ // jump back to today
+                    AppTab.Alarms, AppTab.Calc -> {}
+                    AppTab.Brain -> homeSignal++
                 }
             }
         } else {
-            tab = index
+            tabIdx = index
         }
     }
 
@@ -158,8 +168,8 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     }
 
     val tabContent: @Composable () -> Unit = {
-        Crossfade(targetState = tab, animationSpec = tween(170), label = "tab") { current ->
-            if (current == 1) {
+        Crossfade(targetState = tab, animationSpec = tween(150), label = "tab") { current ->
+            if (current == AppTab.Grimoire) {
                 ShrineScreen(
                     posts = posts,
                     listState = shrineListState,
@@ -173,31 +183,27 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     onDelete = shrineVm::delete,
                     media = host.shrineMedia,
                 )
-            } else if (current == 3) {
+            } else if (current == AppTab.Calc) {
                 CalculatorScreen()
-            } else if (current == 2) {
-                MoonsScreen(
-                    plans = plans,
-                    focus = focus,
-                    lobes = lobes,
-                    resetSignal = moonsReset.intValue,
-                    draft = moonsVm.draft,
-                    onDraft = { moonsVm.draft = it },
-                    onAddPlan = moonsVm::addPlan,
-                    onSetDone = moonsVm::setDone,
-                    onEditPlan = moonsVm::editPlan,
-                    onDeletePlan = moonsVm::deletePlan,
-                    onToggleFocus = moonsVm::toggleFocus,
-                    alarmUi = if (host.alarms.supported) AlarmUi(
+            } else if (current == AppTab.Alarms) {
+                AlarmsScreen(
+                    AlarmUi(
                         alarms = alarms,
                         history = alarmHistory,
                         problem = alarmProblem,
                         onFix = { alarmProblem?.let(host.alarms::openSettings) },
-                        onSave = { a -> if (a.id == 0L) host.alarms.requestPermissions(); moonsVm.saveAlarm(a) },
-                        onDelete = moonsVm::deleteAlarm,
-                        onEnabled = moonsVm::setAlarmEnabled,
-                        onClearHistory = moonsVm::clearAlarmHistory,
-                    ) else null,
+                        onSave = { a -> if (a.id == 0L) host.alarms.requestPermissions(); alarmsVm.saveAlarm(a) },
+                        onDelete = alarmsVm::deleteAlarm,
+                        onEnabled = alarmsVm::setAlarmEnabled,
+                        onClearHistory = alarmsVm::clearAlarmHistory,
+                    ),
+                )
+            } else if (current == AppTab.Moons) {
+                MoonsScreen(
+                    items = remember(lobes, ideas) { dailyItems(lobes.orEmpty(), ideas.orEmpty()) },
+                    log = dailyLog,
+                    doneOn = { day -> dailyDoneOn(host.db, day) },
+                    resetSignal = moonsReset.intValue,
                 )
             } else {
                 BrainScreen(
@@ -207,8 +213,6 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     camera = brainCamera,
                     onOpenIdea = { id, lobeId, branchId, from -> pageSession++; pageLobe = lobeId; pageBranch = branchId ?: -1L; pageFrom = from; pageId = id },
                     onNewIn = { name, from -> brainVm.lobeNamed(name) { lobeId -> pageSession++; pageLobe = lobeId; pageBranch = -1L; pageFrom = from; pageId = 0L } },
-                    soundsOn = brainSounds,
-                    onToggleSounds = brainVm::toggleSounds,
                     onSaveLayout = brainVm::saveLayout,
                     onResetLayout = brainVm::resetLayout,
                     vault = host.vault,
@@ -219,36 +223,29 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     learn = learnVm,
                     bible = bibleVm,
                     onDailyAdd = brainVm::addDaily,
-                    onDailyDone = { i, done -> brainVm.setDone(i.id, done) },
+                    onDailyDone = brainVm::tickDaily,
+                    dailyLog = dailyLog,
                     onRenameIdea = { i, name -> brainVm.saveIdea(i, name) },
                     onDeleteIdea = { brainVm.deleteIdea(it.id) },
-                    remindAt = remindAt,
-                    onRemind = if (host.alarms.supported) ({
-                        val next = nextRemindHour(remindAt)
-                        remindAt = next
-                        setDailyRemindHour(host.settings, next)
-                        if (next != null) host.alarms.requestPermissions()
-                        host.alarms.scheduleDaily(next)
-                    }) else null,
                 )
             }
         }
     }
 
     CompositionLocalProvider(LocalWide provides wide) {
-    Box(Modifier.fillMaxSize().background(if (tab == 1) Color(0xFF08040C) else if (tab == 2) Color(0xFF06030C) else Px.Bg)) {
+    Box(Modifier.fillMaxSize().background(when (tab) { AppTab.Grimoire -> Color(0xFF08040C); AppTab.Moons -> Color(0xFF06030C); else -> Px.Bg })) {
         // An open note is a card over the world, which dims and shrinks a little behind it.
         Box(Modifier.fillMaxSize().graphicsLayer { val k = 1f - 0.04f * cardP.value.coerceIn(0f, 1f); scaleX = k; scaleY = k }) {
             if (wide) {
                 Row(Modifier.fillMaxSize()) {
-                    PixelNavRail(tab, onNav)
+                    PixelNavRail(tabs, tabIdx, onNav)
                     Box(Modifier.weight(1f).fillMaxHeight()) { tabContent() }
                 }
             } else {
                 Scaffold(
                     containerColor = Color.Transparent,
                     contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                    bottomBar = { PixelNavBar(tab, onNav) },
+                    bottomBar = { PixelNavBar(tabs, tabIdx, onNav) },
                 ) { inner ->
                     Box(Modifier.fillMaxSize().padding(inner).statusBarsPadding()) { tabContent() }
                 }

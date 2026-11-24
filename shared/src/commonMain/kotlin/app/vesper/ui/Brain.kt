@@ -112,6 +112,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.vesper.Vault
 import app.vesper.data.BackupException
+import app.vesper.data.BIBLE_THING
+import app.vesper.data.BibleCard
 import app.vesper.data.Branch
 import app.vesper.data.Goal
 import app.vesper.data.Idea
@@ -249,6 +251,21 @@ internal fun ringPlace(n: Int, c: Offset, foot: (Offset) -> FloatArray, fixed: L
     return out
 }
 
+/** At most this many daily candles and bible cards hang round their brains on the map (the card and the canvas have them all). */
+internal const val DECO_CAP = 24
+/** A candle's or a bible card's footprint on the map (world), the same for both so the two flowers mirror each other. */
+internal fun decoBox(p: Offset) = floatArrayOf(p.x - 6f, p.y - 6f, p.x + 6f, p.y + 6f)
+/** What the daily and bible flowers keep off besides [fixedBoxes]: both small brains with their orbit, their names above them and their nerves. */
+internal fun topBoxes(): List<FloatArray> {
+    val out = ArrayList<FloatArray>()
+    for (b in listOf(DAILY_AT, BIBLE_AT)) {
+        out.add(learnBrainBox(b))
+        out.add(floatArrayOf(b.x - LEARN_LABEL_W / 2f / HOME_K, b.y - 15f - LEARN_LABEL_H / HOME_K, b.x + LEARN_LABEL_W / 2f / HOME_K, b.y - 15f))
+        for (s in 0..9) { val f = (38f + s * 6f) / RING_R; out.add(floatArrayOf(b.x * f - 4f, b.y * f - 4f, b.x * f + 4f, b.y * f + 4f)) }
+    }
+    return out
+}
+
 /** The goals keep right of this x and the tasks left of its mirror, so each half of the map is its own brain's. */
 internal const val GOAL_MIN_X = 4f
 
@@ -369,8 +386,6 @@ internal val HEART_AT = Offset(SUN_X, SUN_Y - HEART_MID)
 internal const val BOARD_W = 176f
 internal const val BOARD_H = 92f
 internal const val BOARD_FRAME = 6f // the chunky frame
-private const val BOARD_PAD = 4f // cork between the frame and the papers
-private const val BOARD_GAP = 4f // between papers
 internal const val BOARD_MAX = 12 // papers shown, scattered (overlapping once the cork is full, the newest on top); the rest are a "+N" tag on the frame
 internal const val BOARD_MIN_TOP = SUN_Y + 58f // never higher than this: well under the vault heart's name
 private const val BOARD_CLEAR = 8f // the gap under the lowest task or goal
@@ -424,8 +439,6 @@ class BrainCamera {
 
     /** The last camera [fitUntouched] set; the camera counts as untouched while it is still the default or exactly that. */
     private var fitted: FloatArray? = null
-    /** The last overview fit, if any. */
-    internal val overview: FloatArray? get() = fitted
     /** The zoom of the last overview fit: the map's home, so "zoomed in" means past it. */
     var home by mutableFloatStateOf(HOME_ZOOM)
         private set
@@ -462,10 +475,14 @@ internal class Layout(
     val pinnedTotal: Int = 0,
     val boardAt: Offset = Offset(0f, BOARD_MIN_TOP + BOARD_H / 2f), // the board's home: under everything above
     val paperAt: List<FloatArray> = paperSpots(pinned.reversed().map { it.uid }).reversed(),
+    val daily: List<Idea> = emptyList(), // the daily candles round the daily brain (at most [DECO_CAP], oldest first) and their spots
+    val dailyAt: List<Offset> = emptyList(),
+    val bibleCards: List<BibleCard> = emptyList(), // the bible cards round the bible brain, likewise
+    val bibleAt: List<Offset> = emptyList(),
 )
 
 /** The main map for [tasks]: open ones first, then done ones; each sits where its own seed puts it, so marking one done moves nothing. */
-internal fun buildLayout(tasks: List<Idea>, notes: List<Idea> = emptyList(), goals: List<Goal> = emptyList(), pinned: List<Idea> = emptyList()): Layout {
+internal fun buildLayout(tasks: List<Idea>, notes: List<Idea> = emptyList(), goals: List<Goal> = emptyList(), pinned: List<Idea> = emptyList(), daily: List<Idea> = emptyList(), bible: List<BibleCard> = emptyList()): Layout {
     val shown = notes.take(NOTE_CAP)
     val noteAt = noteSpots(shown.map { it.uid })
     val order = tasks.sortedWith(compareBy({ it.done }, { it.id }))
@@ -475,6 +492,10 @@ internal fun buildLayout(tasks: List<Idea>, notes: List<Idea> = emptyList(), goa
     val goalAt = ringPlace(gs.size, LEARN_AT, ::moonBox, fixed, minX = GOAL_MIN_X)
     val byId = order.sortedBy { it.id }
     val spots = ringPlace(byId.size, TASKS_AT, ::taskNodeBox, fixed, maxX = -GOAL_MIN_X)
+    val dl = daily.sortedBy { it.id }.take(DECO_CAP); val bl = bible.sortedBy { it.id }.take(DECO_CAP)
+    val topFixed = fixed + topBoxes() + spots.map(::taskNodeBox) + goalAt.map(::moonBox)
+    val dailyAt = ringPlace(dl.size, DAILY_AT, ::decoBox, topFixed, maxX = -GOAL_MIN_X)
+    val bibleAt = ringPlace(bl.size, BIBLE_AT, ::decoBox, topFixed, minX = GOAL_MIN_X) // both against the same boxes, so they mirror
     val board = boardHomeFor(spots.map { taskNodeBox(it)[3] } + goalAt.map { moonBox(it)[3] })
     val spotOf = byId.indices.associate { byId[it].uid to spots[it] }
     // the flowers are decoration: their diamonds and moons sit where [ringPlace] put them, with no names and no taps
@@ -549,7 +570,7 @@ internal fun buildLayout(tasks: List<Idea>, notes: List<Idea> = emptyList(), goa
     // drips from the core
     val drips = floatArrayOf(0f, 18f, 14f, 55f, -1f)
 
-    return Layout(order, tx, ty, tbend, dust, stains, cracks, specks, spores, drips, shown, noteAt, gs, goalAt, FloatArray(gs.size) { goalBrightness(gs[it].updatedAt, now) }, pinned.take(BOARD_MAX), pinned.size, board)
+    return Layout(order, tx, ty, tbend, dust, stains, cracks, specks, spores, drips, shown, noteAt, gs, goalAt, FloatArray(gs.size) { goalBrightness(gs[it].updatedAt, now) }, pinned.take(BOARD_MAX), pinned.size, board, daily = dl, dailyAt = dailyAt, bibleCards = bl, bibleAt = bibleAt)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -620,6 +641,22 @@ internal class BrainRenderer(
     // per-frame state
     var t = 0f
         private set
+
+    /** Which brain was tapped last (1 main, 2 learn, 3 tasks, 4 daily, 5 bible) and when: it squishes a little and glows for [TAP_S]. */
+    private var pokeId = 0
+    private var pokeT0 = -9f
+    fun poke(id: Int) { pokeId = id; pokeT0 = t }
+    private fun pokeAge(id: Int) = if (id == pokeId) t - pokeT0 else 9f
+    private fun squish(id: Int) = tapSquish(pokeAge(id))
+    private fun pokeGlow(x: Float, y: Float, r: Float, id: Int) { val g = tapGlow(pokeAge(id)); if (g > 0f) glowAt(x, y, r, 0xD6C8FF, 0.55f * g) }
+
+    /** One soft glow on the daily brain when its last candle gets lit (the brightness reaches 1 from below). */
+    private var prevDaily = -2f
+    private var dailyPulseT = -9f
+
+    /** The pinned papers' births: a new one pops in from 60 %. */
+    private val paperBirths = Births()
+    fun paperPop(uid: String) = paperBirths.pop(uid, t)
     private var camX = 0f
     private var camY = 0f
     private var z = 1f
@@ -750,7 +787,8 @@ internal class BrainRenderer(
         glowAt(x, y, 22f * s, 0x7A4ACF, (0.2f + 0.3f * beat(0.4f)) * a)
         glowAt(x, y, 14f * s, 0xB69AFF, 0.25f * a)
         ring(x, y, 12.5f * s, 30, t * 1.5f, 0xB69AFF, 0.7f * a)
-        sprite(coreSprite, x, y, LEARN_SCALE * s, a, true)
+        pokeGlow(x, y, 20f * s, 2)
+        sprite(coreSprite, x, y, LEARN_SCALE * s * squish(2), a, true)
     }
 
     /** A goal's moon on the map: the purple pixel moon, small, in a soft glow; [b] its brightness. */
@@ -766,7 +804,8 @@ internal class BrainRenderer(
         glowAt(x, y, 22f * s, 0x7A4ACF, (0.2f + 0.3f * beat(0.4f)) * a)
         glowAt(x, y, 14f * s, 0xB69AFF, 0.25f * a)
         ring(x, y, 12.5f * s, 30, -t * 1.5f, 0xB69AFF, 0.7f * a)
-        sprite(coreSprite, x, y, LEARN_SCALE * s, a, false)
+        pokeGlow(x, y, 20f * s, 3)
+        sprite(coreSprite, x, y, LEARN_SCALE * s * squish(3), a, false)
     }
 
     /** The small daily brain, the tasks brain's twin at [b] brightness (its glow and ring dim with it). */
@@ -775,7 +814,10 @@ internal class BrainRenderer(
         glowAt(x, y, 22f * s, 0x7A4ACF, (0.2f + 0.3f * beat(0.4f)) * a * b)
         glowAt(x, y, 14f * s, 0xB69AFF, 0.25f * a * b)
         ring(x, y, 12.5f * s, 30, t * 1.2f, 0xB69AFF, 0.7f * a * b)
-        sprite(coreSprite, x, y, LEARN_SCALE * s, a * (0.35f + 0.65f * b), true)
+        pokeGlow(x, y, 20f * s, 4)
+        val lit = hump((t - dailyPulseT) / TAP_S) // the last candle of the day was just lit
+        if (lit > 0f) glowAt(x, y, 30f * s, 0xB69AFF, 0.5f * lit * a)
+        sprite(coreSprite, x, y, LEARN_SCALE * s * squish(4), a * (0.35f + 0.65f * b), true)
     }
 
     /** The small bible brain: the daily brain's mirror, always lit. */
@@ -784,7 +826,8 @@ internal class BrainRenderer(
         glowAt(x, y, 22f * s, 0x7A4ACF, (0.2f + 0.3f * beat(0.4f)) * a)
         glowAt(x, y, 14f * s, 0xB69AFF, 0.25f * a)
         ring(x, y, 12.5f * s, 30, -t * 1.2f, 0xB69AFF, 0.7f * a)
-        sprite(coreSprite, x, y, LEARN_SCALE * s, a, false)
+        pokeGlow(x, y, 20f * s, 5)
+        sprite(coreSprite, x, y, LEARN_SCALE * s * squish(5), a, false)
     }
 
     /** A main-brain note: a tiny twinkling star, [s] its node scale; a done one a grey dot. */
@@ -819,8 +862,9 @@ internal class BrainRenderer(
         }
         for (i in L.pinned.indices.reversed()) { // oldest first: the newest lies on top
             val q = L.paperCell(i); val sw = paperSway(t, i); val tilt = paperTilt(L.pinned[i].uid)
-            val ax0 = rnd(sx(c.x + q[0] + sw)); val ax1 = max(ax0 + 2, rnd(sx(c.x + q[2] + sw)))
-            val ay0 = rnd(sy(c.y + q[1])); val ah = max(2, rnd(sy(c.y + q[3])) - ay0)
+            val pk = paperBirths.pop(L.pinned[i].uid, t); val pcx = (q[0] + q[2]) / 2f; val pcy = (q[1] + q[3]) / 2f
+            val ax0 = rnd(sx(c.x + pcx + (q[0] - pcx) * pk + sw)); val ax1 = max(ax0 + 2, rnd(sx(c.x + pcx + (q[2] - pcx) * pk + sw)))
+            val ay0 = rnd(sy(c.y + pcy + (q[1] - pcy) * pk)); val ah = max(2, rnd(sy(c.y + pcy + (q[3] - pcy) * pk)) - ay0)
             val mid = (ax0 + ax1) / 2f
             val rgb = paperRgb(L.pinned[i].uid)
             for (px in ax0 until ax1) dot(px + 1, ay0 + rnd((px + 0.5f - mid) * tilt) + 1, 1, ah, 0x0B0618, 0.6f * a) // its shadow
@@ -836,6 +880,34 @@ internal class BrainRenderer(
         if (L.pinnedTotal > L.pinned.size) { // the "+N" tag on the frame's bottom right edge
             wr(r - 34f, b - 6f, r - 5f, b + 6f, 0xC9B6FF, a)
             wr(r - 33f, b - 5f, r - 6f, b + 5f, 0x1E1038, a)
+        }
+    }
+
+    /** A daily item's tiny candle round the daily brain: lit = a flame and a soft glow, unlit = a plain dim stub. */
+    private fun miniCandle(x: Float, y: Float, lit: Boolean, ph: Float, s: Float, a: Float) {
+        if (a <= 0f) return
+        val u = max(1, rnd(z * s * 0.75f))
+        val cx = rnd(sx(x)); val cy = rnd(sy(y))
+        if (lit) glowAt(x, y - 2f * s, 6f * s, 0x8F7BFF, (0.25f + 0.1f * sin(t * 5f + ph)) * a)
+        val body = if (lit) 0xE6DCFF else 0x6F6880
+        for (dy in 0..3) for (dx in -1..1) dot(cx + dx * u - u / 2, cy + dy * u, u, u, if (dx == 1) (if (lit) 0xC9B6FF else 0x4A3A5A) else body, a)
+        if (lit) {
+            val f = if (sin(t * 6f + ph) > 0f) 0 else 1 // the flame leans a pixel now and then
+            dot(cx - u / 2 + f * u, cy - 2 * u, u, u, 0xFFFFFF, a); dot(cx - u / 2, cy - u, u, u, 0xC9B6FF, a)
+        }
+    }
+
+    /** A bible card's tiny picture round the bible brain: a person a small solid-edged rectangle, a thing a rounded dashed one. */
+    private fun miniCard(x: Float, y: Float, thing: Boolean, s: Float, a: Float) {
+        if (a <= 0f) return
+        val u = max(1, rnd(z * s * 0.75f))
+        val cx = rnd(sx(x)); val cy = rnd(sy(y))
+        for (dy in -2..2) for (dx in -3..3) {
+            val edge = abs(dx) == 3 || abs(dy) == 2
+            val corner = abs(dx) == 3 && abs(dy) == 2
+            if (thing && corner) continue // rounded
+            if (thing && edge && (dx + dy) % 2 != 0) continue // dashed
+            dot(cx + dx * u - u / 2, cy + dy * u - u / 2, u, u, if (edge) 0xB69AFF else 0x1E1038, a)
         }
     }
 
@@ -864,6 +936,9 @@ internal class BrainRenderer(
      */
     fun draw(time: Float, camX: Float, camY: Float, zoom: Float, L: Layout, sv: Float, sunSel: Boolean) {
         t = time; this.camX = camX; this.camY = camY; z = zoom
+        if (prevDaily in 0f..0.999f && daily >= 1f) dailyPulseT = t
+        prevDaily = daily
+        paperBirths.update(L.pinned.map { it.uid }, t)
         beatPh = (t * 0.45f) % 1.7f
         val ns = nodeScale(z)
         val d = if (sunSel) 0.45f else 1f // the map dims behind the open vault
@@ -942,10 +1017,11 @@ internal class BrainRenderer(
 
         // the main brain
         glowAt(m.x, m.y, 48f, 0x7A4ACF, 0.25f + 0.6f * beat(0.05f))
+        pokeGlow(m.x, m.y, 40f, 1)
         glowAt(m.x, m.y, 36f, 0xB69AFF, 0.3f)
         ring(m.x, m.y, 30f, 48, t * 2f, 0xB69AFF, 0.85f)
         ring(m.x, m.y, 35f, 56, -t * 1.5f, 0x8A6CF0, 0.7f)
-        sprite(coreSprite, m.x, m.y, 0.64f, 1f, false)
+        sprite(coreSprite, m.x, m.y, 0.64f * squish(1), 1f, false)
         if (learnMoons >= 0) {
             learnBrain(ln.x, ln.y, ns, d)
             for (i in L.goals.indices) goalMoon(L.goalAt[i].x, L.goalAt[i].y, L.goalB[i], d)
@@ -955,6 +1031,8 @@ internal class BrainRenderer(
         if (bible) bibleBrain(BIBLE_AT.x, BIBLE_AT.y, ns, d)
         for (i in L.notes.indices) noteNode(m.x + L.noteAt[i].x, m.y + L.noteAt[i].y, L.notes[i].done, i * 1.7f, ns, d)
         for (i in L.tasks.indices) taskNode(L.tx[i], L.ty[i], L.tasks[i].done, L.tbend[i] * 7f, ns, d)
+        if (daily >= 0f) for (i in L.daily.indices) miniCandle(L.dailyAt[i].x, L.dailyAt[i].y, L.daily[i].done, i * 2.1f, ns, d)
+        if (bible) for (i in L.bibleCards.indices) miniCard(L.bibleAt[i].x, L.bibleAt[i].y, L.bibleCards[i].kind == BIBLE_THING, ns, d)
 
         // spores
         for (i in 0 until L.spores.size / 4) {
@@ -976,27 +1054,18 @@ internal class BrainRenderer(
 }
 
 /** What a tap on the main map lands on. */
-internal enum class MapHit { Note, Board, Heart, Learn, Tasks, Daily, Bible, Brain, Empty, None }
+internal enum class MapHit { Note, Board, Heart, Learn, Tasks, Daily, Bible, Brain, Empty }
 
 /**
- * What a tap at the world point [w] hits ([double] for a double-tap), a world unit being [u] px, the nodes at scale [ns] and a dp
- * [dp] px; with the note and where it sits for a [MapHit.Note]. [daily]: the daily brain is on the map. The task and goal flowers
- * are decoration and never a hit. A double-tap that misses every brain and the board is [MapHit.None].
+ * What a single tap at the world point [w] hits, a world unit being [u] px, the nodes at scale [ns] and a dp [dp] px; with the note
+ * and where it sits for a [MapHit.Note]. [daily]: the daily brain is on the map. The task and goal flowers are decoration and never
+ * a hit. There is no double-tap on the map (2.8.0): every tap fires at once, and adding happens inside each brain's own world.
  */
-internal fun Layout.mapHit(w: Offset, u: Float, ns: Float, dp: Float, double: Boolean, daily: Boolean, bible: Boolean = false): Pair<MapHit, Pair<Idea, Offset>?> {
+internal fun Layout.mapHit(w: Offset, u: Float, ns: Float, dp: Float, daily: Boolean, bible: Boolean = false): Pair<MapHit, Pair<Idea, Offset>?> {
     fun near(p: Offset, reachPx: Float) = (p - w).getDistance() * u <= reachPx
     val small = maxOf(30f * dp, 18f * u * ns)
     val core = maxOf(36f * dp, 30f * u) // the core, inside the r35 ring
     val board = onBoard(boardAt, w)
-    if (double) return when {
-        board -> MapHit.Board
-        near(LEARN_AT, small) -> MapHit.Learn
-        near(TASKS_AT, small) -> MapHit.Tasks
-        daily && near(DAILY_AT, small) -> MapHit.Daily
-        bible && near(BIBLE_AT, small) -> MapHit.Bible
-        near(Offset.Zero, core) -> MapHit.Brain
-        else -> MapHit.None
-    } to null
     val note = noteHit(w, 16f * dp / u) // a paper or a spark
     return when {
         note != null -> MapHit.Note
@@ -1025,9 +1094,6 @@ fun BrainScreen(
     onOpenIdea: (id: Long, lobeId: Long, branchId: Long?, from: Offset) -> Unit,
     /** Starts a new item in the first sub brain called [name] ("" = the loose notes, "Tasks", "Pinned"), made when missing, growing from [from]. */
     onNewIn: (name: String, from: Offset) -> Unit,
-    /** The Brain's little sounds; the main brain's menu has the switch. */
-    soundsOn: Boolean,
-    onToggleSounds: () -> Unit,
     /** Where the player dropped the notes: save them; reset puts them all back on their own spots. */
     onSaveLayout: () -> Unit = {},
     onResetLayout: () -> Unit = {},
@@ -1043,9 +1109,8 @@ fun BrainScreen(
     onDailyDone: (Idea, Boolean) -> Unit = { _, _ -> },
     onRenameIdea: (Idea, String) -> Unit = { _, _ -> },
     onDeleteIdea: (Idea) -> Unit = {},
-    /** The evening reminder's hour (null = off) and the chip that cycles it; null where there is no reminder (desktop). */
-    remindAt: Int? = null,
-    onRemind: (() -> Unit)? = null,
+    /** The daily log of the stats window, for the Daily card's stats. */
+    dailyLog: List<app.vesper.data.DailyLog> = emptyList(),
     /** The Bible canvas behind the top-right brain; null = no bible brain. */
     bible: app.vesper.BibleViewModel? = null,
 ) {
@@ -1095,13 +1160,11 @@ fun BrainScreen(
     fun enter(w: Int, at: Offset) {
         if (world != 0) return
         world = w; shown = w; flyAt = at
-        Sounds.play(Sfx.Open)
         flyScope.launch { fly.animateTo(1f, tween(520, easing = FastOutSlowInEasing)) }
     }
     fun leave() {
         if (world == 0) return
         world = 0
-        Sounds.play(Sfx.Close)
         flyScope.launch { fly.animateTo(0f, tween(420, easing = FastOutSlowInEasing)); if (world == 0) shown = 0 }
     }
     val mapHidden by remember { derivedStateOf { shown != 0 && fly.value >= 1f } }
@@ -1165,20 +1228,16 @@ fun BrainScreen(
                     onTapSun = { sunSel = true },
                     onTapBrain = { at -> sunSel = false; cardPinned = false; cardFrom = at + rootOff },
                     onTapBoard = { at -> sunSel = false; cardPinned = true; cardFrom = at + rootOff },
-                    onDoubleTapBrain = { at -> sunSel = false; onNewIn("", at + rootOff) },
-                    onDoubleTapTasks = { at -> sunSel = false; onNewIn("Tasks", at + rootOff) },
-                    onDoubleTapLearn = { sunSel = false; addingGoal = true },
                     pinned = pinned,
-                    onDoubleTapBoard = { at -> sunSel = false; onNewIn("Pinned", at + rootOff) },
                     onOpenTask = { t, at -> onOpenIdea(t.id, t.lobeId, t.branchId, at + rootOff) },
                     onTapEmpty = { sunSel = false; homeTick++ },
                     onMoved = onSaveLayout,
                     onTapLearn = { at -> sunSel = false; enter(1, at) },
                     onTapTasks = { at -> sunSel = false; enter(2, at) },
                     onTapDaily = { at -> sunSel = false; dailyFrom = at + rootOff },
-                    onDoubleTapDaily = { sunSel = false; addingDaily = true },
                     daily = dailyBrightness(daily),
                     onTapBible = if (bible != null) ({ at -> sunSel = false; enter(3, at) }) else null,
+                    dailyItems = daily, bibleCards = bibleCards,
                 )
                 ScreenTitle("Brain")
                 if (!searching) Box(Modifier.align(Alignment.TopEnd).padding(top = 20.dp, end = 16.dp)) { SearchButton { searching = true } }
@@ -1215,15 +1274,15 @@ fun BrainScreen(
                     onOpenIdea = { i, at -> onOpenIdea(i.id, i.lobeId, i.branchId, at) },
                     onClosed = { cardFrom = null },
                     title = if (cardPinned) "pinned" else "main brain",
+                    onAdd = { at -> onNewIn(if (cardPinned) "Pinned" else "", at) },
                 )
             }
             dailyFrom?.let { from ->
                 DailyCard(
-                    daily, from, dailyClose,
+                    daily, dailyLog, from, dailyClose,
                     onToggle = { onDailyDone(it, !it.done) },
                     onItemMenu = { i, at -> itemMenu = i to at - rootOff },
                     onAdd = { addingDaily = true },
-                    remindAt = remindAt, onRemind = onRemind,
                     onClosed = { dailyFrom = null },
                 )
             }
@@ -1232,7 +1291,6 @@ fun BrainScreen(
             menu?.let { m ->
                 val chips: List<Pair<String, () -> Unit>> = if (m.pinned) listOf("+ note" to { onNewIn("Pinned", m.at + rootOff) }) else listOf(
                     "+ note" to { onNewIn("", m.at + rootOff) },
-                    (if (soundsOn) "Sounds on" else "Sounds off") to onToggleSounds,
                     "Reset layout" to { onResetLayout(); homeTick++ },
                 )
                 BrainMenu(m.at, chips, { menu = null })
@@ -1384,9 +1442,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGrid(u: Float, 
     } }
 }
 
-/** Chips in a ring round a tapped brain at [at] (px), over a dim backdrop; a tap outside closes it. Each chip closes it too. */
+/** Chips in a ring round a tapped brain at [at] (px), over a dim backdrop; a tap outside closes it. Each chip closes it too. [clearW]/[clearH] = half the size of what it is for: the ring sits outside it. */
 @Composable
-internal fun BrainMenu(at: Offset, chips: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {
+internal fun BrainMenu(at: Offset, chips: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit, clearW: androidx.compose.ui.unit.Dp = 0.dp, clearH: androidx.compose.ui.unit.Dp = 0.dp) {
     BackHandler(true, onDismiss)
     val pill = RoundedCornerShape(50)
     Layout(
@@ -1407,11 +1465,11 @@ internal fun BrainMenu(at: Offset, chips: List<Pair<String, () -> Unit>>, onDism
         val ps = ms.drop(1).map { it.measure(Constraints()) }
         layout(c.maxWidth, c.maxHeight) {
             back.place(0, 0)
-            val r = 84.dp.toPx(); val m = 8.dp.toPx()
+            val rx = max(84.dp.toPx(), clearW.toPx() + 64.dp.toPx()); val ry = max(84.dp.toPx(), clearH.toPx() + 36.dp.toPx()); val m = 8.dp.toPx()
             ps.forEachIndexed { i, p ->
                 val a = -TAU / 4f + i * TAU / ps.size // the first straight up, the rest round the ring
-                val x = (at.x + cos(a) * r - p.width / 2f).coerceIn(m, max(m, c.maxWidth - p.width - m))
-                val y = (at.y + sin(a) * r - p.height / 2f).coerceIn(m, max(m, c.maxHeight - p.height - m))
+                val x = (at.x + cos(a) * rx - p.width / 2f).coerceIn(m, max(m, c.maxWidth - p.width - m))
+                val y = (at.y + sin(a) * ry - p.height / 2f).coerceIn(m, max(m, c.maxHeight - p.height - m))
                 p.place(x.roundToInt(), y.roundToInt())
             }
         }
@@ -1439,7 +1497,7 @@ internal fun BrainCanvas(
     mainNotes: List<Idea>,
     /** The learn brain's goals: small moons round it. */
     goals: List<Goal> = emptyList(),
-    /** The pinned notes, newest first: a paper on the corkboard each; a tap on a paper opens it ([onOpenTask]), a double-tap on the board pins a new one. */
+    /** The pinned notes, newest first: a paper on the corkboard each; a tap on a paper opens it ([onOpenTask]). */
     pinned: List<Idea> = emptyList(),
     onTapSun: () -> Unit,
     /** The main brain was tapped; it sits at px in this view. */
@@ -1447,11 +1505,6 @@ internal fun BrainCanvas(
     /** A spark or a paper was tapped: its note, and where it sits (px in this view). */
     onOpenTask: (Idea, Offset) -> Unit,
     onTapEmpty: () -> Unit,
-    /** A double-tap on the main brain (a new note), the tasks brain (a new task) or the learn brain (a new goal). */
-    onDoubleTapBrain: (Offset) -> Unit = {},
-    onDoubleTapTasks: (Offset) -> Unit = {},
-    onDoubleTapLearn: () -> Unit = {},
-    onDoubleTapBoard: (Offset) -> Unit = {},
     /** A tap on the empty board or its "+N": the list of all pinned notes. */
     onTapBoard: (Offset) -> Unit = {},
     /** A note was dropped after a drag: save where the notes are. */
@@ -1460,11 +1513,13 @@ internal fun BrainCanvas(
     onTapLearn: (Offset) -> Unit = {},
     onTapTasks: (Offset) -> Unit = {},
     onTapDaily: (Offset) -> Unit = {},
-    onDoubleTapDaily: (Offset) -> Unit = {},
     /** The daily brain's brightness, -1 = none drawn. */
     daily: Float = -1f,
     /** A single tap on the bible brain (top right) flies into its canvas; null = no bible brain drawn. */
     onTapBible: ((Offset) -> Unit)? = null,
+    /** The daily items and the bible cards, hung as tiny candles and cards round their brains (only while those brains are drawn). */
+    dailyItems: List<Idea> = emptyList(),
+    bibleCards: List<BibleCard> = emptyList(),
 ) {
     val density = LocalDensity.current.density
     val pxSize = remember(density) { round(2.28f * density).coerceAtLeast(1f) }
@@ -1475,7 +1530,9 @@ internal fun BrainCanvas(
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val pageFont = PageFont; val pixelFont = PixelFont // composable getters, read outside remember
     var view by remember { mutableStateOf(IntSize.Zero) }
-    val layout = remember(tasks, mainNotes, goals, pinned) { buildLayout(tasks, mainNotes, goals, pinned) }
+    val shownDaily = if (daily >= 0f) dailyItems else emptyList()
+    val shownBible = if (onTapBible != null) bibleCards else emptyList()
+    val layout = remember(tasks, mainNotes, goals, pinned, shownDaily, shownBible) { buildLayout(tasks, mainNotes, goals, pinned, shownDaily, shownBible) }
     val labels = remember(layout, density, pxSize, hint) { BrainLabels(measurer, density, pxSize, pageFont, pixelFont, layout, hint) }
     var aim by remember { mutableStateOf<FloatArray?>(null) } // x, y, zoom; a new array glides there
     fun overviewAim() = fitOverview(labels::overviewBoxes, view.width / density, view.height / density, topInset.value, pxSize / density, NODE_ZOOM, MIN_ZOOM)
@@ -1496,6 +1553,10 @@ internal fun BrainCanvas(
         }
     }
     val time by rememberRotTime()
+    // The tap handler reads the newest callbacks, so it is never restarted (and a tap never dropped) by a recomposition.
+    val openTask by rememberUpdatedState(onOpenTask); val tapBoard by rememberUpdatedState(onTapBoard); val tapSun by rememberUpdatedState(onTapSun)
+    val tapLearn by rememberUpdatedState(onTapLearn); val tapTasks by rememberUpdatedState(onTapTasks); val tapDaily by rememberUpdatedState(onTapDaily)
+    val tapBible by rememberUpdatedState(onTapBible); val tapBrain by rememberUpdatedState(onTapBrain); val tapEmpty by rememberUpdatedState(onTapEmpty)
 
     /** The world point under [p] (px in a [size] view). */
     fun worldAt(p: Offset, size: IntSize): Offset {
@@ -1548,7 +1609,6 @@ internal fun BrainCanvas(
                     val uid = layout.pinned[i].uid
                     val press = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
                     renderer.lifted = uid
-                    Sounds.play(Sfx.Tick)
                     drag(press.id) { c ->
                         val p = c.positionChange() / (pxSize * cam.scale)
                         NoteMoves.move(uid, p.x, p.y)
@@ -1559,35 +1619,29 @@ internal fun BrainCanvas(
                     onMoved()
                 }
             }
-            .pointerInput(layout, labels, locked, onTapSun, daily >= 0f, onTapBible != null) {
-                fun hit(tap: Offset, double: Boolean) {
-                    if (locked) return
+            .pointerInput(layout, labels, locked, daily >= 0f, onTapBible != null) {
+                // Single taps only, so each one fires on finger-up instead of waiting out the double-tap timeout (2.8.0).
+                detectTapGestures(onTap = { tap ->
+                    if (locked) return@detectTapGestures
                     val u = pxSize * cam.scale
                     val ox = ceil(size.width / pxSize) * pxSize / 2f
                     val oy = ceil(size.height / pxSize) * pxSize / 2f
                     fun screen(w: Offset) = Offset((w.x - cam.x) * u + ox, (w.y - cam.y) * u + oy)
                     val bw = Offset((tap.x - ox) / u + cam.x, (tap.y - oy) / u + cam.y)
-                    val (what, note) = layout.mapHit(bw, u, nodeScale(cam.scale), 1.dp.toPx(), double, daily >= 0f, onTapBible != null)
-                    if (double) when (what) {
-                        MapHit.Board -> onDoubleTapBoard(screen(layout.boardAt))
-                        MapHit.Learn -> onDoubleTapLearn()
-                        MapHit.Tasks -> onDoubleTapTasks(screen(TASKS_AT))
-                        MapHit.Daily -> onDoubleTapDaily(screen(DAILY_AT))
-                        MapHit.Brain -> onDoubleTapBrain(screen(Offset.Zero))
-                        else -> {}
-                    } else when (what) {
-                        MapHit.Note -> note?.let { onOpenTask(it.first, screen(it.second)) }
-                        MapHit.Board -> onTapBoard(screen(layout.boardAt))
-                        MapHit.Heart -> onTapSun()
-                        MapHit.Learn -> onTapLearn(screen(LEARN_AT))
-                        MapHit.Tasks -> onTapTasks(screen(TASKS_AT))
-                        MapHit.Daily -> onTapDaily(screen(DAILY_AT))
-                        MapHit.Bible -> onTapBible?.invoke(screen(BIBLE_AT))
-                        MapHit.Brain -> onTapBrain(screen(Offset.Zero))
-                        else -> onTapEmpty()
+                    val (what, note) = layout.mapHit(bw, u, nodeScale(cam.scale), 1.dp.toPx(), daily >= 0f, onTapBible != null)
+                    renderer.poke(when (what) { MapHit.Brain -> 1; MapHit.Learn -> 2; MapHit.Tasks -> 3; MapHit.Daily -> 4; MapHit.Bible -> 5; else -> 0 })
+                    when (what) {
+                        MapHit.Note -> note?.let { openTask(it.first, screen(it.second)) }
+                        MapHit.Board -> tapBoard(screen(layout.boardAt))
+                        MapHit.Heart -> tapSun()
+                        MapHit.Learn -> tapLearn(screen(LEARN_AT))
+                        MapHit.Tasks -> tapTasks(screen(TASKS_AT))
+                        MapHit.Daily -> tapDaily(screen(DAILY_AT))
+                        MapHit.Bible -> tapBible?.invoke(screen(BIBLE_AT))
+                        MapHit.Brain -> tapBrain(screen(Offset.Zero))
+                        MapHit.Empty -> tapEmpty()
                     }
-                }
-                detectTapGestures(onDoubleTap = { hit(it, true) }, onTap = { hit(it, false) })
+                })
             },
     ) {
         val vw = size.width.toInt()

@@ -25,14 +25,15 @@ interface SyncRow {
 @Serializable data class SyncStep(override val uid: String, override val syncAt: Long, val goalUid: String, val title: String, val note: String = "", val done: Boolean = false, val day: Long? = null, val position: Int, val createdAt: Long, val updatedAt: Long) : SyncRow
 @Serializable data class SyncBibleCard(override val uid: String, override val syncAt: Long, val name: String, val note: String = "", val kind: String = "person", val x: Float, val y: Float, val locked: Boolean = false) : SyncRow
 @Serializable data class SyncBibleLink(override val uid: String, override val syncAt: Long, val fromUid: String, val toUid: String, val label: String) : SyncRow
+@Serializable data class SyncDailyLog(override val uid: String, override val syncAt: Long, val itemUid: String, val date: String, val done: Boolean) : SyncRow
 @Serializable data class SyncTomb(val tbl: String, val uid: String, val deletedAt: Long)
 
-/** 2 added groups, links and done; 3 the learn brain's goals and steps; 4 the Bible canvas's cards and links. Bump it whenever an older build would silently drop part of a row. */
-const val SNAPSHOT_VERSION = 4
+/** 2 added groups, links and done; 3 the learn brain's goals and steps; 4 the Bible canvas's cards and links; 5 the daily log. Bump it whenever an older build would silently drop part of a row. */
+const val SNAPSHOT_VERSION = 5
 
 /**
- * The oldest snapshot that merges whole: its rows carry every field of every table it has. 3 and 4 only added tables, so a 2
- * simply holds no goals, steps or Bible cards, and merging it can't touch ours (only tombstones delete). A 1 lacks groups, links and done.
+ * The oldest snapshot that merges whole: its rows carry every field of every table it has. 3, 4 and 5 only added tables, so a 2
+ * simply holds no goals, steps, Bible cards or daily log, and merging it can't touch ours (only tombstones delete). A 1 lacks groups, links and done.
  */
 const val MERGEABLE_VERSION = 2
 
@@ -56,8 +57,9 @@ data class Snapshot(
     val steps: List<SyncStep> = emptyList(),
     val bibleCards: List<SyncBibleCard> = emptyList(),
     val bibleLinks: List<SyncBibleLink> = emptyList(),
+    val dailyLog: List<SyncDailyLog> = emptyList(),
 ) {
-    val rows: List<SyncRow> get() = notes + tasks + lobes + branches + ideas + plans + goals + steps + bibleCards + bibleLinks
+    val rows: List<SyncRow> get() = notes + tasks + lobes + branches + ideas + plans + goals + steps + bibleCards + bibleLinks + dailyLog
 }
 
 /** Refuses a snapshot that could not have come from a healthy device, before anything is written. */
@@ -155,6 +157,8 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
     // Links: last writer wins (a label is a word or two). A link never brings a deleted card back: it goes with it, never dangling.
     val links = resolve("bible_links", local.bibleLinks.keepUnseen("bible_links") { copy(syncAt = it) }, remote.bibleLinks, tombs, tie)
     links.live.values.removeAll { it.fromUid !in cards.live || it.toUid !in cards.live }
+    // The daily log: one row per item and day under the same uid on every device, so the last tick wins and nothing is ever copied.
+    val log = resolve("daily_log", local.dailyLog.keepUnseen("daily_log") { copy(syncAt = it) }, remote.dailyLog, tombs, tie)
 
     // A surviving child keeps its parent: the parent is stamped just past its tombstone, the same on both devices.
     for (uid in (ideas.live.values.map { it.lobeUid } + branches.live.values.map { it.lobeUid }).toSet() - lobes.live.keys) {
@@ -193,10 +197,10 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
     }
 
     val live = mapOf("notes" to notes.live.keys, "tasks" to tasks.live.keys, "lobes" to lobes.live.keys, "branches" to branches.live.keys, "ideas" to ideas.live.keys, "plans" to plans.live.keys,
-        "goals" to goals.live.keys, "steps" to steps.live.keys, "bible_cards" to cards.live.keys, "bible_links" to links.live.keys)
+        "goals" to goals.live.keys, "steps" to steps.live.keys, "bible_cards" to cards.live.keys, "bible_links" to links.live.keys, "daily_log" to log.live.keys)
     return local.copy(
         notes = notes.rows(), tasks = tasks.rows(), lobes = lobes.rows(), branches = branches.rows(), ideas = ideas.rows(), plans = plans.rows(),
-        goals = goals.rows(), steps = steps.rows(), bibleCards = cards.rows(), bibleLinks = links.rows(),
+        goals = goals.rows(), steps = steps.rows(), bibleCards = cards.rows(), bibleLinks = links.rows(), dailyLog = log.rows(),
         // A live row's tombstone goes away (revive); the rest are kept forever so a long-offline device can't bring rows back.
         tombstones = tombs.filterKeys { (t, u) -> u !in live.getValue(t) }.map { (k, at) -> SyncTomb(k.first, k.second, at) }.sortedWith(compareBy({ it.tbl }, { it.uid })),
     )

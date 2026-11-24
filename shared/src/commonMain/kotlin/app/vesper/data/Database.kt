@@ -55,28 +55,15 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE id = :id")
     suspend fun get(id: Long): Note?
 
-    @Query("SELECT * FROM notes WHERE id = :id")
-    fun observe(id: Long): Flow<Note?>
-
     @Insert
     suspend fun insert(note: Note): Long
-
-    /** A conflict copy; merge may already have built the same uid. */
-    @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
-    suspend fun insertCopy(note: Note)
 
     /** Edits text only, so the manual [Note.position] survives. */
     @Query("UPDATE notes SET title = :title, content = :content, updatedAt = :at WHERE id = :id")
     suspend fun updateText(id: Long, title: String, content: String, at: Long)
 
-    @Query("SELECT MIN(position) FROM notes")
-    suspend fun minPosition(): Int?
-
     @Query("UPDATE notes SET position = :position WHERE id = :id")
     suspend fun setPosition(id: Long, position: Int)
-
-    @Query("SELECT * FROM notes WHERE parentId = :parentId ORDER BY id ASC")
-    fun observePages(parentId: Long): Flow<List<Note>>
 
     /** One statement, so a main scroll and all its pages go together. */
     @Query("DELETE FROM notes WHERE id = :id OR parentId = :id")
@@ -174,13 +161,6 @@ interface BrainDao {
     @Query("DELETE FROM lobes WHERE id = :id")
     suspend fun deleteLobe(id: Long)
 
-    @Query("UPDATE lobes SET name = :name WHERE id = :id")
-    suspend fun renameLobe(id: Long, name: String)
-
-    /** Lobe [id] takes [slot]; a lobe already on [slot] takes [from], the moved one's old slot. */
-    @Query("UPDATE lobes SET slot = CASE WHEN id = :id THEN :slot ELSE :from END WHERE id = :id OR slot = :slot")
-    suspend fun moveLobe(id: Long, slot: Int, from: Int)
-
     @Query("SELECT EXISTS(SELECT 1 FROM lobes WHERE id = :id)")
     suspend fun lobeExists(id: Long): Boolean
 
@@ -228,9 +208,6 @@ interface BrainDao {
     @Insert
     suspend fun insertBranch(branch: Branch): Long
 
-    @Query("UPDATE branches SET name = :name WHERE id = :id")
-    suspend fun renameBranch(id: Long, name: String)
-
     @Query("SELECT EXISTS(SELECT 1 FROM branches WHERE id = :id)")
     suspend fun branchExists(id: Long): Boolean
 
@@ -240,7 +217,39 @@ interface BrainDao {
 
     @Query("DELETE FROM ideas WHERE id = :id")
     suspend fun deleteIdea(id: Long)
+
+    // The daily log: one row per item per day, its uid built from both, so two devices ticking the same item the same day write one row.
+    @Query("INSERT OR IGNORE INTO daily_log (uid, itemUid, date, done, syncAt) VALUES (:uid, :itemUid, :date, :done, 0)")
+    suspend fun insertLogIfMissing(uid: String, itemUid: String, date: String, done: Boolean)
+
+    /** Only a real change is written, so a repeated tick never bumps the row's sync stamp. */
+    @Query("UPDATE daily_log SET done = :done WHERE uid = :uid AND done <> :done")
+    suspend fun setLogDone(uid: String, done: Boolean)
+
+    /** The log from [from] (yyyy-MM-dd, local) on. */
+    @Query("SELECT * FROM daily_log WHERE date >= :from ORDER BY date ASC, itemUid ASC")
+    fun observeLogSince(from: String): Flow<List<DailyLog>>
+
+    /** The uids of the daily items done on [date] (yyyy-MM-dd, local), deleted items included. */
+    @Query("SELECT itemUid FROM daily_log WHERE date = :date AND done = 1 ORDER BY itemUid ASC")
+    suspend fun doneOn(date: String): List<String>
 }
+
+/**
+ * One daily item's state on one local day ([date], yyyy-MM-dd): the Daily brain's history, the only one Vesper keeps. Synced; [uid] is
+ * [dailyLogUid] of the item and day, so it is the same on every device. No FK: a deleted item's rows stay, the stats just skip them.
+ */
+@Entity(tableName = "daily_log", indices = [Index(value = ["uid"], unique = true), Index("date")])
+data class DailyLog(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val itemUid: String,
+    val date: String,
+    val done: Boolean,
+    @ColumnInfo(defaultValue = "''") val uid: String = dailyLogUid(itemUid, date),
+    @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+)
+
+fun dailyLogUid(itemUid: String, date: String) = "$itemUid@$date"
 
 /** One entry in the Shrine feed: optional text, optional photo or video. [imagePath]/[videoPath] are file names inside `filesDir/shrine`. */
 @Entity(tableName = "posts")
@@ -299,21 +308,11 @@ data class DayFocus(
 
 @Dao
 interface MoonsDao {
-    @Query("SELECT * FROM plans WHERE day BETWEEN :from AND :to ORDER BY createdAt ASC, id ASC")
-    fun observePlans(from: Long, to: Long): Flow<List<Plan>>
-
     @Query("SELECT * FROM plans ORDER BY createdAt ASC, id ASC")
     fun observeAllPlans(): Flow<List<Plan>>
 
-    @Query("SELECT * FROM plans WHERE id = :id")
-    suspend fun getPlan(id: Long): Plan?
-
     @Insert
     suspend fun insertPlan(plan: Plan): Long
-
-    /** A conflict copy; merge may already have built the same uid. */
-    @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
-    suspend fun insertPlanCopy(plan: Plan)
 
     // Single columns: a whole-row write from a held copy would put back whatever sync changed since.
     @Query("UPDATE plans SET done = :done WHERE id = :id")
@@ -322,17 +321,11 @@ interface MoonsDao {
     @Query("UPDATE plans SET text = :text WHERE id = :id")
     suspend fun setPlanText(id: Long, text: String)
 
-    @Query("DELETE FROM plans WHERE id = :id")
-    suspend fun deletePlan(id: Long)
-
     @Query("SELECT * FROM day_focus")
     fun observeFocus(): Flow<List<DayFocus>>
 
     @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
     suspend fun insertFocus(focus: DayFocus)
-
-    @Query("DELETE FROM day_focus WHERE day = :day AND lobeId = :lobeId")
-    suspend fun deleteFocus(day: Long, lobeId: Long)
 }
 
 /** A learning goal: a moon round the learn brain. [updatedAt] is its own last edit; its steps carry theirs, see [app.vesper.ui.goalTouchedAt]. */
@@ -381,9 +374,6 @@ interface LearnDao {
     @Query("SELECT IFNULL(MAX(position), -1) + 1 FROM goals")
     suspend fun nextGoalPosition(): Int
 
-    @Query("SELECT IFNULL(MAX(position), -1) + 1 FROM steps WHERE goalId = :goalId")
-    suspend fun nextStepPosition(goalId: Long): Int
-
     @Insert suspend fun insertGoal(goal: Goal): Long
     @Insert suspend fun insertStep(step: Step): Long
 
@@ -396,12 +386,6 @@ interface LearnDao {
 
     @Query("UPDATE steps SET done = :done, updatedAt = :at WHERE id = :id")
     suspend fun setStepDone(id: Long, done: Boolean, at: Long)
-
-    @Query("UPDATE steps SET day = :day, updatedAt = :at WHERE id = :id")
-    suspend fun setStepDay(id: Long, day: Long?, at: Long)
-
-    @Query("UPDATE steps SET title = :title, note = :note, day = :day, updatedAt = :at WHERE id = :id")
-    suspend fun setStepFields(id: Long, title: String, note: String, day: Long?, at: Long)
 
     @Query("DELETE FROM steps WHERE id = :id")
     suspend fun deleteStep(id: Long)
@@ -524,6 +508,7 @@ interface SyncDao {
     @Query("SELECT * FROM steps") suspend fun steps(): List<Step>
     @Query("SELECT * FROM bible_cards") suspend fun bibleCards(): List<BibleCard>
     @Query("SELECT * FROM bible_links") suspend fun bibleLinks(): List<BibleLink>
+    @Query("SELECT * FROM daily_log") suspend fun dailyLog(): List<DailyLog>
     @Query("SELECT * FROM sync_tombstones") suspend fun tombstones(): List<SyncTombstone>
 
     /** Rises on every change to a synced table, deletes included: the triggers keep each term moving. */
@@ -531,7 +516,7 @@ interface SyncDao {
         "SELECT IFNULL((SELECT MAX(syncAt) FROM notes), 0) + IFNULL((SELECT MAX(syncAt) FROM tasks), 0) + IFNULL((SELECT MAX(syncAt) FROM lobes), 0) + " +
             "IFNULL((SELECT MAX(syncAt) FROM branches), 0) + IFNULL((SELECT MAX(syncAt) FROM ideas), 0) + IFNULL((SELECT MAX(syncAt) FROM plans), 0) + " +
             "IFNULL((SELECT MAX(syncAt) FROM goals), 0) + IFNULL((SELECT MAX(syncAt) FROM steps), 0) + " +
-            "IFNULL((SELECT MAX(syncAt) FROM bible_cards), 0) + IFNULL((SELECT MAX(syncAt) FROM bible_links), 0) + " +
+            "IFNULL((SELECT MAX(syncAt) FROM bible_cards), 0) + IFNULL((SELECT MAX(syncAt) FROM bible_links), 0) + IFNULL((SELECT MAX(syncAt) FROM daily_log), 0) + " +
             "IFNULL((SELECT MAX(deletedAt) FROM sync_tombstones), 0)",
     )
     fun observeChanges(): Flow<Long>
@@ -546,6 +531,7 @@ interface SyncDao {
     @Insert suspend fun insert(row: Step): Long
     @Insert suspend fun insert(row: BibleCard): Long
     @Insert suspend fun insert(row: BibleLink): Long
+    @Insert suspend fun insert(row: DailyLog): Long
     @Insert suspend fun insert(rows: List<SyncTombstone>)
 
     @Update suspend fun update(row: Note)
@@ -558,6 +544,7 @@ interface SyncDao {
     @Update suspend fun update(row: Step)
     @Update suspend fun update(row: BibleCard)
     @Update suspend fun update(row: BibleLink)
+    @Update suspend fun update(row: DailyLog)
 
     @Query("DELETE FROM notes WHERE uid = :uid") suspend fun deleteNote(uid: String)
     @Query("DELETE FROM tasks WHERE uid = :uid") suspend fun deleteTask(uid: String)
@@ -569,6 +556,7 @@ interface SyncDao {
     @Query("DELETE FROM steps WHERE uid = :uid") suspend fun deleteStep(uid: String)
     @Query("DELETE FROM bible_cards WHERE uid = :uid") suspend fun deleteBibleCard(uid: String)
     @Query("DELETE FROM bible_links WHERE uid = :uid") suspend fun deleteBibleLink(uid: String)
+    @Query("DELETE FROM daily_log WHERE uid = :uid") suspend fun deleteDailyLog(uid: String)
     @Query("DELETE FROM sync_tombstones") suspend fun clearTombstones()
 }
 
@@ -580,7 +568,7 @@ data class SyncTombstone(val tbl: String, val uid: String, val deletedAt: Long)
 fun newUid(): String = kotlin.uuid.Uuid.random().toHexString()
 
 /** The tables that carry uid + syncAt. day_focus, posts and alarms are not synced. */
-val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "branches", "ideas", "plans", "goals", "steps", "bible_cards", "bible_links")
+val SYNCED_TABLES = listOf("notes", "tasks", "lobes", "branches", "ideas", "plans", "goals", "steps", "bible_cards", "bible_links", "daily_log")
 
 internal const val NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)"
 
@@ -602,7 +590,7 @@ fun syncTriggerSql(t: String) = listOf(
 )
 
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 12
+const val DB_VERSION = 13
 
 /**
  * v9 -> v10, as plain SQL so Android and desktop run the very same statements. Groups come in with ALTER, not a table
@@ -638,6 +626,13 @@ val MIGRATE_11_12_SQL = listOf(
     "CREATE UNIQUE INDEX IF NOT EXISTS `index_bible_links_uid` ON `bible_links` (`uid`)",
 ) + syncTriggerSql("bible_cards") + syncTriggerSql("bible_links")
 
+/** v12 -> v13: the Daily brain's log (synced). One new table only: no existing row is touched. */
+val MIGRATE_12_13_SQL = listOf(
+    "CREATE TABLE IF NOT EXISTS `daily_log` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `itemUid` TEXT NOT NULL, `date` TEXT NOT NULL, `done` INTEGER NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `syncAt` INTEGER NOT NULL DEFAULT 0)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `index_daily_log_uid` ON `daily_log` (`uid`)",
+    "CREATE INDEX IF NOT EXISTS `index_daily_log_date` ON `daily_log` (`date`)",
+) + syncTriggerSql("daily_log")
+
 /** The desktop's first release was v9, so this is its whole list. Its driver has no SupportSQLiteDatabase, hence the connection. */
 val DESKTOP_MIGRATIONS = arrayOf<Migration>(
     object : Migration(9, 10) {
@@ -649,9 +644,12 @@ val DESKTOP_MIGRATIONS = arrayOf<Migration>(
     object : Migration(11, 12) {
         override fun migrate(connection: SQLiteConnection) = MIGRATE_11_12_SQL.forEach { connection.execSQL(it) }
     },
+    object : Migration(12, 13) {
+        override fun migrate(connection: SQLiteConnection) = MIGRATE_12_13_SQL.forEach { connection.execSQL(it) }
+    },
 )
 
-@Database(entities = [Note::class, Task::class, Lobe::class, Branch::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class, Goal::class, Step::class, Alarm::class, BibleCard::class, BibleLink::class], version = DB_VERSION, exportSchema = true)
+@Database(entities = [Note::class, Task::class, Lobe::class, Branch::class, Idea::class, Post::class, Plan::class, DayFocus::class, SyncTombstone::class, Goal::class, Step::class, Alarm::class, BibleCard::class, BibleLink::class, DailyLog::class], version = DB_VERSION, exportSchema = true)
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao

@@ -10,6 +10,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import app.vesper.data.Idea
+import kotlin.math.max
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -59,34 +60,47 @@ class WorldsTest {
 
     private val lantern = Size(98f, 72f)
 
-    @Test fun lanternsNeverOverlapStayInsideAndClearOfTheBrain() {
-        for (set in 0 until 12) for (n in listOf(1, 3, 8, 15, 30, 60)) {
-            val seeds = (1..n).map { "s$set-$it".hashCode() }
-            val l = lanternLayout(seeds, 390f, 700f, lantern)
-            noneOverlap(l.boxes, "set $set n=$n")
-            for (b in l.boxes) {
-                assertTrue("set $set n=$n: off the sky", b[0] >= 0f && b[2] <= 390f && b[1] >= 0f)
-                assertTrue("set $set n=$n: in the brain's room", b[3] <= l.h - LANTERN_BRAIN_ZONE + 0.01f)
+    private val brainR = 66f
+
+    /** 2.8.0: the tasks brain sits in the middle with the lanterns all round it, none overlapping and all clear of the brain. */
+    @Test fun lanternsCircleTheBrainApartAndClearOfIt() {
+        val brain = floatArrayOf(-brainR, -brainR, brainR, brainR)
+        for (set in 0 until 12) for (n in listOf(1, 3, 8, 16, 30, 60)) {
+            val boxes = lanternCloud((1..n).map { "s$set-$it".hashCode() }, lantern, brainR)
+            assertEquals(n, boxes.size)
+            noneOverlap(boxes, "set $set n=$n")
+            for (b in boxes) assertFalse("set $set n=$n: on the brain", boxesHit(b, brain, 0f))
+            if (n >= 8) {
+                val cx = boxes.map { (it[0] + it[2]) / 2f }; val cy = boxes.map { (it[1] + it[3]) / 2f }
+                assertTrue("set $set n=$n: on both sides", cx.min() < -40f && cx.max() > 40f)
+                assertTrue("set $set n=$n: above and below", cy.min() < -40f && cy.max() > 40f)
+                assertTrue("set $set n=$n: the brain is the middle", kotlin.math.abs(cx.average()) < 90f && kotlin.math.abs(cy.average()) < 110f)
             }
-            assertTrue("the brain sits low", l.brain.y > l.h - LANTERN_BRAIN_ZONE)
-            if (n <= 15) assertEquals("set $set: a few lanterns fit one phone screen", 700f, l.h)
         }
     }
 
     @Test fun aLanternKeepsItsSpotByUidWhenNewOnesCome() {
         val seeds = (1..12).map { "task-$it".hashCode() }
-        val a = lanternLayout(seeds, 390f, 700f, lantern)
-        val b = lanternLayout(seeds + "task-13".hashCode(), 390f, 700f, lantern)
-        for (i in seeds.indices) assertTrue("lantern $i moved", a.boxes[i].contentEquals(b.boxes[i]))
-        assertFalse("other uids, other spots", lanternLayout(listOf(1), 390f, 700f, lantern).boxes[0].contentEquals(lanternLayout(listOf(2), 390f, 700f, lantern).boxes[0]))
+        val a = lanternCloud(seeds, lantern, brainR)
+        val b = lanternCloud(seeds + "task-13".hashCode(), lantern, brainR)
+        for (i in seeds.indices) assertTrue("lantern $i moved", a[i].contentEquals(b[i]))
+        assertFalse("other uids, other spots", lanternCloud(listOf(1), lantern, brainR)[0].contentEquals(lanternCloud(listOf(2), lantern, brainR)[0]))
     }
 
-    @Test fun lanternsSpreadOverTheWholeSky() {
-        val l = lanternLayout((1..15).map { "t$it".hashCode() }, 390f, 700f, lantern)
-        val ys = l.boxes.map { (it[1] + it[3]) / 2f }
-        val xs = l.boxes.map { (it[0] + it[2]) / 2f }
-        assertTrue("top to bottom", ys.min() < 140f && ys.max() > 420f)
-        assertTrue("side to side", xs.min() < 120f && xs.max() > 270f)
+    /** 16 lanterns (the real count) fit a 390 dp phone at the start zoom, which is never above 1; pan and zoom stay in soft bounds. */
+    @Test fun theCloudFitsAndPansALittle() {
+        val boxes = lanternCloud((1..16).map { "t$it".hashCode() }, lantern, brainR)
+        val bounds = cloudBounds(boxes, brainR)
+        val z = cloudZoom(bounds, 390f, 700f)
+        assertTrue("start zoom $z", z in CLOUD_MIN_Z..1f)
+        assertEquals(1f, cloudZoom(cloudBounds(emptyList(), brainR), 390f, 700f))
+        val pan = cloudPan(bounds, 390f, 700f, CLOUD_MAX_Z)
+        assertTrue("zoomed in, every edge can be reached", pan.x > 0f && pan.y > 0f)
+        assertTrue("never far past the cloud", pan.x <= max(-bounds[0], bounds[2]) && pan.y <= max(-bounds[1], bounds[3]))
+        assertEquals("nothing to pan when it all fits", Offset.Zero, cloudPan(cloudBounds(emptyList(), brainR), 390f, 700f, 1f))
+        assertEquals("names follow a smaller zoom", 0.8f, lanternNameScale(0.8f), 1e-6f)
+        assertTrue("and grow a bit past 1", lanternNameScale(1.8f) in 1.1f..1.8f)
+        assertEquals(2, artScale(1.6f)); assertEquals(1, artScale(1f))
     }
 
     /** Every lantern looks the same: a done task's name and lantern are a not-done one's. */
@@ -109,14 +123,25 @@ class WorldsTest {
         assertTrue(LANTERN_ROWS.all { it.length == LANTERN_W })
     }
 
-    /** A tap on a lantern (where it is drawn, drifting or not) or its name finds that lantern; a tap on the empty sky finds none. */
-    @Test fun aTapFindsItsLantern() {
-        val l = lanternLayout((1..15).map { "t$it".hashCode() }, 390f, 700f, lantern)
+    /** A lantern on screen sits where the camera puts its box: the brain's spot in the middle when the camera is home, its drift only a few dp. */
+    @Test fun aLanternOnScreen() {
+        val boxes = lanternCloud((1..5).map { "t$it".hashCode() }, lantern, brainR)
         val art = Size(24f, 30f)
-        l.boxes.forEachIndexed { i, b ->
-            for (t in listOf(0f, 3.1f, 17f)) assertEquals(i, boxAt(l.boxes, lanternAt(b, art, t, i * 77)))
-            assertEquals(i, boxAt(l.boxes, Offset((b[0] + b[2]) / 2f, b[3] - 4f)))
+        boxes.forEachIndexed { i, b ->
+            val home = lanternScreen(b, art, 0f, 0, Offset.Zero, 1f, 390f, 700f)
+            assertEquals((b[0] + b[2]) / 2f + 195f, home.x, 0.01f)
+            for (t in listOf(0f, 3.1f, 17f)) assertTrue((lanternScreen(b, art, t, i * 77, Offset.Zero, 1f, 390f, 700f) - home).getDistance() <= 4.5f)
+            val zoomed = lanternScreen(b, art, 0f, 0, Offset.Zero, 1.5f, 390f, 700f)
+            assertEquals((home.x - 195f) * 1.5f, zoomed.x - 195f, 0.01f)
         }
-        assertEquals(-1, boxAt(l.boxes, l.brain))
+    }
+
+    /** 2.8.0: goal moons float a few dp, never more than the room their boxes keep, so they never touch. */
+    @Test fun moonsFloatInsideTheirRoom() {
+        for (seed in listOf(0, 7, -99, 123456)) for (t in listOf(0f, 1f, 9.5f, 300f)) {
+            val d = moonDrift(t, seed)
+            assertTrue(kotlin.math.abs(d.x) <= MOON_DRIFT && kotlin.math.abs(d.y) <= MOON_DRIFT)
+        }
+        assertFalse("it moves", moonDrift(0f, 5) == moonDrift(4f, 5))
     }
 }

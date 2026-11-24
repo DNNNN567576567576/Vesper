@@ -25,6 +25,19 @@ internal const val SPARK_NAME_W = 72f
 /** How visible the sparks' names are (0..1) at camera zoom [z] when the overview fit sits at [home]: none at the fit, fading in as you zoom past it. */
 internal fun sparkNameAlpha(z: Float, home: Float): Float = if (home <= 0f) 0f else ((z / home - 1.15f) / 0.35f).coerceIn(0f, 1f)
 
+/** A task diamond's or goal moon's name on the zoomed map: 14 letters at most, then "…". */
+internal fun flowerName(s: String): String = s.trim().ifEmpty { "..." }.let { if (it.length > 14) it.take(14).trimEnd() + "…" else it }
+
+/** A small name beside a flower node at [at] (world): it reads outward from its brain, so it ends left of a node left of the brain ([leftOf]). */
+internal class FlowerLabel(val text: String, val at: Offset, val leftOf: Boolean, val half: Float)
+
+/** The names of the task diamonds (round the tasks brain), the goal moons (learn), the daily candles and the bible cards, shown only when zoomed in. */
+internal fun Layout.flowerLabels(): List<FlowerLabel> =
+    tasks.indices.map { FlowerLabel(flowerName(ideaLabel(tasks[it])), Offset(tx[it], ty[it]), tx[it] < TASKS_AT.x, 4f) } +
+        goals.indices.map { FlowerLabel(flowerName(goals[it].name), goalAt[it], goalAt[it].x < LEARN_AT.x, 6f) } +
+        daily.indices.map { FlowerLabel(flowerName(ideaLabel(daily[it])), dailyAt[it], dailyAt[it].x < DAILY_AT.x, 4f) } +
+        bibleCards.indices.map { FlowerLabel(flowerName(bibleCards[it].name), bibleAt[it], bibleAt[it].x < BIBLE_AT.x, 4f) }
+
 /**
  * All the names on the main map, measured once and drawn at full resolution over the low-res frame: the vault's, the learn and
  * tasks brains', and every task's, left-aligned just right of its node.
@@ -74,7 +87,14 @@ internal class BrainLabels(
     private val moreLabel = (layout.pinnedTotal - layout.pinned.size).takeIf { it > 0 }?.let {
         measurer.measure("+$it", TextStyle(fontFamily = pixelFont, fontSize = 9.sp, color = Color.White), maxLines = 1)
     }
-    private val hintStyle = TextStyle(fontFamily = pixelFont, fontSize = 9.sp, color = Px.TextDim)
+    /** The flowers' names, smaller than a spark's: measured once, like every other name here. */
+    private val flowers = layout.flowerLabels().map { f ->
+        f to GlowText(measurer.measure(
+            f.text, TextStyle(fontFamily = pageFont, fontSize = 11.sp, lineHeight = 13.sp, color = Color(0xFFCDB8FF), shadow = Shadow(Color(0xFF07030B), blurRadius = 4f * density)),
+            maxLines = 1,
+        ))
+    }
+    private val hintLabel = if (hint) measurer.measure("TAP THE BRAIN, THEN + NOTE", TextStyle(fontFamily = pixelFont, fontSize = 9.sp, color = Px.TextDim)) else null
 
     /** Every box of the main map at home zoom [z] (no task or goal names: they are hidden there), in dp from the camera at the origin ([fitOverview]). */
     fun overviewBoxes(z: Float): List<FloatArray> = overviewBoxes(layout, vaultLabel(0f).tl.size.let { Size(it.width / density, it.height / density) }, z, pxdp)
@@ -98,7 +118,7 @@ internal class BrainLabels(
         // the pinned papers' words, tilted with their paper and growing with the zoom (never below their measured size); a paper partly
         // under a newer one keeps its words hidden, so they never print over the paper on top
         val bc = layout.boardAt
-        val ts = max(1f, z / BOARD_TEXT_Z)
+        val ts0 = max(1f, z / BOARD_TEXT_Z)
         val cells = layout.pinned.indices.map { layout.paperCell(it) }
         for (i in paperLabels.indices.reversed()) {
             val q = cells[i]; val tl = paperLabels[i]
@@ -106,8 +126,9 @@ internal class BrainLabels(
             val cx = dx(bc.x + (q[0] + q[2]) / 2f + paperSway(renderer.t, i)); val cy = dy(bc.y + (q[1] + q[3]) / 2f + 1.5f)
             if (cx < -300f || cx > size.width + 300f || cy < -300f || cy > size.height + 300f) continue
             val pivot = Offset(cx, cy)
+            val pk = renderer.paperPop(layout.pinned[i].uid); val ts = ts0 * pk
             val deg = Math.toDegrees(kotlin.math.atan(paperTilt(layout.pinned[i].uid).toDouble())).toFloat()
-            withTransform({ scale(ts, ts, pivot); rotate(deg, pivot) }) { drawText(tl, topLeft = Offset(cx - tl.size.width / 2f, cy - tl.size.height / 2f), alpha = dim) }
+            withTransform({ scale(ts, ts, pivot); rotate(deg, pivot) }) { drawText(tl, topLeft = Offset(cx - tl.size.width / 2f, cy - tl.size.height / 2f), alpha = dim * ((pk - 0.6f) * 2.5f).coerceIn(0f, 1f)) }
         }
         moreLabel?.let { drawText(it, topLeft = Offset(dx(bc.x + BOARD_W / 2f - 19.5f) - it.size.width / 2f, dy(bc.y + BOARD_H / 2f) - it.size.height / 2f), alpha = dim) }
         val na = sparkNameAlpha(z, home) * dim
@@ -123,10 +144,23 @@ internal class BrainLabels(
                 shown.add(box)
                 l.draw(this, left, top, na)
             }
+            // the task diamonds' and goal moons' names, beside their node and away from their brain, never over another name
+            // never over the heart or a brain either
+            fun disc(c: Offset, r: Float) = floatArrayOf(dx(c.x) - r * u, dy(c.y) - r * u, dx(c.x) + r * u, dy(c.y) + r * u)
+            val avoid = listOf(disc(HEART_AT, 20f), disc(HEART_AT + Offset(0f, HEART_MID + 18f), 16f), disc(TASKS_AT, 18f * ns), disc(LEARN_AT, 18f * ns), disc(DAILY_AT, 18f * ns), disc(BIBLE_AT, 18f * ns), disc(Offset.Zero, 36f))
+            for ((f, l) in flowers) {
+                val gap = (f.half * ns + 2f) * u
+                val w = l.tl.size.width; val h = l.tl.size.height
+                val x = dx(f.at.x); val top = dy(f.at.y) - h / 2f
+                // outward first; when that side is taken, the other side
+                val box = listOf(f.leftOf, !f.leftOf).map { lo -> (if (lo) x - gap - w else x + gap).let { l -> floatArrayOf(l, top, l + w, top + h) } }
+                    .firstOrNull { b -> (shown + avoid).none { b[0] < it[2] && it[0] < b[2] && b[1] < it[3] && it[1] < b[3] } } ?: continue
+                val left = box[0]
+                if (left > size.width || left + w < 0f || top > size.height || top + h < 0f) continue
+                shown.add(box)
+                l.draw(this, left, top, na)
+            }
         }
-        if (hint) {
-            val h = measurer.measure("DOUBLE-TAP THE BRAIN TO KEEP A NOTE", hintStyle)
-            drawText(h, topLeft = Offset(dx(0f) - h.size.width / 2f, dy(44f)))
-        }
+        hintLabel?.let { h -> drawText(h, topLeft = Offset(dx(0f) - h.size.width / 2f, dy(44f))) }
     }
 }

@@ -322,6 +322,83 @@ class MigrationTest {
         assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'bible_cards' AND uid = '$uid'"))
     }
 
+    /** 2.8.0: real v12 rows and triggers. Only the daily log arrives: nothing existing moves, the new table is wired for sync. */
+    @Test
+    fun migrate12To13() {
+        helper.createDatabase(name, 12).apply {
+            listOf("notes", "tasks", "lobes", "branches", "ideas", "plans", "goals", "steps", "bible_cards", "bible_links").forEach { t -> syncTriggerSql(t).forEach(::execSQL) }
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0, 'notes-1', 1700000000000)")
+            execSQL("INSERT INTO tasks (id, text, uid, syncAt) VALUES (1, 'buy candles', 'tasks-1', 5)")
+            execSQL("INSERT INTO lobes (id, name, colorIndex, slot, uid, syncAt) VALUES (1, 'Daily', 2, 0, 'lobes-1', 6)")
+            execSQL("INSERT INTO ideas (id, lobeId, title, body, noteId, updatedAt, uid, syncAt, branchId, link, done) VALUES (1, 1, 'pills', '', 1, 1700000001000, 'ideas-1', 7, NULL, NULL, 1)")
+            execSQL("INSERT INTO bible_cards (id, name, note, kind, x, y, locked, uid, syncAt) VALUES (1, 'Abraham', '', 'person', 1, 2, 0, 'c1', 8)")
+            execSQL("INSERT INTO sync_tombstones (tbl, uid, deletedAt) VALUES ('notes', 'gone', 3)")
+            insertPost(); close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 13, true, MIGRATION_12_13)
+        db.assertNoteAndTask(); db.assertPost()
+        fun count(sql: String) = db.query(sql).use { it.moveToFirst(); it.getInt(0) }
+        fun row(sql: String) = db.query(sql).use { c -> c.moveToFirst(); (0 until c.columnCount).map { c.getString(it) } }
+        assertEquals(listOf("pills", "1", "7"), row("SELECT title, done, syncAt FROM ideas WHERE id = 1"))
+        assertEquals(listOf("Abraham", "8"), row("SELECT name, syncAt FROM bible_cards"))
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones"))
+        assertEquals(0, count("SELECT COUNT(*) FROM daily_log"))
+        db.assertIndexes("index_daily_log_uid", "index_daily_log_date")
+
+        // the log is wired: a clock on insert, a bump on update, a tombstone on delete; its uid is the item's and the day's
+        db.execSQL("INSERT INTO daily_log (itemUid, date, done, uid) VALUES ('ideas-1', '2026-11-24', 1, 'ideas-1@2026-11-24')")
+        val at = row("SELECT syncAt FROM daily_log")[0].toLong()
+        assertTrue(at > 1)
+        db.execSQL("UPDATE daily_log SET done = 0")
+        assertTrue(row("SELECT syncAt FROM daily_log")[0].toLong() > at)
+        db.execSQL("INSERT OR IGNORE INTO daily_log (itemUid, date, done, uid) VALUES ('ideas-1', '2026-11-24', 1, 'ideas-1@2026-11-24')")
+        assertEquals("one row per item and day", 1, count("SELECT COUNT(*) FROM daily_log"))
+        db.execSQL("DELETE FROM daily_log")
+        assertEquals(1, count("SELECT COUNT(*) FROM sync_tombstones WHERE tbl = 'daily_log' AND uid = 'ideas-1@2026-11-24'"))
+        assertEquals(3, count("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'sync_daily_log_%'"))
+    }
+
+    /** A 2.4.1 install (DB v10, the last public release) upgrading in place to this build: every old row survives and still syncs. */
+    @Test
+    fun migrate10To13LikeA241Install(): Unit = runBlocking {
+        helper.createDatabase(name, 10).apply {
+            listOf("notes", "tasks", "lobes", "branches", "ideas", "plans").forEach { t -> syncTriggerSql(t).forEach(::execSQL) }
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0, 'notes-1', 1700000000000)")
+            execSQL("INSERT INTO tasks (id, text, uid, syncAt) VALUES (1, 'buy candles', 'tasks-1', 5)")
+            execSQL("INSERT INTO lobes (id, name, colorIndex, slot, uid, syncAt) VALUES (1, 'Work', 2, 0, 'lobes-1', 6)")
+            execSQL("INSERT INTO branches (id, lobeId, name, uid, syncAt) VALUES (1, 1, 'Read', 'read', 8)")
+            execSQL("INSERT INTO ideas (id, lobeId, title, body, noteId, updatedAt, uid, syncAt, branchId, link, done) VALUES (1, 1, 'Idea', 'body text', 1, 1700000001000, 'ideas-1', 7, 1, 'x.org', 1)")
+            execSQL("INSERT INTO plans (id, day, text, done, createdAt, uid, syncAt) VALUES (1, 20000, 'plan', 1, 1700000004000, 'plans-1', 9)")
+            execSQL("INSERT INTO day_focus (day, lobeId) VALUES (20000, 1)")
+            execSQL("INSERT INTO sync_tombstones (tbl, uid, deletedAt) VALUES ('notes', 'gone', 3)")
+            insertPost(); close()
+        }
+        helper.runMigrationsAndValidate(name, 13, true, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13).apply {
+            assertNoteAndTask(); assertBrain(); assertPost(); close()
+        }
+
+        // The app's own open: Room with every migration and the trigger callback, read through the DAOs and the sync snapshot.
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.databaseBuilder(ctx, AppDatabase::class.java, name).addMigrations(*ALL_MIGRATIONS).addCallback(SYNC_TRIGGERS_CALLBACK).build()
+        try {
+            val idea = db.brainDao().observeIdeas().first().single()
+            assertEquals(listOf("Idea", "body text", "x.org", "ideas-1", "7"), listOf(idea.title, idea.body, idea.link, idea.uid, idea.syncAt.toString()))
+            assertEquals(1L, idea.branchId); assertTrue(idea.done)
+            assertEquals("Read", db.brainDao().observeBranches().first().single().name)
+            assertEquals("plan", db.moonsDao().observeAllPlans().first().single().text)
+            assertEquals(1, db.moonsDao().observeFocus().first().size)
+            assertEquals("hello", db.postDao().observeAll().first().single().text)
+            val sync = db.syncDao()
+            assertEquals(listOf("notes-1"), sync.notes().map { it.uid })
+            assertEquals(listOf("tasks-1"), sync.tasks().map { it.uid })
+            assertEquals(listOf("plans-1"), sync.plans().map { it.uid })
+            assertEquals(listOf("gone"), sync.tombstones().map { it.uid })
+            assertTrue(sync.goals().isEmpty() && sync.bibleCards().isEmpty() && sync.dailyLog().isEmpty())
+        } finally {
+            db.close()
+        }
+    }
+
     @Test
     fun migrateAllFrom1() {
         helper.createDatabase(name, 1).apply { insertNote(); close() }

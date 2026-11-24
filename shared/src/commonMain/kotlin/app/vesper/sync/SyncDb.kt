@@ -6,6 +6,7 @@ import app.vesper.data.AppDatabase
 import app.vesper.data.BibleCard
 import app.vesper.data.BibleLink
 import app.vesper.data.Branch
+import app.vesper.data.DailyLog
 import app.vesper.data.Goal
 import app.vesper.data.Step
 import app.vesper.data.Idea
@@ -38,6 +39,7 @@ private suspend fun SyncDao.read(deviceId: String): Snapshot {
         steps = steps().map { SyncStep(it.uid, it.syncAt, goalUid.getValue(it.goalId), it.title, it.note, it.done, it.day, it.position, it.createdAt, it.updatedAt) }.sortedBy { it.uid },
         bibleCards = bibleCards().map { SyncBibleCard(it.uid, it.syncAt, it.name, it.note, it.kind, it.x, it.y, it.locked) }.sortedBy { it.uid },
         bibleLinks = bibleLinks().map { SyncBibleLink(it.uid, it.syncAt, it.fromUid, it.toUid, it.label) }.sortedBy { it.uid },
+        dailyLog = dailyLog().map { SyncDailyLog(it.uid, it.syncAt, it.itemUid, it.date, it.done) }.sortedBy { it.uid },
         tombstones = tombstones().map { SyncTomb(it.tbl, it.uid, it.deletedAt) }.sortedWith(compareBy({ it.tbl }, { it.uid })),
     )
 }
@@ -76,6 +78,7 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
     gone(local.lobes, merged.lobes).forEach { deleteLobe(it) }
     gone(local.bibleLinks, merged.bibleLinks).forEach { deleteBibleLink(it) }
     gone(local.bibleCards, merged.bibleCards).forEach { deleteBibleCard(it) }
+    gone(local.dailyLog, merged.dailyLog).forEach { deleteDailyLog(it) }
 
     val lobeIds = lobes().associate { it.uid to it.id }.toMutableMap()
     for (l in changed(local.lobes, merged.lobes)) {
@@ -138,6 +141,11 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
     val linkIds = bibleLinks().associate { it.uid to it.id }
     for (l in changed(local.bibleLinks, merged.bibleLinks)) {
         val row = BibleLink(linkIds[l.uid] ?: 0, l.fromUid, l.toUid, l.label, l.uid, l.syncAt)
+        if (row.id == 0L) insert(row) else update(row)
+    }
+    val logIds = dailyLog().associate { it.uid to it.id }
+    for (d in changed(local.dailyLog, merged.dailyLog)) {
+        val row = DailyLog(logIds[d.uid] ?: 0, d.itemUid, d.date, d.done, d.uid, d.syncAt)
         if (row.id == 0L) insert(row) else update(row)
     }
 

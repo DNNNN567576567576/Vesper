@@ -38,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
@@ -109,7 +110,8 @@ private val CardPurple = Color(0xFF9C84FF)
 /**
  * The main brain opened: a card over almost the whole view, grown from [from] (px in the root) like a note's card, the map
  * faint behind it. Inside, every note of [notes] is a gently twinkling, drifting star with its name, newest first. A star (or
- * its title) opens its note; the title the main brain's menu ([onTitle]). Back, CLOSE, a tap outside or [closeSignal] (the Brain
+ * its title) opens its note; "+ note" in the header starts a new one ([onAdd], from where it sits, px in the root); the title the
+ * main brain's menu ([onTitle]). Back, CLOSE, a tap outside or [closeSignal] (the Brain
  * tab tapped again) shrinks it away, then [onClosed].
  */
 @Composable
@@ -122,15 +124,15 @@ internal fun BrainCard(
     onClosed: () -> Unit,
     /** The card's name: the main brain's notes, or the pinned ones. */
     title: String = "main brain",
+    onAdd: (Offset) -> Unit = {},
 ) {
     val p = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var closing by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { Sounds.play(Sfx.Open); p.animateTo(1f, tween(320, easing = CubicBezierEasing(0.34f, 1.35f, 0.64f, 1f))) }
+    LaunchedEffect(Unit) { p.animateTo(1f, tween(320, easing = CubicBezierEasing(0.34f, 1.35f, 0.64f, 1f))) }
     fun close() {
         if (closing) return
         closing = true
-        Sounds.play(Sfx.Close)
         scope.launch { p.animateTo(0f, tween(240, easing = FastOutSlowInEasing)); onClosed() }
     }
     var seenSignal by remember { mutableIntStateOf(closeSignal) }
@@ -140,6 +142,7 @@ internal fun BrainCard(
     val count = notes.size
     val shape = RoundedCornerShape(18.dp)
     var titleAt by remember { mutableStateOf(Offset.Zero) }
+    var addAt by remember { mutableStateOf(Offset.Zero) }
 
     Box(Modifier.fillMaxSize()) {
         Box(
@@ -161,12 +164,19 @@ internal fun BrainCard(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(if (count == 1) "1 note" else "$count notes", Modifier.weight(1f), style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim))
+                    val pill = RoundedCornerShape(50)
+                    Text(
+                        "+ note",
+                        Modifier.onGloballyPositioned { addAt = it.boundsInRoot().center }.clip(pill).border(1.dp, CardPurple, pill)
+                            .clickable(role = Role.Button) { onAdd(addAt) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                        style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.Lavender),
+                    )
                     Text("CLOSE", Modifier.clickable(onClick = ::close).padding(10.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, color = Px.Lavender))
                 }
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                     if (count == 0) {
                         Text(
-                            "NO NOTES YET. TAP \"${title.uppercase()}\" FOR + NOTE", Modifier.align(Alignment.Center).padding(24.dp),
+                            "NO NOTES YET. TAP + NOTE TO KEEP ONE", Modifier.align(Alignment.Center).padding(24.dp),
                             style = TextStyle(fontFamily = PixelFont, fontSize = 9.sp, lineHeight = 16.sp, color = Px.TextDim, textAlign = TextAlign.Center),
                         )
                     } else {

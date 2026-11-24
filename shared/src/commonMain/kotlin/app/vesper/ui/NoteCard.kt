@@ -71,11 +71,10 @@ fun NoteCard(
     val focusManager = LocalFocusManager.current
     var closing by remember { mutableStateOf(false) }
     var drag by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(vm) { Sounds.play(Sfx.Open); p.snapTo(0f); p.animateTo(1f, tween(320, easing = CubicBezierEasing(0.34f, 1.35f, 0.64f, 1f))) }
+    LaunchedEffect(vm) { p.snapTo(0f); p.animateTo(1f, tween(320, easing = CubicBezierEasing(0.34f, 1.35f, 0.64f, 1f))) }
     fun close() {
         if (closing) return
         closing = true
-        Sounds.play(Sfx.Close)
         scope.launch { p.animateTo(0f, tween(240, easing = FastOutSlowInEasing)); onClosed() }
     }
     // the same as the page's own back: save what is typed, drop the keyboard, go

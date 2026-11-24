@@ -17,9 +17,6 @@ interface AlarmScheduler {
     fun schedule(alarm: Alarm) {}
     fun cancel(id: Long) {}
 
-    /** Arms the Daily evening reminder for the next [hour]:00, or cancels it (null). A quiet notification, never a ring. */
-    fun scheduleDaily(hour: Int?) {}
-
     /** Null when all is well. Cheap; the UI re-reads it when the app comes back to the front. */
     fun problem(): AlarmProblem? = null
 

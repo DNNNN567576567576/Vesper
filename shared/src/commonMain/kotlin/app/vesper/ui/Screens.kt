@@ -41,6 +41,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.LaunchedEffect
@@ -53,6 +56,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import app.vesper.res.Res
 import app.vesper.res.tab_brain
 import app.vesper.res.tab_grimoire
+import app.vesper.res.tab_alarms
 import app.vesper.res.tab_calc
 import app.vesper.res.tab_moons
 import org.jetbrains.compose.resources.DrawableResource
@@ -208,33 +212,41 @@ fun PixelButton(text: String, onClick: () -> Unit, primary: Boolean = false, mod
 // Bottom navigation
 // ---------------------------------------------------------------------------------------------
 
+/** The bottom tabs, in order. The Alarms tab exists only where alarms can ring (phones), so desktop shows four. */
+enum class AppTab { Brain, Grimoire, Moons, Alarms, Calc }
+
+fun navTabs(alarmsSupported: Boolean): List<AppTab> = AppTab.entries.filter { it != AppTab.Alarms || alarmsSupported }
+
 private class NavItem(val icon: DrawableResource, val label: String, val zoom: Float = 1f)
 
-private val NAV_ITEMS = listOf(
-    NavItem(Res.drawable.tab_brain, "Brain"),
-    NavItem(Res.drawable.tab_grimoire, "Grimoire"),
-    NavItem(Res.drawable.tab_moons, "Moons", 1.35f), // the moon art sits on a coarser grid, so it reads smaller than the others
-    NavItem(Res.drawable.tab_calc, "Calc"),
+private val NAV_ITEMS = mapOf(
+    AppTab.Brain to NavItem(Res.drawable.tab_brain, "Brain"),
+    AppTab.Grimoire to NavItem(Res.drawable.tab_grimoire, "Grimoire"),
+    AppTab.Moons to NavItem(Res.drawable.tab_moons, "Moons", 1.35f), // the moon art sits on a coarser grid, so it reads smaller than the others
+    AppTab.Alarms to NavItem(Res.drawable.tab_alarms, "Alarms"),
+    AppTab.Calc to NavItem(Res.drawable.tab_calc, "Calc"),
 )
 
 @Composable
-fun PixelNavBar(selected: Int, onSelect: (Int) -> Unit) {
+fun PixelNavBar(tabs: List<AppTab>, selected: Int, onSelect: (Int) -> Unit) {
     Column(Modifier.fillMaxWidth().background(Px.Surface)) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(Px.Border))
         Row(Modifier.fillMaxWidth().navigationBarsPadding().height(72.dp)) {
-            NAV_ITEMS.forEachIndexed { i, n ->
-                NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.weight(1f), n.zoom)
+            tabs.forEachIndexed { i, t ->
+                val n = NAV_ITEMS.getValue(t)
+                NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.weight(1f), n.zoom, small = tabs.size > 4)
             }
         }
     }
 }
 
-/** The wide layout's left rail: the same three tabs, stacked from the top. */
+/** The wide layout's left rail: the same tabs, stacked from the top. */
 @Composable
-fun PixelNavRail(selected: Int, onSelect: (Int) -> Unit) {
+fun PixelNavRail(tabs: List<AppTab>, selected: Int, onSelect: (Int) -> Unit) {
     Row(Modifier.fillMaxHeight().width(88.dp)) {
         Column(Modifier.weight(1f).fillMaxHeight().background(Px.Surface)) {
-            NAV_ITEMS.forEachIndexed { i, n ->
+            tabs.forEachIndexed { i, t ->
+                val n = NAV_ITEMS.getValue(t)
                 NavTab(n.icon, n.label, selected == i, { onSelect(i) }, Modifier.fillMaxWidth().height(72.dp), n.zoom)
             }
         }
@@ -250,6 +262,7 @@ private fun NavTab(
     onClick: () -> Unit,
     modifier: Modifier,
     zoom: Float = 1f,
+    small: Boolean = false, // five tabs on a 360dp phone: 72dp each, so the labels get a hair smaller
 ) {
     val navScale by animateFloatAsState(
         targetValue = if (active) 1f else 0f,
@@ -273,22 +286,29 @@ private fun NavTab(
                         val k = (0.84f + 0.16f * navScale) * zoom
                         scaleX = k
                         scaleY = k
+                        translationY = -3.dp.toPx() * navScale // the chosen tab lifts, and the spring bounces it
                         alpha = if (active) 1f else 0.38f
                     },
                 filterQuality = FilterQuality.None,
             )
         }
+        // The system font scale must not push "Grimoire" out of its 72dp slot, so the label ignores it.
+        val d = LocalDensity.current
+        CompositionLocalProvider(LocalDensity provides Density(d.density, 1f)) {
         Text(
             label,
             modifier = Modifier.padding(top = 5.dp),
+            maxLines = 1,
+            softWrap = false,
             style = TextStyle(
                 fontFamily = PixelFont,
-                fontSize = 8.sp,
-                letterSpacing = 0.5.sp,
+                fontSize = if (small) 7.sp else 8.sp,
+                letterSpacing = if (small) 0.sp else 0.5.sp,
                 color = if (active) Px.Lavender else Px.TextDim.copy(alpha = 0.8f),
                 fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
             ),
         )
+        }
     }
 }
 
