@@ -115,6 +115,13 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
         }
     }
 
+    /** The Moons tab's tap: lights or snuffs [item] on [day] (see [app.vesper.setDailyOn]); [then] runs once it is written. */
+    fun setDailyOn(item: app.vesper.data.Idea, done: Boolean, day: java.time.LocalDate, then: () -> Unit) {
+        notebook.appScope.launch {
+            try { app.vesper.setDailyOn(notebook.db, item, done, day, java.time.LocalDate.now()); launch(Dispatchers.Main) { then() } } catch (e: Exception) { notebook.reportError("tick daily", e) }
+        }
+    }
+
     fun deleteIdea(id: Long) {
         notebook.appScope.launch {
             try { dao.deleteIdea(id) } catch (e: Exception) { notebook.reportError("delete idea", e) }

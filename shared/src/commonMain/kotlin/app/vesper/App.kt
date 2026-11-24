@@ -203,6 +203,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     items = remember(lobes, ideas) { dailyItems(lobes.orEmpty(), ideas.orEmpty()) },
                     log = dailyLog,
                     doneOn = { day -> dailyDoneOn(host.db, day) },
+                    onToggle = brainVm::setDailyOn,
                     resetSignal = moonsReset.intValue,
                 )
             } else {

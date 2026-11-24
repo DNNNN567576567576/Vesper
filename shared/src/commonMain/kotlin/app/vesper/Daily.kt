@@ -55,6 +55,24 @@ suspend fun tickDaily(db: AppDatabase, item: Idea, done: Boolean, today: LocalDa
     }
 }
 
+/**
+ * Sets [item] done or not for [day] from the Moons tab. Today goes through [tickDaily] (flag and log together); a past day only
+ * writes that day's log row (same uid, so sync keeps one row) and leaves the item's flag alone. A future day is refused (false).
+ */
+suspend fun setDailyOn(db: AppDatabase, item: Idea, done: Boolean, day: LocalDate, today: LocalDate): Boolean {
+    if (day.isAfter(today)) return false
+    if (day == today) { tickDaily(db, item, done, today); return true }
+    db.useWriterConnection { c ->
+        c.immediateTransaction {
+            val dao = db.brainDao()
+            val uid = dailyLogUid(item.uid, day.toString())
+            dao.insertLogIfMissing(uid, item.uid, day.toString(), done)
+            dao.setLogDone(uid, done)
+        }
+    }
+    return true
+}
+
 /** Which daily items (their uids) were done on [day], deleted ones included: the day's record for the Moons tab. */
 suspend fun dailyDoneOn(db: AppDatabase, day: LocalDate): List<String> = db.brainDao().doneOn(day.toString())
 
@@ -84,8 +102,9 @@ data class DayRecord(val kind: DayKind, val done: List<Idea> = emptyList(), val 
 }
 
 /**
- * The Moons tab's record of [day] from the uids done that day ([dailyDoneOn]). A future day has none yet. A past day nobody ticked
- * anything on has no record (the log never says which items existed then); today with items shows them lit or unlit.
+ * The Moons tab's record of [day] from the uids done that day ([dailyDoneOn]). A future day has none yet. Any other day shows the
+ * current items lit or unlit (a past day nobody ticked shows them all unlit, so they can be lit after the fact); with no items and
+ * nothing done there is nothing to show.
  */
 fun dayRecord(items: List<Idea>, doneUids: Collection<String>, day: LocalDate, today: LocalDate): DayRecord {
     if (day.isAfter(today)) return DayRecord(DayKind.Future)
@@ -93,6 +112,6 @@ fun dayRecord(items: List<Idea>, doneUids: Collection<String>, day: LocalDate, t
     val done = items.filter { it.uid in set }
     val gone = set.size - done.size
     val undone = items.filter { it.uid !in set }
-    return if (done.isEmpty() && gone == 0 && (day != today || items.isEmpty())) DayRecord(DayKind.Empty)
+    return if (done.isEmpty() && gone == 0 && items.isEmpty())DayRecord(DayKind.Empty)
     else DayRecord(DayKind.Record, done, undone, gone)
 }

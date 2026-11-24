@@ -36,8 +36,12 @@ class TabsAndDayTest {
         assertTrue(r.undone.isEmpty())
     }
 
-    @Test fun aPastDayNobodyTickedHasNoRecord() {
-        assertEquals(DayKind.Empty, dayRecord(items, emptyList(), today.minusDays(5), today).kind)
+    @Test fun aPastDayNobodyTickedShowsEveryItemUnlit() {
+        val r = dayRecord(items, emptyList(), today.minusDays(5), today)
+        assertEquals(DayKind.Record, r.kind)
+        assertEquals(3, r.undone.size)
+        assertTrue(r.done.isEmpty())
+        assertEquals(DayKind.Empty, dayRecord(emptyList(), emptyList(), today.minusDays(5), today).kind)
         assertEquals(DayKind.Empty, dayRecord(emptyList(), emptyList(), today, today).kind)
     }
 

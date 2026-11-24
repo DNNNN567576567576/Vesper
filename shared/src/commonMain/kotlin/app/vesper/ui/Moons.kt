@@ -72,6 +72,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
@@ -205,6 +206,7 @@ fun MoonsScreen(
     items: List<Idea>,
     log: List<DailyLog>,
     doneOn: suspend (LocalDate) -> List<String>,
+    onToggle: (Idea, Boolean, LocalDate, () -> Unit) -> Unit,
     resetSignal: Int,
 ) {
     val time = rememberRotTime()
@@ -230,7 +232,9 @@ fun MoonsScreen(
 
     // The selected day's record: the uids done that day (re-read whenever the log changes, e.g. a candle lit on the Brain tab).
     var doneUids by remember { mutableStateOf<List<String>?>(null) }
-    LaunchedEffect(selected, log) { doneUids = try { doneOn(selDate) } catch (e: Exception) { emptyList() } }
+    // bumped after a tap's write, so a day older than the observed log window still refreshes
+    var wrote by remember { mutableStateOf(0) }
+    LaunchedEffect(selected, log, wrote) { doneUids = try { doneOn(selDate) } catch (e: Exception) { emptyList() } }
     val record = remember(items, doneUids, selected) { doneUids?.let { dayRecord(items, it, selDate, today) } }
     // Days where every Daily item was done, from the recent log (the Brain tab keeps 28 days of it).
     val doneByDay = remember(log) { log.filter { it.done }.groupBy({ it.date }, { it.itemUid }) }
@@ -340,7 +344,7 @@ fun MoonsScreen(
                     Spacer(Modifier.height(12.dp))
                     SheetLabel("DAILY")
                     Spacer(Modifier.height(4.dp))
-                    DailyRecordList(record)
+                    DailyRecordList(record, canTap = !selDate.isAfter(today)) { item, lit -> onToggle(item, lit, selDate) { wrote++ } }
                 }
             }
             if (LocalWide.current) {
@@ -367,7 +371,7 @@ fun MoonsScreen(
 
 /** The day sheet's body: lit candles for the items done that day, unlit for the rest; a line when there is nothing to show. */
 @Composable
-private fun DailyRecordList(r: DayRecord?) {
+private fun DailyRecordList(r: DayRecord?, canTap: Boolean, onTap: (Idea, Boolean) -> Unit) {
     val note = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = Color(0xFF5F5070))
     when {
         r == null -> {}
@@ -379,16 +383,20 @@ private fun DailyRecordList(r: DayRecord?) {
                 Modifier.padding(bottom = 4.dp),
                 style = TextStyle(fontFamily = PageFont, fontSize = 20.sp, color = if (r.allDone) Px.Lavender else MoonsText),
             )
-            for (i in r.done) CandleRow(i.title, lit = true)
-            for (i in r.undone) CandleRow(i.title, lit = false)
+            for (i in r.done) CandleRow(i.title, lit = true, tap = if (canTap) ({ onTap(i, false) }) else null)
+            for (i in r.undone) CandleRow(i.title, lit = false, tap = if (canTap) ({ onTap(i, true) }) else null)
             if (r.gone > 0) Text("+ ${r.gone} since removed", Modifier.padding(top = 4.dp), style = note.copy(fontSize = 17.sp))
         }
     }
 }
 
 @Composable
-private fun CandleRow(title: String, lit: Boolean) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun CandleRow(title: String, lit: Boolean, tap: (() -> Unit)?) {
+    Row(
+        Modifier.fillMaxWidth()
+            .then(if (tap == null) Modifier else Modifier.clickable(role = Role.Checkbox, onClick = tap).semantics { stateDescription = if (lit) "lit" else "unlit" })
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically) {
         CandleGlyph(lit)
         Spacer(Modifier.width(12.dp))
         Text(

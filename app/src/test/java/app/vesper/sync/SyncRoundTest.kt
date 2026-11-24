@@ -922,6 +922,44 @@ class SyncRoundTest {
         assertEquals(a.state(), b.state())
     }
 
+    // ---- 3.0.1 the Moons tab lights or snuffs a candle on any day up to today ----
+
+    private suspend fun Device.setOn(title: String, done: Boolean, day: java.time.LocalDate) =
+        app.vesper.setDailyOn(db, db.syncDao().ideas().single { it.title == title }, done, day, today)
+
+    @Test fun aPastDayTapWritesOnlyThatDaysRowAndLeavesTheFlag() = test {
+        val (a, _) = pair()
+        a.seedDaily()
+        val before = a.daily()
+        val yesterday = today.minusDays(1)
+        assertEquals(true, a.setOn("pills", true, yesterday))
+        assertEquals(listOf("d-pills@2026-11-23=true"), a.log())
+        assertEquals("the item's flag is untouched", before, a.daily())
+        a.setOn("pills", false, yesterday)
+        assertEquals(listOf("d-pills@2026-11-23=false"), a.log())
+        assertEquals(emptyList<String>(), app.vesper.dailyDoneOn(a.db, yesterday))
+        // today goes through tickDaily: flag and row together
+        assertEquals(true, a.setOn("workout", true, today))
+        assertEquals(true, a.daily()["workout"])
+        assertEquals(listOf("d-pills@2026-11-23=false", "d-workout@2026-11-24=true"), a.log())
+        // a day still to come is refused and writes nothing
+        assertEquals(false, a.setOn("read", true, today.plusDays(1)))
+        assertEquals(2, a.db.syncDao().dailyLog().size)
+    }
+
+    @Test fun twoDevicesEditingTheSamePastDayEndWithOneRow() = test {
+        val (a, b) = pair()
+        a.seedDaily()
+        converge(a, b)
+        val d = today.minusDays(3)
+        a.setOn("pills", true, d); tick(); b.setOn("pills", true, d); tick(); b.setOn("read", true, d); tick(); a.setOn("read", false, d)
+        converge(a, b)
+        assertEquals(a.log(), b.log())
+        assertEquals(listOf("d-pills@2026-11-21=true", "d-read@2026-11-21=false"), a.log())
+        assertEquals("no copies", 4, a.db.syncDao().ideas().size)
+        assertEquals(a.state(), b.state())
+    }
+
     // ---- 2.7.9 the Bible canvas between two devices ----
 
     private suspend fun Device.cards() = db.syncDao().bibleCards().sortedBy { it.uid }
