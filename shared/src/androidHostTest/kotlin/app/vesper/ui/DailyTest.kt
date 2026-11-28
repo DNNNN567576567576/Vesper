@@ -35,6 +35,12 @@ class DailyTest {
         assertEquals("daily", placeName(lobes[3]))
     }
 
+    @Test fun savedOrderComesFirstNewItemsLastAndGoneUidsAreIgnored() {
+        // i7 and i5 saved (i5 after i7); i99 was deleted; i4 and i6 are new
+        assertEquals(listOf("stretch", "workout", "pills", "read 10 pages"), dailyItems(lobes, ideas, listOf("i7", "i99", "i5")).map { it.title })
+        assertEquals(listOf("pills", "workout", "read 10 pages", "stretch"), dailyItems(lobes, ideas, emptyList()).map { it.title })
+    }
+
     @Test fun dailyStaysOutOfTheMainBrainItsSparksSearchAndThePickers() {
         assertEquals(listOf(1L), mainBrainNotes(lobes, ideas).map { it.id })
         assertEquals(listOf(1L), buildLayout(emptyList(), mainBrainNotes(lobes, ideas)).notes.map { it.id }) // the sparks

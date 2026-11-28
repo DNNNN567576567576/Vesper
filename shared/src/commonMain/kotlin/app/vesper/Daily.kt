@@ -7,6 +7,7 @@ import app.vesper.data.DailyLog
 import app.vesper.data.Idea
 import app.vesper.data.Lobe
 import app.vesper.data.dailyLogUid
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import java.time.LocalDate
 import java.time.ZoneId
@@ -21,10 +22,21 @@ const val KEY_DAILY_RESET = "dailyResetDate"
 
 fun isDailyLobe(l: Lobe) = l.name.trim().equals(DAILY_LOBE, ignoreCase = true)
 
-/** The Daily items, in the order they were made. */
-fun dailyItems(lobes: List<Lobe>, ideas: List<Idea>): List<Idea> {
+/** Settings: the Daily items' uids (comma separated) in the order the player dragged them to, per device (no DB, no sync). */
+const val KEY_DAILY_ORDER = "dailyOrder"
+
+/** The saved Daily order, shared by the cards, the Moons tab and the home-screen widget; the widget watcher follows [uids]. */
+object DailyOrder {
+    val uids = MutableStateFlow<List<String>>(emptyList())
+    fun load(s: Settings) { uids.value = s.getString(KEY_DAILY_ORDER).orEmpty().split(',').filter { it.isNotEmpty() } }
+    fun save(s: Settings, order: List<String>) { uids.value = order; s.putString(KEY_DAILY_ORDER, order.joinToString(",")) }
+}
+
+/** The Daily items: the ones in [order] first, in that order (gone uids are ignored), then the rest in the order they were made. */
+fun dailyItems(lobes: List<Lobe>, ideas: List<Idea>, order: List<String> = emptyList()): List<Idea> {
     val ids = lobes.filter(::isDailyLobe).mapTo(HashSet()) { it.id }
-    return ideas.filter { it.lobeId in ids }.sortedWith(compareBy({ it.id }, { it.uid }))
+    val rank = HashMap<String, Int>().also { m -> order.forEachIndexed { n, u -> m.putIfAbsent(u, n) } }
+    return ideas.filter { it.lobeId in ids }.sortedWith(compareBy({ rank[it.uid] ?: Int.MAX_VALUE }, { it.id }, { it.uid }))
 }
 
 /** Local midnight that starts [day]. */

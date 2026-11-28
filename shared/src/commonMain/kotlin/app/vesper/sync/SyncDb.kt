@@ -37,8 +37,8 @@ private suspend fun SyncDao.read(deviceId: String): Snapshot {
         plans = plans().map { SyncPlan(it.uid, it.syncAt, it.day, it.text, it.done, it.createdAt) }.sortedBy { it.uid },
         goals = goals.map { SyncGoal(it.uid, it.syncAt, it.name, it.position, it.createdAt, it.updatedAt) }.sortedBy { it.uid },
         steps = steps().map { SyncStep(it.uid, it.syncAt, goalUid.getValue(it.goalId), it.title, it.note, it.done, it.day, it.position, it.createdAt, it.updatedAt) }.sortedBy { it.uid },
-        bibleCards = bibleCards().map { SyncBibleCard(it.uid, it.syncAt, it.name, it.note, it.kind, it.x, it.y, it.locked) }.sortedBy { it.uid },
-        bibleLinks = bibleLinks().map { SyncBibleLink(it.uid, it.syncAt, it.fromUid, it.toUid, it.label) }.sortedBy { it.uid },
+        bibleCards = bibleCards().map { SyncBibleCard(it.uid, it.syncAt, it.name, it.note, it.kind, it.x, it.y, it.locked, it.thoughts, it.nameKa, it.noteKa, it.thoughtsKa, it.moments, it.momentsKa) }.sortedBy { it.uid },
+        bibleLinks = bibleLinks().map { SyncBibleLink(it.uid, it.syncAt, it.fromUid, it.toUid, it.label, it.labelKa) }.sortedBy { it.uid },
         dailyLog = dailyLog().map { SyncDailyLog(it.uid, it.syncAt, it.itemUid, it.date, it.done) }.sortedBy { it.uid },
         tombstones = tombstones().map { SyncTomb(it.tbl, it.uid, it.deletedAt) }.sortedWith(compareBy({ it.tbl }, { it.uid })),
     )
@@ -135,12 +135,12 @@ private suspend fun SyncDao.write(local: Snapshot, merged: Snapshot) {
 
     val cardIds = bibleCards().associate { it.uid to it.id }
     for (c in changed(local.bibleCards, merged.bibleCards)) {
-        val row = BibleCard(cardIds[c.uid] ?: 0, c.name, c.note, c.kind, c.x, c.y, c.locked, c.uid, c.syncAt)
+        val row = BibleCard(cardIds[c.uid] ?: 0, c.name, c.note, c.kind, c.x, c.y, c.locked, c.uid, c.syncAt, c.thoughts, c.nameKa, c.noteKa, c.thoughtsKa, c.moments, c.momentsKa)
         if (row.id == 0L) insert(row) else update(row)
     }
     val linkIds = bibleLinks().associate { it.uid to it.id }
     for (l in changed(local.bibleLinks, merged.bibleLinks)) {
-        val row = BibleLink(linkIds[l.uid] ?: 0, l.fromUid, l.toUid, l.label, l.uid, l.syncAt)
+        val row = BibleLink(linkIds[l.uid] ?: 0, l.fromUid, l.toUid, l.label, l.uid, l.syncAt, l.labelKa)
         if (row.id == 0L) insert(row) else update(row)
     }
     val logIds = dailyLog().associate { it.uid to it.id }

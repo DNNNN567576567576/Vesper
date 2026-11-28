@@ -72,7 +72,8 @@ class BrainViewModel(private val notebook: VesperHost) : ViewModel() {
     }
 
     // Where the player put the brains on the map, per device.
-    fun loadLayout() = app.vesper.ui.NoteMoves.load(notebook.settings)
+    fun loadLayout() { app.vesper.ui.NoteMoves.load(notebook.settings); DailyOrder.load(notebook.settings) }
+    fun saveDailyOrder(order: List<String>) = DailyOrder.save(notebook.settings, order)
     fun saveLayout() = app.vesper.ui.NoteMoves.save(notebook.settings)
     fun resetLayout() = app.vesper.ui.NoteMoves.reset(notebook.settings)
 
@@ -452,6 +453,13 @@ class BibleViewModel(private val notebook: VesperHost) : ViewModel() {
         try { block() } catch (e: Exception) { notebook.reportError(what, e) }
     }
 
+    /** "en" or "ka": which language the Bible world shows; kept per device in [Settings]. */
+    val lang = MutableStateFlow(if (notebook.settings.getString("bibleLang") == "ka") "ka" else "en")
+    fun toggleLang() { val next = if (lang.value == "ka") "en" else "ka"; lang.value = next; notebook.settings.putString("bibleLang", next) }
+
+    /** Georgian Genesis, from this PC's folder or as sync brought it; null until there is one. */
+    suspend fun kaGenesis(): String? = withContext(Dispatchers.IO) { notebook.sync.bibleText("genesis_ka") }
+
     fun addCard(name: String, x: Float, y: Float) {
         val clean = name.trim().ifEmpty { return }
         write("add card") { dao.insertCard(app.vesper.data.BibleCard(name = clean, x = x, y = y)) }
@@ -484,4 +492,13 @@ class BibleViewModel(private val notebook: VesperHost) : ViewModel() {
     }
 
     fun deleteLink(id: Long) = write("delete link") { dao.deleteLink(id) }
+
+    // The character page and the Georgian texts. Empty is allowed: "" means not written yet.
+    fun setThoughts(id: Long, text: String) = write("save thoughts") { dao.setThoughts(id, text.trim().take(app.vesper.ui.BIBLE_NOTE_MAX)) }
+    fun setNameKa(id: Long, text: String) = write("save Georgian name") { dao.setNameKa(id, text.trim().take(app.vesper.ui.BIBLE_NAME_MAX)) }
+    fun setNoteKa(id: Long, text: String) = write("save Georgian note") { dao.setNoteKa(id, text.trim().take(app.vesper.ui.BIBLE_NOTE_MAX)) }
+    fun setThoughtsKa(id: Long, text: String) = write("save Georgian thoughts") { dao.setThoughtsKa(id, text.trim().take(app.vesper.ui.BIBLE_NOTE_MAX)) }
+    fun setMoments(id: Long, text: String) = write("save moments") { dao.setMoments(id, text.trim().take(app.vesper.ui.BIBLE_NOTE_MAX)) }
+    fun setMomentsKa(id: Long, text: String) = write("save Georgian moments") { dao.setMomentsKa(id, text.trim().take(app.vesper.ui.BIBLE_NOTE_MAX)) }
+    fun setLinkLabelKa(id: Long, text: String) = write("save Georgian label") { dao.setLinkLabelKa(id, text.trim().take(app.vesper.ui.BIBLE_LABEL_MAX)) }
 }

@@ -103,5 +103,15 @@ val MIGRATION_12_13 = object : Migration(12, 13) {
     override fun migrate(db: SupportSQLiteDatabase) = MIGRATE_12_13_SQL.forEach(db::execSQL)
 }
 
+/** v13 -> v14: Bible thoughts and Georgian texts, see [MIGRATE_13_14_SQL]. */
+val MIGRATION_13_14 = object : Migration(13, 14) {
+    override fun migrate(db: SupportSQLiteDatabase) = MIGRATE_13_14_SQL.forEach(db::execSQL)
+}
+
+/** v14 -> v15: a Bible card's big moments, see [MIGRATE_14_15_SQL]. */
+val MIGRATION_14_15 = object : Migration(14, 15) {
+    override fun migrate(db: SupportSQLiteDatabase) = MIGRATE_14_15_SQL.forEach(db::execSQL)
+}
+
 /** The single migration list used by the app and the tests. */
-val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)

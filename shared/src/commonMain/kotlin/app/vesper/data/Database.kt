@@ -403,6 +403,14 @@ data class BibleCard(
     val locked: Boolean = false,
     @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
     @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+    // v14: the user's own reflections (note holds the facts) and the Georgian texts; "" = not written yet.
+    @ColumnInfo(defaultValue = "''") val thoughts: String = "",
+    @ColumnInfo(defaultValue = "''") val nameKa: String = "",
+    @ColumnInfo(defaultValue = "''") val noteKa: String = "",
+    @ColumnInfo(defaultValue = "''") val thoughtsKa: String = "",
+    // v15: the person's big moments, one per line (the UI owns the format); "" = none yet.
+    @ColumnInfo(defaultValue = "''") val moments: String = "",
+    @ColumnInfo(defaultValue = "''") val momentsKa: String = "",
 )
 
 const val BIBLE_PERSON = "person"
@@ -417,6 +425,7 @@ data class BibleLink(
     val label: String,
     @ColumnInfo(defaultValue = "''") val uid: String = newUid(),
     @ColumnInfo(defaultValue = "0") val syncAt: Long = 0,
+    @ColumnInfo(defaultValue = "''") val labelKa: String = "",
 )
 
 @Dao
@@ -447,8 +456,29 @@ interface BibleDao {
     @Query("UPDATE bible_cards SET locked = :locked WHERE id = :id")
     suspend fun setLocked(id: Long, locked: Boolean)
 
+    @Query("UPDATE bible_cards SET thoughts = :text WHERE id = :id")
+    suspend fun setThoughts(id: Long, text: String)
+
+    @Query("UPDATE bible_cards SET nameKa = :text WHERE id = :id")
+    suspend fun setNameKa(id: Long, text: String)
+
+    @Query("UPDATE bible_cards SET noteKa = :text WHERE id = :id")
+    suspend fun setNoteKa(id: Long, text: String)
+
+    @Query("UPDATE bible_cards SET thoughtsKa = :text WHERE id = :id")
+    suspend fun setThoughtsKa(id: Long, text: String)
+
+    @Query("UPDATE bible_cards SET moments = :text WHERE id = :id")
+    suspend fun setMoments(id: Long, text: String)
+
+    @Query("UPDATE bible_cards SET momentsKa = :text WHERE id = :id")
+    suspend fun setMomentsKa(id: Long, text: String)
+
     @Query("UPDATE bible_links SET label = :label WHERE id = :id")
     suspend fun renameLink(id: Long, label: String)
+
+    @Query("UPDATE bible_links SET labelKa = :text WHERE id = :id")
+    suspend fun setLinkLabelKa(id: Long, text: String)
 
     @Query("DELETE FROM bible_links WHERE id = :id")
     suspend fun deleteLink(id: Long)
@@ -590,7 +620,7 @@ fun syncTriggerSql(t: String) = listOf(
 )
 
 /** Bump together with a new MIGRATION_x_y added to [ALL_MIGRATIONS]; MigrationTest fails if either is forgotten. */
-const val DB_VERSION = 13
+const val DB_VERSION = 15
 
 /**
  * v9 -> v10, as plain SQL so Android and desktop run the very same statements. Groups come in with ALTER, not a table
@@ -633,6 +663,21 @@ val MIGRATE_12_13_SQL = listOf(
     "CREATE INDEX IF NOT EXISTS `index_daily_log_date` ON `daily_log` (`date`)",
 ) + syncTriggerSql("daily_log")
 
+/** v13 -> v14: Bible character pages and the Georgian texts. ALTER only: no trigger fires, no syncAt moves, old rows get ''. */
+val MIGRATE_13_14_SQL = listOf(
+    "ALTER TABLE `bible_cards` ADD COLUMN `thoughts` TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE `bible_cards` ADD COLUMN `nameKa` TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE `bible_cards` ADD COLUMN `noteKa` TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE `bible_cards` ADD COLUMN `thoughtsKa` TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE `bible_links` ADD COLUMN `labelKa` TEXT NOT NULL DEFAULT ''",
+)
+
+/** v14 -> v15: a Bible card's big moments. ALTER only: no trigger fires, no syncAt moves, old rows get ''. */
+val MIGRATE_14_15_SQL = listOf(
+    "ALTER TABLE `bible_cards` ADD COLUMN `moments` TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE `bible_cards` ADD COLUMN `momentsKa` TEXT NOT NULL DEFAULT ''",
+)
+
 /** The desktop's first release was v9, so this is its whole list. Its driver has no SupportSQLiteDatabase, hence the connection. */
 val DESKTOP_MIGRATIONS = arrayOf<Migration>(
     object : Migration(9, 10) {
@@ -646,6 +691,12 @@ val DESKTOP_MIGRATIONS = arrayOf<Migration>(
     },
     object : Migration(12, 13) {
         override fun migrate(connection: SQLiteConnection) = MIGRATE_12_13_SQL.forEach { connection.execSQL(it) }
+    },
+    object : Migration(13, 14) {
+        override fun migrate(connection: SQLiteConnection) = MIGRATE_13_14_SQL.forEach { connection.execSQL(it) }
+    },
+    object : Migration(14, 15) {
+        override fun migrate(connection: SQLiteConnection) = MIGRATE_14_15_SQL.forEach { connection.execSQL(it) }
     },
 )
 

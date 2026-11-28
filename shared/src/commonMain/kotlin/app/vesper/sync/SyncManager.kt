@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** [vaultExists]: null until asked; tells the passphrase dialog whether to set a new one or open the existing one. */
@@ -137,9 +138,17 @@ class SyncManager(
     private suspend fun round() {
         flushers.forEach { it() }
         val key = platform.loadKey() ?: throw VaultChanged()
-        syncRound(db, store, transport(platform.accessToken()), key)
+        val t = transport(platform.accessToken())
+        syncRound(db, store, t, key)
         _ui.update { it.copy(lastSyncAt = store.state.lastSyncAt) }
+        syncBibles(t, key, platform.bibleSource, bibleDir)
     }
+
+    private val bibleDir get() = File(platform.stateDir, "bible")
+
+    /** Bible text <[stem]>.txt: this device's source folder first, else the copy sync brought; null if neither. Blocking. */
+    fun bibleText(stem: String): String? =
+        listOfNotNull(platform.bibleSource, bibleDir).map { File(it, "$stem.txt") }.firstOrNull { it.isFile }?.let { runCatching { it.readText() }.getOrNull() }
 
     /** [flush] runs before every round. Returns what takes it off the list again. */
     fun beforeRound(flush: suspend () -> Unit): () -> Unit {

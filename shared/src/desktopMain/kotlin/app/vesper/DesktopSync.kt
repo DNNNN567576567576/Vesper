@@ -50,6 +50,9 @@ class DesktopSyncPlatform(override val stateDir: File) : SyncPlatform {
         }
     }
 
+    // The user's own copy, kept out of the public repo; missing on other PCs, then nothing happens.
+    override val bibleSource = File("G:\\My Drive\\BackUps\\VesperBackUps\\GeoBible")
+
     override val available get() = client != null
     override fun isSignedIn() = tokenFile.exists()
 

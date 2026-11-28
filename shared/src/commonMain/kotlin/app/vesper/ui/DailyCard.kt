@@ -3,12 +3,17 @@ package app.vesper.ui
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,22 +34,26 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.semantics.Role
@@ -52,10 +61,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.unit.sp
 import app.vesper.DailyStat
 import app.vesper.STATS_COUNT_DAYS
@@ -136,7 +147,8 @@ internal fun candlePixels(lit: Boolean, frame: Int = 1): List<Triple<Int, Int, I
 /**
  * The daily brain opened: a card grown from [from] (px in the root) with a row of candles, one per item, its name under it. A tap
  * lights an unlit candle or snuffs a lit one ([onToggle]); a long press gives rename and delete ([onItemMenu], with where it was
- * pressed, px in the root); "+ add" adds one; "stats" shows the last weeks from [log]. Back, CLOSE, a tap outside or [closeSignal]
+ * pressed, px in the root; held and moved instead, the candle is dragged to a new place and [onReorder] gets all the uids in the new order);
+ * "+ add" adds one; "stats" shows the last weeks from [log]. Back, CLOSE, a tap outside or [closeSignal]
  * closes it (back leaves the stats first).
  */
 @Composable
@@ -147,6 +159,7 @@ internal fun DailyCard(
     closeSignal: Int,
     onToggle: (Idea) -> Unit,
     onItemMenu: (Idea, Offset) -> Unit,
+    onReorder: (List<String>) -> Unit,
     onAdd: () -> Unit,
     onClosed: () -> Unit,
 ) {
@@ -166,6 +179,12 @@ internal fun DailyCard(
     val shape = RoundedCornerShape(14.dp)
     val font = PageFont
     val time = rememberRotTime()
+    // the order while a candle is being dragged (items follow only after it is saved); rects = where each candle sits (root px)
+    val local = remember { items.toMutableStateList() }
+    var dragUid by remember { mutableStateOf<String?>(null) }
+    val rects = remember { HashMap<String, Rect>() }
+    val settled = remember { booleanArrayOf(true) } // false from a swap until the dragged candle reports its new place, so it cannot swap back
+    LaunchedEffect(items) { if (dragUid == null) { local.clear(); local.addAll(items) } }
 
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = p.value.coerceIn(0f, 1f) }.background(Color.Black.copy(alpha = 0.55f)).pointerInput(Unit) { detectTapGestures { close() } })
@@ -196,7 +215,18 @@ internal fun DailyCard(
                     } else {
                         if (items.isEmpty()) Text("NO CANDLES YET. + ADD ONE", Modifier.fillMaxWidth().padding(16.dp), style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim, textAlign = TextAlign.Center))
                         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            for (i in items) Candle(i, font, { time.floatValue }, { onToggle(i) }, { at -> onItemMenu(i, at) })
+                            for (i in local) key(i.uid) {
+                                Candle(
+                                    i, font, { time.floatValue }, { onToggle(i) }, { at -> onItemMenu(i, at) },
+                                    onRect = { rects[i.uid] = it; if (i.uid == dragUid) settled[0] = true },
+                                    onDragStart = { dragUid = i.uid },
+                                    onDragTo = { c ->
+                                        val over = if (settled[0]) local.firstOrNull { it.uid != i.uid && rects[it.uid]?.contains(c) == true } else null
+                                        if (over != null) { local.add(local.indexOfFirst { it.uid == over.uid }, local.removeAt(local.indexOfFirst { it.uid == i.uid })); settled[0] = false }
+                                    },
+                                    onDragEnd = { dragUid = null; settled[0] = true; onReorder(local.map { it.uid }) },
+                                )
+                            }
                         }
                     }
                 }
@@ -219,10 +249,22 @@ private fun Chip(text: String, onClick: () -> Unit) {
     )
 }
 
-/** One item: its candle and its name; a tap lights or snuffs it, a long press asks rename or delete. */
+/**
+ * One item: its candle and its name; a tap lights or snuffs it, a long press (released without moving) asks rename or delete, a long
+ * press and a move drags it ([onDragTo] gets its centre in the root; the others slide to their new places).
+ */
 @Composable
-private fun Candle(item: Idea, font: androidx.compose.ui.text.font.FontFamily, time: () -> Float, onTap: () -> Unit, onLong: (Offset) -> Unit) {
+private fun Candle(
+    item: Idea, font: androidx.compose.ui.text.font.FontFamily, time: () -> Float, onTap: () -> Unit, onLong: (Offset) -> Unit,
+    onRect: (Rect) -> Unit, onDragStart: () -> Unit, onDragTo: (Offset) -> Unit, onDragEnd: () -> Unit,
+) {
     var origin by remember { mutableStateOf(Offset.Zero) }
+    var held by remember { mutableStateOf(false) }
+    var grabFrom by remember { mutableStateOf(Offset.Zero) } // where the slot was when the drag began
+    var grab by remember { mutableStateOf(Offset.Zero) } // how far the finger has moved since
+    var lastAt by remember { mutableStateOf<Offset?>(null) }
+    val slide = remember { Animatable(Offset.Zero, Offset.VectorConverter) } // the glide from the old slot to the new one
+    val scope = rememberCoroutineScope()
     val name = ideaLabel(item).ifBlank { "..." }
     val still = remember(item.done) { candlePixels(item.done, 1) }
     val frames = remember(item.done) { if (item.done) listOf(candlePixels(true, 0), still, candlePixels(true, 2)) else listOf(still) }
@@ -238,10 +280,39 @@ private fun Candle(item: Idea, font: androidx.compose.ui.text.font.FontFamily, t
     }
     Column(
         Modifier.width(76.dp)
-            .onGloballyPositioned { origin = it.positionInRoot() }
-            .semantics(mergeDescendants = true) { role = Role.Checkbox; contentDescription = name; stateDescription = if (item.done) "lit" else "unlit" }
+            .onGloballyPositioned {
+                val p = it.positionInRoot()
+                origin = p; onRect(Rect(p, it.size.toSize()))
+                val prev = lastAt; lastAt = p
+                if (prev != null && prev != p && !held) scope.launch { slide.snapTo(slide.value + prev - p); slide.animateTo(Offset.Zero, tween(180)) }
+            }
+            .zIndex(if (held) 1f else 0f)
             // keyed on done too: the gesture block keeps its first onTap, whose item was still unlit, so a lit candle never snuffed
-            .pointerInput(item.id, item.done) { detectTapGestures(onTap = { onTap() }, onLongPress = { onLong(origin + it) }) }
+            .pointerInput(item.id, item.done) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    val press = awaitLongPressOrCancellation(down.id)
+                    if (press == null) { // lifted early = a tap; moved off = not ours
+                        if (currentEvent.changes.any { it.id == down.id && !it.pressed }) onTap()
+                        return@awaitEachGesture
+                    }
+                    var total = Offset.Zero
+                    val ok = drag(press.id) { c ->
+                        total += c.positionChange(); c.consume()
+                        if (!held && total.getDistance() > viewConfiguration.touchSlop) { held = true; grabFrom = origin; onDragStart() }
+                        if (held) { grab = total; onDragTo(grabFrom + total + Offset(size.width / 2f, size.height / 2f)) }
+                    }
+                    if (held) {
+                        scope.launch { slide.snapTo(grabFrom + grab - origin); held = false; slide.animateTo(Offset.Zero, tween(180)) }
+                        onDragEnd()
+                    } else if (ok) onLong(origin + press.position)
+                }
+            }
+            .graphicsLayer {
+                val t = if (held) grabFrom + grab - origin else slide.value
+                translationX = t.x; translationY = t.y
+            }
+            .semantics(mergeDescendants = true) { role = Role.Checkbox; contentDescription = name; stateDescription = if (item.done) "lit" else "unlit" }
             .padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

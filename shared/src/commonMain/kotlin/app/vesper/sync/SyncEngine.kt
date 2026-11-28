@@ -102,6 +102,39 @@ suspend fun syncRound(db: AppDatabase, store: SyncStore, t: SyncTransport, key: 
  */
 fun SyncState.afterRestore() = copy(lastSyncAt = 0, pushedHash = null, pushedUpTo = 0, peerVersions = emptyMap(), seen = emptyMap(), sent = emptyMap())
 
+private fun sha(b: ByteArray) = MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }.take(16)
+
+// Not "snap-...", so no version's snapshot pass (SNAP.matchEntire) or own-file cleanup (exact name) ever touches these.
+private val BIBLE = Regex("bible-(\\w+)-([0-9a-f]{16})\\.vsp")
+private val STEM = Regex("\\w+")
+fun bibleName(stem: String, plain: ByteArray) = "bible-$stem-${sha(plain)}.vsp"
+
+/**
+ * Bible texts ride beside the snapshots as their own sealed files, bible-<stem>-<hash>.vsp, never inside one. The device
+ * with a [source] folder uploads each <stem>.txt there once per content and drops its older uploads; every other device
+ * keeps the latest in [dir] as <stem>.txt. An unreadable [source] (missing, or Drive for desktop offline) is skipped.
+ */
+fun syncBibles(t: SyncTransport, key: ByteArray, source: File?, dir: File, files: List<RemoteFile> = t.list()) {
+    val mine = source?.listFiles()?.filter { it.isFile && it.name.endsWith(".txt") && STEM.matches(it.name.removeSuffix(".txt")) }.orEmpty()
+        .mapNotNull { f -> runCatching { f.name.removeSuffix(".txt") to f.readBytes() }.getOrNull() }.toMap()
+    for ((stem, plain) in mine) {
+        val name = bibleName(stem, plain)
+        if (files.none { it.name == name }) t.create(name, seal(key, name, plain))
+        files.filter { it.name != name && BIBLE.matchEntire(it.name)?.groupValues?.get(1) == stem }.forEach { t.delete(it.id) }
+    }
+    for (f in files) {
+        val (stem, hash) = BIBLE.matchEntire(f.name)?.destructured ?: continue
+        val local = File(dir, "$stem.txt")
+        if (stem in mine || (local.isFile && sha(local.readBytes()) == hash)) continue
+        val plain = open(key, f.name, t.download(f.id))
+        if (sha(plain) != hash) continue // an older upload under a stale name; the uploader deletes it
+        dir.mkdirs()
+        val tmp = File(dir, "$stem.txt.tmp")
+        tmp.writeBytes(plain)
+        Files.move(tmp.toPath(), local.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+    }
+}
+
 /** Forgot the passphrase, or starting over: empties the Drive folder. Local rows and [SyncState.seen] stay, they still hold. */
 fun resetVault(store: SyncStore, t: SyncTransport) {
     // The vault goes first: every other device stops at its check, and if this fails halfway a new vault clears the rest.

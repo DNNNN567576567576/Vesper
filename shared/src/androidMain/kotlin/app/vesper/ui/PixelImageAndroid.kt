@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.nativePaint
 import androidx.compose.ui.window.DialogProperties
@@ -26,3 +27,5 @@ internal actual fun BackHandler(enabled: Boolean, onBack: () -> Unit) = androidx
 internal actual val saveOnDispose = false
 
 internal actual fun edgeToEdgeDialog() =DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+
+internal actual fun ImageBitmap.toPng(): ByteArray = java.io.ByteArrayOutputStream().also { asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()

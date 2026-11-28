@@ -23,17 +23,23 @@ interface SyncRow {
 @Serializable data class SyncPlan(override val uid: String, override val syncAt: Long, val day: Long, val text: String, val done: Boolean, val createdAt: Long) : SyncRow
 @Serializable data class SyncGoal(override val uid: String, override val syncAt: Long, val name: String, val position: Int, val createdAt: Long, val updatedAt: Long) : SyncRow
 @Serializable data class SyncStep(override val uid: String, override val syncAt: Long, val goalUid: String, val title: String, val note: String = "", val done: Boolean = false, val day: Long? = null, val position: Int, val createdAt: Long, val updatedAt: Long) : SyncRow
-@Serializable data class SyncBibleCard(override val uid: String, override val syncAt: Long, val name: String, val note: String = "", val kind: String = "person", val x: Float, val y: Float, val locked: Boolean = false) : SyncRow
-@Serializable data class SyncBibleLink(override val uid: String, override val syncAt: Long, val fromUid: String, val toUid: String, val label: String) : SyncRow
+@Serializable data class SyncBibleCard(override val uid: String, override val syncAt: Long, val name: String, val note: String = "", val kind: String = "person", val x: Float, val y: Float, val locked: Boolean = false,
+    val thoughts: String = "", val nameKa: String = "", val noteKa: String = "", val thoughtsKa: String = "",
+    val moments: String = "", val momentsKa: String = "") : SyncRow
+@Serializable data class SyncBibleLink(override val uid: String, override val syncAt: Long, val fromUid: String, val toUid: String, val label: String, val labelKa: String = "") : SyncRow
 @Serializable data class SyncDailyLog(override val uid: String, override val syncAt: Long, val itemUid: String, val date: String, val done: Boolean) : SyncRow
 @Serializable data class SyncTomb(val tbl: String, val uid: String, val deletedAt: Long)
 
-/** 2 added groups, links and done; 3 the learn brain's goals and steps; 4 the Bible canvas's cards and links; 5 the daily log. Bump it whenever an older build would silently drop part of a row. */
-const val SNAPSHOT_VERSION = 5
+/**
+ * 2 added groups, links and done; 3 the learn brain's goals and steps; 4 the Bible canvas's cards and links; 5 the daily log;
+ * 6 a card's thoughts and Georgian texts and a link's Georgian label; 7 a card's big moments. Bump it whenever an older build would silently drop part of a row.
+ */
+const val SNAPSHOT_VERSION = 7
 
 /**
  * The oldest snapshot that merges whole: its rows carry every field of every table it has. 3, 4 and 5 only added tables, so a 2
  * simply holds no goals, steps, Bible cards or daily log, and merging it can't touch ours (only tombstones delete). A 1 lacks groups, links and done.
+ * 6 and 7 added Bible fields; [merge] lends an older file's cards and links our values for them, so they are never blanked.
  */
 const val MERGEABLE_VERSION = 2
 
@@ -128,6 +134,20 @@ fun copyUid(uid: String, syncAt: Long) = "$uid~$syncAt"
  * is what keeps restored rows through the peers' older deletes. [sent] holds our pushed versions, see [sentAfter].
  */
 fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo: Long = Long.MAX_VALUE, sent: Map<String, List<Long>> = emptyMap()): Snapshot {
+    // Before 6 a card had no thoughts or Georgian texts and a link no Georgian label: the older peer's row keeps ours, never "".
+    if (remote.v < 6) {
+        val cards = local.bibleCards.associateBy { it.uid }
+        val links = local.bibleLinks.associateBy { it.uid }
+        return merge(local, remote.copy(v = 6,
+            bibleCards = remote.bibleCards.map { r -> cards[r.uid]?.let { r.copy(thoughts = it.thoughts, nameKa = it.nameKa, noteKa = it.noteKa, thoughtsKa = it.thoughtsKa) } ?: r },
+            bibleLinks = remote.bibleLinks.map { r -> links[r.uid]?.let { r.copy(labelKa = it.labelKa) } ?: r }), seen, pushedUpTo, sent)
+    }
+    // Before 7 a card had no moments: same rule (a pre-6 file passes through both steps).
+    if (remote.v < 7) {
+        val cards = local.bibleCards.associateBy { it.uid }
+        return merge(local, remote.copy(v = 7,
+            bibleCards = remote.bibleCards.map { r -> cards[r.uid]?.let { r.copy(moments = it.moments, momentsKa = it.momentsKa) } ?: r }), seen, pushedUpTo, sent)
+    }
     val tie = remote.deviceId > local.deviceId
     val tombs: Tombs = (local.tombstones + remote.tombstones).groupBy({ it.tbl to it.uid }, { it.deletedAt }).mapValues { it.value.max() }
 
@@ -139,9 +159,11 @@ fun merge(local: Snapshot, remote: Snapshot, seen: Map<String, Long>, pushedUpTo
     val noteCopies = conflictCopies("notes", local.notes, remote.notes, seen, sent, tie, { it.title to it.content }) { n, uid -> n.copy(uid = uid, title = copyTitle(n.title)) }
     val ideaCopies = conflictCopies("ideas", local.ideas, remote.ideas, seen, sent, tie, { Triple(it.title, it.body, it.link) }) { i, uid -> i.copy(uid = uid, title = copyTitle(i.title)) }
     val planCopies = conflictCopies("plans", local.plans, remote.plans, seen, sent, tie, { it.text }) { p, uid -> p.copy(uid = uid, text = copyTitle(p.text)) }
-    // Only the name and note are text: a card moved, locked or turned into a thing on one side is no conflict, last writer wins.
-    // The copy sits a little below right of its card, so both show.
-    val cardCopies = conflictCopies("bible_cards", local.bibleCards, remote.bibleCards, seen, sent, tie, { it.name to it.note }) { c, uid -> c.copy(uid = uid, name = copyTitle(c.name), x = c.x + 24f, y = c.y + 24f) }
+    // Only the names, notes and thoughts are text: a card moved, locked or turned into a thing on one side is no conflict, last writer wins.
+    // The copy sits a little below right of its card, so both show; a Georgian name, when written, is marked too.
+    val cardCopies = conflictCopies("bible_cards", local.bibleCards, remote.bibleCards, seen, sent, tie, { listOf(it.name, it.note, it.thoughts, it.nameKa, it.noteKa, it.thoughtsKa, it.moments, it.momentsKa) }) { c, uid ->
+        c.copy(uid = uid, name = copyTitle(c.name), nameKa = if (c.nameKa.isEmpty()) "" else copyTitle(c.nameKa), x = c.x + 24f, y = c.y + 24f)
+    }
 
     // associateBy keeps the last: a copy the peer already holds (maybe edited since) beats the one just built.
     val notes = resolve("notes", local.notes.keepUnseen("notes") { copy(syncAt = it) }, (noteCopies + remote.notes).associateBy { it.uid }.values.toList(), tombs, tie)

@@ -23,3 +23,6 @@ internal expect val saveOnDispose: Boolean
 
 /** Full-screen dialog drawn under the system bars (Android: decorFitsSystemWindows = false). */
 internal expect fun edgeToEdgeDialog(): DialogProperties
+
+/** The picture as PNG bytes (the note share image). */
+internal expect fun ImageBitmap.toPng(): ByteArray

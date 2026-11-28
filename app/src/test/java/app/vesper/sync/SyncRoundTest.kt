@@ -15,6 +15,7 @@ import app.vesper.data.SYNC_TRIGGERS_CALLBACK
 import app.vesper.data.Task
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -779,13 +780,13 @@ class SyncRoundTest {
     }
 
     /** What a version 2 or 3 build does with our file: its validate() stops at the number before merging or pushing anything. */
-    @Test fun aVersion5FileCarriesItsNumberForOlderBuilds() = test {
+    @Test fun aVersion7FileCarriesItsNumberForOlderBuilds() = test {
         val (a, _) = pair()
         a.seedLearn()
         a.sync()
         val file = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), a.ownFile())
-        assertEquals(5, file.v)
-        assertTrue(file.v > 4) // a v4 build's validate() throws "newer Vesper" on exactly this, before it merges or uploads
+        assertEquals(7, file.v)
+        assertTrue(file.v > 6) // a v6 build's validate() throws "newer Vesper" on exactly this, before it merges or uploads
     }
 
     private fun java.util.Random.asKotlin() = kotlin.random.Random(nextLong())
@@ -1069,7 +1070,7 @@ class SyncRoundTest {
         assertTrue(e.message!!, e.message!!.contains("older Vesper"))
         assertEquals("Work", a.db.syncDao().lobes().single().name)
         assertEquals(3, a.cards().size); assertEquals(2, a.links().size)
-        assertTrue(a.ownFile().contains("\"v\":5") && a.ownFile().contains("The ark")) // pushed anyway
+        assertTrue(a.ownFile().contains("\"v\":$SNAPSHOT_VERSION") && a.ownFile().contains("The ark")) // pushed anyway
     }
 
     /** 2.8.0: a 2.7.9 (v4) file still merges whole and keeps our daily log; its device hears to update. */
@@ -1082,6 +1083,115 @@ class SyncRoundTest {
         assertTrue(e.message!!, e.message!!.contains("older Vesper"))
         assertEquals(setOf("Daily", "Work"), a.db.syncDao().lobes().map { it.name }.toSet())
         assertEquals(listOf("d-pills@2026-11-24=true"), a.log())
-        assertTrue(a.ownFile().contains("\"v\":5") && a.ownFile().contains("d-pills@2026-11-24")) // pushed anyway
+        assertTrue(a.ownFile().contains("\"v\":$SNAPSHOT_VERSION") && a.ownFile().contains("d-pills@2026-11-24")) // pushed anyway
+    }
+
+    /** 3.0.x: thoughts and Georgian texts travel through the DB, Drive and back, and an edit on each side keeps both. */
+    @Test fun thoughtsAndGeorgianTravelAndSurviveEditsOnBothSides() = test {
+        val (a, b) = pair()
+        a.seedBible()
+        val d = a.db.bibleDao()
+        d.setThoughts(a.cardId("isaac"), "faith tested"); d.setNameKa(a.cardId("isaac"), "ისააკი")
+        d.setNoteKa(a.cardId("isaac"), "სიცილი"); d.setThoughtsKa(a.cardId("isaac"), "რწმენა")
+        d.setLinkLabelKa(a.db.syncDao().bibleLinks().single { it.uid == "l1" }.id, "ძე")
+        converge(a, b)
+        val i = b.cards().single { it.uid == "isaac" }
+        assertEquals(listOf("faith tested", "ისააკი", "სიცილი", "რწმენა"), listOf(i.thoughts, i.nameKa, i.noteKa, i.thoughtsKa))
+        assertEquals("ძე", b.links().single { it.uid == "l1" }.labelKa)
+        // each side rewrites the thoughts before syncing: neither text is lost
+        a.db.bibleDao().setThoughts(a.cardId("isaac"), "from the phone")
+        tick()
+        b.db.bibleDao().setThoughts(b.cardId("isaac"), "from the PC")
+        converge(a, b)
+        assertEquals(setOf("from the phone", "from the PC"), a.cards().map { it.thoughts }.filter { it.startsWith("from") }.toSet())
+        assertEquals(a.state(), b.state())
+    }
+
+    /** A 3.0.7 (v5) peer's newer card merges, but our thoughts and Georgian stay: it never knew them. */
+    @Test fun aVersion5DevicesFileKeepsOurThoughts() = test {
+        val (a, _) = pair()
+        a.seedBible()
+        a.db.bibleDao().setThoughts(a.cardId("isaac"), "faith tested")
+        a.db.bibleDao().setNameKa(a.cardId("isaac"), "ისააკი")
+        upload("old-device", Snapshot(v = 5, deviceId = "old-device", bibleCards = listOf(SyncBibleCard("isaac", Long.MAX_VALUE / 2, "Isaac", "laughter", "person", 9f, 9f))))
+        val e = assertThrows(SyncException::class.java) { runBlocking { a.sync() } }
+        assertTrue(e.message!!, e.message!!.contains("older Vesper"))
+        val i = a.cards().single { it.uid == "isaac" }
+        assertEquals(listOf(9f, "faith tested", "ისააკი"), listOf(i.x, i.thoughts, i.nameKa))
+        assertTrue(a.ownFile().contains("faith tested")) // pushed anyway
+    }
+
+    /** 3.2.x: moments travel through the DB, Drive and back, and an edit on each side keeps both. */
+    @Test fun momentsTravelAndSurviveEditsOnBothSides() = test {
+        val (a, b) = pair()
+        a.seedBible()
+        a.db.bibleDao().setMoments(a.cardId("isaac"), "born\nbound")
+        a.db.bibleDao().setMomentsKa(a.cardId("isaac"), "დაიბადა")
+        converge(a, b)
+        val i = b.cards().single { it.uid == "isaac" }
+        assertEquals(listOf("born\nbound", "დაიბადა"), listOf(i.moments, i.momentsKa))
+        a.db.bibleDao().setMoments(a.cardId("isaac"), "from the phone")
+        tick()
+        b.db.bibleDao().setMoments(b.cardId("isaac"), "from the PC")
+        converge(a, b)
+        assertEquals(setOf("from the phone", "from the PC"), a.cards().map { it.moments }.filter { it.startsWith("from") }.toSet())
+        assertEquals(a.state(), b.state())
+    }
+
+    /** A v6 peer's newer card merges, but our moments stay: it never knew them. */
+    @Test fun aVersion6DevicesFileKeepsOurMoments() = test {
+        val (a, _) = pair()
+        a.seedBible()
+        a.db.bibleDao().setMoments(a.cardId("isaac"), "born and bound")
+        upload("old-device", Snapshot(v = 6, deviceId = "old-device", bibleCards = listOf(SyncBibleCard("isaac", Long.MAX_VALUE / 2, "Isaac", "laughter", "person", 9f, 9f))))
+        val e = assertThrows(SyncException::class.java) { runBlocking { a.sync() } }
+        assertTrue(e.message!!, e.message!!.contains("older Vesper"))
+        val i = a.cards().single { it.uid == "isaac" }
+        assertEquals(listOf(9f, "born and bound"), listOf(i.x, i.moments))
+        assertTrue(a.ownFile().contains("born and bound")) // pushed anyway
+    }
+
+    /** The PC's Georgian text reaches the phone as its own sealed file, which no snapshot logic reads, counts or cleans up. */
+    @Test fun aBibleFileRidesBesideTheSnapshots() = test {
+        val (pc, phone) = pair()
+        val src = tmp.newFolder()
+        val pcDir = File(tmp.root, "pc-bible")
+        val phoneDir = File(tmp.root, "phone-bible")
+        val text = File(src, "genesis_ka.txt").apply { writeText("# fake\n1:1|ქართული ტესტი.\n") }
+        File(src, "readme.md").writeText("not a text")
+        var downloads = 0
+        val counted = object : SyncTransport by drive { override fun download(id: String) = drive.download(id).also { downloads++ } }
+        fun bibles() = drive.list().filter { it.name.startsWith("bible-") }
+
+        syncBibles(counted, key, src, pcDir)
+        val name = bibleName("genesis_ka", text.readBytes())
+        assertTrue(name.matches(Regex("bible-genesis_ka-[0-9a-f]{16}\\.vsp")))
+        assertEquals(listOf(name), bibles().map { it.name })
+        assertFalse(String(drive.download(bibles().single().id)).contains("ქართული")) // sealed
+        val uploads = drive.uploads
+        syncBibles(counted, key, src, pcDir)
+        assertEquals(uploads, drive.uploads) // unchanged: nothing uploads
+        assertFalse(pcDir.exists()) // the source device reads its own folder
+
+        // Snapshot rounds on both sides work around it and leave it alone.
+        pc.db.noteDao().insert(Note(title = "n", content = "c"))
+        pc.sync(); phone.sync(); pc.sync()
+        assertEquals(1, phone.notes().size)
+        assertEquals(listOf(name), bibles().map { it.name })
+
+        syncBibles(counted, key, null, phoneDir)
+        assertEquals(text.readText(), File(phoneDir, "genesis_ka.txt").readText())
+        val got = downloads
+        syncBibles(counted, key, null, phoneDir)
+        assertEquals(got, downloads) // same copy: no download
+
+        text.writeText("# fake\n1:1|ახალი ტესტი.\n")
+        syncBibles(counted, key, src, pcDir)
+        assertEquals(listOf(bibleName("genesis_ka", text.readBytes())), bibles().map { it.name }) // the old one is gone
+        syncBibles(counted, key, null, phoneDir)
+        assertEquals(text.readText(), File(phoneDir, "genesis_ka.txt").readText())
+
+        syncBibles(counted, key, File(tmp.root, "no such folder"), phoneDir) // a missing source does nothing
+        assertEquals(1, bibles().size)
     }
 }

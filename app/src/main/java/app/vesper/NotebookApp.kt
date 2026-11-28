@@ -8,10 +8,13 @@ import app.vesper.data.AppDatabase
 import app.vesper.data.ALL_MIGRATIONS
 import app.vesper.data.SYNC_TRIGGERS_CALLBACK
 import app.vesper.sync.SyncManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,6 +29,15 @@ class NotebookApp : Application(), VesperHost {
         backupRawDatabaseOnce()
         // Once the DB is open (and migrated), also dump the user's data as readable JSON.
         appScope.launch { exportJsonOnce() }
+        DailyOrder.load(settings) // before the widget first reads the Daily items
+        // The home-screen Daily widget follows the Daily items: ticks here, sync, the midnight reset.
+        appScope.launch {
+            try {
+                val dao = db.brainDao()
+                combine(dao.observeLobes(), dao.observeIdeas(), DailyOrder.uids) { l, i, o -> dailyItems(l, i, o).map { Triple(it.id, it.title, it.done) } }
+                    .distinctUntilChanged().collect { DailyWidget.refresh(this@NotebookApp) }
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.e("Vesper", "daily widget watch", e) }
+        }
     }
 
     override val db: AppDatabase by lazy {
@@ -58,6 +70,18 @@ class NotebookApp : Application(), VesperHost {
     /** Set by MainActivity while it is open: shows the Android 13+ notification permission dialog. */
     var askNotifications: (() -> Unit)? = null
     override val sync by lazy { SyncManager(db, appScope, AndroidSyncPlatform(this), ::reportError) }
+
+    override fun shareNote(png: ByteArray, name: String) {
+        try {
+            val dir = File(cacheDir, "share").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+            val file = File(dir, name.replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-').take(40).ifEmpty { "note" } + ".png").also { it.writeBytes(png) }
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.share", file)
+            val send = android.content.Intent(android.content.Intent.ACTION_SEND).setType("image/png")
+                .putExtra(android.content.Intent.EXTRA_STREAM, uri).addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            send.clipData = android.content.ClipData.newRawUri("", uri)
+            startActivity(android.content.Intent.createChooser(send, null).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) { reportError("share the note", e) }
+    }
 
     override fun reportError(what: String, e: Throwable) {
         Log.e("Vesper", what, e)

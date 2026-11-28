@@ -51,6 +51,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.geometry.Offset
@@ -160,7 +161,9 @@ internal fun PageBodyField(value: String, onChange: (String) -> Unit, enabled: B
  * the app stops, when the page leaves composition (desktop) and on back.
  */
 @Composable
-fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit, onMove: (() -> Unit)? = null) {
+fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit, onMove: (() -> Unit)? = null, shareLabel: String = "", onShare: ((ByteArray, String) -> Unit)? = null) {
+    val fonts = LocalFontFamilyResolver.current
+    val pixelFont = PixelFont
     val focusManager = LocalFocusManager.current
     val titleFocus = remember { FocusRequester() }
     val closeNow by rememberUpdatedState(onClose)
@@ -196,6 +199,17 @@ fun IdeaPageScreen(vm: IdeaEditorViewModel, onClose: () -> Unit, onMove: (() -> 
                     contentAlignment = Alignment.Center,
                 ) {
                     Text("move", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = Px.Lavender, textDecoration = TextDecoration.Underline))
+                }
+            }
+            if (vm.exists && onShare != null) {
+                Box(
+                    Modifier.defaultMinSize(48.dp, 48.dp).clickable(role = Role.Button, onClickLabel = "Share as a picture", onClick = {
+                        focusManager.clearFocus(); vm.flush()
+                        onShare(renderNoteImage(fonts, shareLabel.ifBlank { "notes" }, vm.title, vm.body, pixelFont).toPng(), vm.title.trim().ifEmpty { "note" })
+                    }).padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("share", style = TextStyle(fontFamily = PageFont, fontSize = 22.sp, color = Px.Lavender, textDecoration = TextDecoration.Underline))
                 }
             }
             if (vm.exists) {

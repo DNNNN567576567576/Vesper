@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.asSkiaBitmap
 import androidx.compose.ui.graphics.skiaPaint
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.window.DialogProperties
@@ -54,3 +55,5 @@ internal actual fun BackHandler(enabled: Boolean, onBack: () -> Unit) {
 internal actual val saveOnDispose = true
 
 internal actual fun edgeToEdgeDialog() =DialogProperties(usePlatformDefaultWidth = false)
+
+internal actual fun ImageBitmap.toPng(): ByteArray = Image.makeFromBitmap(asSkiaBitmap()).encodeToData()!!.bytes

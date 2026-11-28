@@ -579,7 +579,7 @@ internal fun buildLayout(tasks: List<Idea>, notes: List<Idea> = emptyList(), goa
 
 internal fun rnd(v: Float): Int = floor(v + 0.5f).toInt()
 
-private fun mixRgb(a: Int, b: Int, m: Float): Int {
+internal fun mixRgb(a: Int, b: Int, m: Float): Int {
     val k = m.coerceIn(0f, 1f)
     val r = ((a shr 16 and 255) + ((b shr 16 and 255) - (a shr 16 and 255)) * k).toInt()
     val g = ((a shr 8 and 255) + ((b shr 8 and 255) - (a shr 8 and 255)) * k).toInt()
@@ -630,6 +630,8 @@ internal class BrainRenderer(
     var daily = -1f
     /** Whether the bible brain (top right) is drawn. */
     var bible = false
+    /** The base colour under everything (see [skyRgb]). */
+    var sky = 0x07030B
     /** The uid of the paper being dragged, or null: it gets a bright ring so it reads as lifted. */
     var lifted: String? = null
 
@@ -945,7 +947,7 @@ internal class BrainRenderer(
         // a fly into the learn brain fades the heart out early so it never fills the view, the other brains even sooner
         val m = Offset.Zero; val h = HEART_AT; val ln = LEARN_AT; val tb = TASKS_AT
 
-        pix.fill(0x07030B)
+        pix.fill(sky)
 
         // fog
         for (i in 0 until 7) {
@@ -1107,6 +1109,7 @@ fun BrainScreen(
     /** The Daily checklist: add an item by name, tick or untick one, rename or delete one. */
     onDailyAdd: (String) -> Unit = {},
     onDailyDone: (Idea, Boolean) -> Unit = { _, _ -> },
+    onDailyOrder: (List<String>) -> Unit = {},
     onRenameIdea: (Idea, String) -> Unit = { _, _ -> },
     onDeleteIdea: (Idea) -> Unit = {},
     /** The daily log of the stats window, for the Daily card's stats. */
@@ -1137,7 +1140,8 @@ fun BrainScreen(
     var cardClose by remember { mutableStateOf(0) }
     var seenHome by remember { mutableStateOf(homeSignal) }
     var addingGoal by remember { mutableStateOf(false) }
-    val daily = remember(lobeList, ideaList) { app.vesper.dailyItems(lobeList, ideaList) }
+    val dailyOrder by app.vesper.DailyOrder.uids.collectAsState()
+    val daily = remember(lobeList, ideaList, dailyOrder) { app.vesper.dailyItems(lobeList, ideaList, dailyOrder) }
     var dailyFrom by remember { mutableStateOf<Offset?>(null) } // the daily card: open while set, grown from there (root px)
     var dailyClose by remember { mutableStateOf(0) }
     var addingDaily by remember { mutableStateOf(false) }
@@ -1255,10 +1259,18 @@ fun BrainScreen(
                     onMove = { c, x, y -> bible.moveCard(c.id, x, y) },
                     onLock = { bible.setLocked(it.id, !it.locked) },
                     onRename = { c, n -> bible.renameCard(c.id, n) },
-                    onKind = { c, k -> bible.setKind(c.id, k) },
                     onNote = { c, n -> bible.setNote(c.id, n) },
+                    lang = bible.lang.collectAsState().value, onLang = bible::toggleLang, kaText = bible::kaGenesis,
+                    onThoughts = { c, t -> bible.setThoughts(c.id, t) },
+                    onNameKa = { c, t -> bible.setNameKa(c.id, t) },
+                    onNoteKa = { c, t -> bible.setNoteKa(c.id, t) },
+                    onThoughtsKa = { c, t -> bible.setThoughtsKa(c.id, t) },
+                    onMoments = { c, t -> bible.setMoments(c.id, t) },
+                    onMomentsKa = { c, t -> bible.setMomentsKa(c.id, t) },
+                    onLabelKa = { l, t -> bible.setLinkLabelKa(l.id, t) },
                     onDelete = bible::deleteCard,
                     onLink = bible::addLink,
+                    onLinks = { l -> l.forEach { (a, b, label) -> bible.addLink(a, b, label) } },
                     onRenameLink = { l, n -> bible.renameLink(l.id, n) },
                     onDeleteLink = { bible.deleteLink(it.id) },
                 ) else LanternWorld(
@@ -1282,6 +1294,7 @@ fun BrainScreen(
                     daily, dailyLog, from, dailyClose,
                     onToggle = { onDailyDone(it, !it.done) },
                     onItemMenu = { i, at -> itemMenu = i to at - rootOff },
+                    onReorder = onDailyOrder,
                     onAdd = { addingDaily = true },
                     onClosed = { dailyFrom = null },
                 )
@@ -1530,6 +1543,8 @@ internal fun BrainCanvas(
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val pageFont = PageFont; val pixelFont = PixelFont // composable getters, read outside remember
     var view by remember { mutableStateOf(IntSize.Zero) }
+    var skyNow by remember { mutableStateOf(skyRgb(java.time.LocalTime.now().let { it.hour * 60 + it.minute })) }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(60_000); skyNow = skyRgb(java.time.LocalTime.now().let { it.hour * 60 + it.minute }) } }
     val shownDaily = if (daily >= 0f) dailyItems else emptyList()
     val shownBible = if (onTapBible != null) bibleCards else emptyList()
     val layout = remember(tasks, mainNotes, goals, pinned, shownDaily, shownBible) { buildLayout(tasks, mainNotes, goals, pinned, shownDaily, shownBible) }
@@ -1651,6 +1666,7 @@ internal fun BrainCanvas(
         renderer.learnMoons = learnMoons
         renderer.daily = daily
         renderer.bible = onTapBible != null
+        renderer.sky = skyNow
         renderer.draw(time, cam.x, cam.y, cam.scale, layout, sunSv, sunSel)
         drawIntoCanvas { renderer.blit(it, pxSize.toInt()) }
         labels.draw(this, renderer, cam.x, cam.y, cam.scale, sunSel, sunSv, home = cam.home)
@@ -1804,6 +1820,7 @@ internal fun NameDialog(
     initial: String = "",
     submit: String = "GROW",
     maxLen: Int = 24,
+    quick: List<String> = emptyList(),
 ) {
     var text by remember { mutableStateOf(initial) }
     fun submit() {
@@ -1814,6 +1831,20 @@ internal fun NameDialog(
         Text(title, style = TextStyle(fontFamily = PixelFont, fontSize = 12.sp, letterSpacing = 1.sp, color = Px.Lavender))
         Spacer(Modifier.height(16.dp))
         PixelField(text, { text = it.take(maxLen) }, hint, onDone = ::submit, cursor = Px.Lavender)
+        if (quick.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (q in quick) {
+                    val pill = RoundedCornerShape(50)
+                    Text(
+                        q,
+                        Modifier.clip(pill).border(1.dp, Px.Border, pill)
+                            .clickable(role = Role.Button) { onSubmit(q); onDismiss() }.padding(horizontal = 9.dp, vertical = 8.dp),
+                        style = TextStyle(fontFamily = PixelFont, fontSize = 7.sp, color = Px.TextDim),
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(18.dp))
         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             PixelButton("CANCEL", onDismiss)

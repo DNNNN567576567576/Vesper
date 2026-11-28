@@ -358,6 +358,53 @@ class MigrationTest {
         assertEquals(3, count("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'sync_daily_log_%'"))
     }
 
+    /** 3.0.x: Bible thoughts and Georgian texts arrive by ALTER. Old rows keep every value and stamp and read '' in the new columns. */
+    @Test
+    fun migrate13To14() {
+        helper.createDatabase(name, 13).apply {
+            SYNCED_TABLES.forEach { t -> syncTriggerSql(t).forEach(::execSQL) }
+            execSQL("INSERT INTO bible_cards (id, name, note, kind, x, y, locked, uid, syncAt) VALUES (1, 'Abraham', 'father of many', 'thing', 1.5, -2, 1, 'c1', 8)")
+            execSQL("INSERT INTO bible_links (id, fromUid, toUid, label, uid, syncAt) VALUES (1, 'c1', 'c1', 'son', 'l1', 9)")
+            execSQL("INSERT INTO sync_tombstones (tbl, uid, deletedAt) VALUES ('bible_cards', 'gone', 3)")
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0, 'notes-1', 1700000000000)")
+            execSQL("INSERT INTO tasks (id, text, uid, syncAt) VALUES (1, 'buy candles', 'tasks-1', 5)")
+            insertPost(); close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 14, true, MIGRATION_13_14)
+        db.assertNoteAndTask(); db.assertPost()
+        fun row(sql: String) = db.query(sql).use { c -> c.moveToFirst(); (0 until c.columnCount).map { c.getString(it) } }
+        assertEquals(listOf("Abraham", "father of many", "thing", "1.5", "-2.0", "1", "c1", "8", "", "", "", ""),
+            row("SELECT name, note, kind, x, y, locked, uid, syncAt, thoughts, nameKa, noteKa, thoughtsKa FROM bible_cards"))
+        assertEquals(listOf("son", "l1", "9", ""), row("SELECT label, uid, syncAt, labelKa FROM bible_links"))
+        assertEquals(listOf("gone"), row("SELECT uid FROM sync_tombstones"))
+        // a new column is an ordinary edit for sync
+        db.execSQL("UPDATE bible_cards SET thoughts = 'faith tested'")
+        assertTrue(row("SELECT syncAt FROM bible_cards")[0].toLong() > 8)
+    }
+
+    /** 3.2.x: a card's big moments arrive by ALTER. Old rows keep every value and stamp and read '' in the new columns. */
+    @Test
+    fun migrate14To15() {
+        helper.createDatabase(name, 14).apply {
+            SYNCED_TABLES.forEach { t -> syncTriggerSql(t).forEach(::execSQL) }
+            execSQL("INSERT INTO bible_cards (id, name, note, kind, x, y, locked, uid, syncAt, thoughts, nameKa, noteKa, thoughtsKa) VALUES (1, 'Abraham', 'father of many', 'thing', 1.5, -2, 1, 'c1', 8, 'faith', 'აბრაამი', 'მამა', 'რწმენა')")
+            execSQL("INSERT INTO bible_links (id, fromUid, toUid, label, uid, syncAt, labelKa) VALUES (1, 'c1', 'c1', 'son', 'l1', 9, 'ძე')")
+            execSQL("INSERT INTO sync_tombstones (tbl, uid, deletedAt) VALUES ('bible_cards', 'gone', 3)")
+            execSQL("INSERT INTO notes (id, title, content, updatedAt, position, uid, syncAt) VALUES (1, 'Dream log', 'flew over the sea', 1700000000000, 0, 'notes-1', 1700000000000)")
+            execSQL("INSERT INTO tasks (id, text, uid, syncAt) VALUES (1, 'buy candles', 'tasks-1', 5)")
+            insertPost(); close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 15, true, MIGRATION_14_15)
+        db.assertNoteAndTask(); db.assertPost()
+        fun row(sql: String) = db.query(sql).use { c -> c.moveToFirst(); (0 until c.columnCount).map { c.getString(it) } }
+        assertEquals(listOf("Abraham", "father of many", "thing", "1.5", "-2.0", "1", "c1", "8", "faith", "აბრაამი", "მამა", "რწმენა", "", ""),
+            row("SELECT name, note, kind, x, y, locked, uid, syncAt, thoughts, nameKa, noteKa, thoughtsKa, moments, momentsKa FROM bible_cards"))
+        assertEquals(listOf("son", "l1", "9", "ძე"), row("SELECT label, uid, syncAt, labelKa FROM bible_links"))
+        assertEquals(listOf("gone"), row("SELECT uid FROM sync_tombstones"))
+        db.execSQL("UPDATE bible_cards SET moments = 'left Ur'")
+        assertTrue(row("SELECT syncAt FROM bible_cards")[0].toLong() > 8)
+    }
+
     /** A 2.4.1 install (DB v10, the last public release) upgrading in place to this build: every old row survives and still syncs. */
     @Test
     fun migrate10To13LikeA241Install(): Unit = runBlocking {

@@ -26,6 +26,9 @@ interface VesperHost {
     val vault: Vault
     val sync: SyncManager
 
+    /** Shares a note picture (PNG bytes): Android opens the share sheet, desktop asks where to save it. */
+    fun shareNote(png: ByteArray, name: String) {}
+
     /** Rings alarms; only Android does (see [AlarmScheduler.supported]). */
     val alarms: AlarmScheduler get() = NoAlarms
 }
@@ -37,6 +40,9 @@ interface SyncPlatform {
 
     /** Device id and Drive cursors. Outside backups, so a restored phone can never clone a device id. */
     val stateDir: File
+
+    /** A folder of Bible texts (<stem>.txt) this device uploads for the others, see [app.vesper.sync.syncBibles]; null = none. */
+    val bibleSource: File? get() = null
     fun isSignedIn(): Boolean
 
     /** A fresh token for drive.appdata. Throws [app.vesper.sync.SignInNeeded] when the user must sign in again. */

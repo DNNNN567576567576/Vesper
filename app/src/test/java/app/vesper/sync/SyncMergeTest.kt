@@ -368,13 +368,72 @@ class SyncMergeTest {
         assertEquals("Panduri", m.goals.single().name)
     }
 
-    @Test fun aVersion5FileRoundTripsAndOlderBuildsStopAtItsNumber() {
-        val s = bible("a", listOf(card("i", 1, note = "laughter", locked = true)), listOf(link("l", 2, "i", "i"))).copy(dailyLog = listOf(log("p", "2026-11-24", 3)))
+    @Test fun aVersion7FileRoundTripsAndOlderBuildsStopAtItsNumber() {
+        val s = bible("a", listOf(card("i", 1, note = "laughter", locked = true).copy(thoughts = "mine", nameKa = "ისააკი", noteKa = "სიცილი", thoughtsKa = "ჩემი", moments = "born\nbound", momentsKa = "დაიბადა")),
+            listOf(link("l", 2, "i", "i").copy(labelKa = "ძე"))).copy(dailyLog = listOf(log("p", "2026-11-24", 3)))
         val text = kotlinx.serialization.json.Json.encodeToString(Snapshot.serializer(), s)
-        assertTrue(text.contains("\"v\":5"))
+        assertTrue(text.contains("\"v\":7"))
         assertEquals(s, kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), text))
-        assertEquals(5, SNAPSHOT_VERSION)
-        assertThrows(SyncException::class.java) { s.copy(v = SNAPSHOT_VERSION + 1).validate() } // how a v4 build meets our v5
+        assertEquals(7, SNAPSHOT_VERSION)
+        assertThrows(SyncException::class.java) { s.copy(v = SNAPSHOT_VERSION + 1).validate() } // how a v6 build meets our v7
+    }
+
+    // ---- 3.0.x character pages and Georgian texts ----
+
+    /** A version 5 file (3.0.7 and before) reads with "" for the new fields, and merging it never blanks ours, even where its card wins. */
+    @Test fun aVersion5FileKeepsOurThoughtsAndGeorgian() {
+        val mine = bible("a", listOf(card("i", 10, note = "laughter").copy(thoughts = "faith", nameKa = "ისააკი", noteKa = "სიცილი", thoughtsKa = "რწმენა")),
+            listOf(link("l", 10, "i", "i").copy(labelKa = "ძე")))
+        val v5 = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(),
+            """{"v":5,"deviceId":"b","bibleCards":[{"uid":"i","syncAt":20,"name":"Isaac","note":"laughter","x":5.0,"y":6.0},{"uid":"n","syncAt":3,"name":"Noah","x":0.0,"y":0.0}],"bibleLinks":[{"uid":"l","syncAt":20,"fromUid":"i","toUid":"i","label":"son"}]}""")
+        v5.validate()
+        assertTrue(v5.v >= MERGEABLE_VERSION)
+        assertEquals(listOf("", "", "", ""), v5.bibleCards[0].let { listOf(it.thoughts, it.nameKa, it.noteKa, it.thoughtsKa) })
+        val m = merge(mine, v5, mapOf("bible_cards:i" to 10L))
+        val i = m.bibleCards.single { it.uid == "i" }
+        assertEquals(listOf(5f, 20L), listOf(i.x, i.syncAt)) // its move won
+        assertEquals(listOf("faith", "ისააკი", "სიცილი", "რწმენა"), listOf(i.thoughts, i.nameKa, i.noteKa, i.thoughtsKa))
+        assertEquals("ძე", m.bibleLinks.single().labelKa)
+        assertEquals("", m.bibleCards.single { it.uid == "n" }.thoughts)
+        assertEquals(2, m.bibleCards.size) // no copy: its text only lacked what it can't know
+    }
+
+    @Test fun aThoughtsOrGeorgianEditTravelsAndBothSidesKeepTheirText() {
+        val seen = mapOf("bible_cards:i" to 1L)
+        val base = card("i", 1, note = "laughter")
+        // only one side edited: it wins, no copy
+        val one = merge(bible("a", listOf(base)), bible("b", listOf(base.copy(syncAt = 5, thoughts = "faith tested", nameKa = "ისააკი"))), seen)
+        assertEquals(listOf(base.copy(syncAt = 5, thoughts = "faith tested", nameKa = "ისააკი")), one.bibleCards)
+        // both edited the thoughts: the later wins, the other stays as a copy beside it, marked in both languages
+        val m = merge(bible("a", listOf(base.copy(syncAt = 10, thoughts = "mine", nameKa = "ისააკი"))), bible("b", listOf(base.copy(syncAt = 20, thoughts = "theirs", nameKa = "ისააკი"))), seen)
+        assertEquals(listOf("theirs", "mine"), m.bibleCards.sortedBy { it.uid }.map { it.thoughts })
+        assertEquals("ისააკი (other copy)", m.bibleCards.single { it.thoughts == "mine" }.nameKa)
+        assertEquals("Isaac (other copy)", m.bibleCards.single { it.thoughts == "mine" }.name)
+    }
+
+    // ---- 3.2.x big moments ----
+
+    /** A v6 (and so a v5) file reads with "" moments, and merging it never blanks ours, even where its card wins. */
+    @Test fun aVersion6Or5FileKeepsOurMoments() {
+        val mine = bible("a", listOf(card("i", 10, note = "laughter").copy(thoughts = "faith", moments = "born\nbound", momentsKa = "დაიბადა")))
+        for (v in listOf(6, 5)) {
+            val old = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(),
+                """{"v":$v,"deviceId":"b","bibleCards":[{"uid":"i","syncAt":20,"name":"Isaac","note":"laughter","x":5.0,"y":6.0,"thoughts":"faith"}]}""")
+            old.validate()
+            assertEquals(listOf("", ""), old.bibleCards[0].let { listOf(it.moments, it.momentsKa) })
+            val i = merge(mine, old, mapOf("bible_cards:i" to 10L)).bibleCards.single() // no copy
+            assertEquals(listOf(5f, 20L), listOf(i.x, i.syncAt)) // its move won
+            assertEquals(listOf("faith", "born\nbound", "დაიბადა"), listOf(i.thoughts, i.moments, i.momentsKa))
+        }
+    }
+
+    @Test fun aMomentsEditOnBothSidesKeepsBoth() {
+        val seen = mapOf("bible_cards:i" to 1L)
+        val base = card("i", 1)
+        val m = merge(bible("a", listOf(base.copy(syncAt = 10, moments = "mine"))), bible("b", listOf(base.copy(syncAt = 20, moments = "theirs"))), seen)
+        assertEquals(listOf("theirs", "mine"), m.bibleCards.sortedBy { it.uid }.map { it.moments })
+        val ka = merge(bible("a", listOf(base.copy(syncAt = 10, momentsKa = "ჩემი"))), bible("b", listOf(base.copy(syncAt = 20, momentsKa = "მათი"))), seen)
+        assertEquals(listOf("მათი", "ჩემი"), ka.bibleCards.sortedBy { it.uid }.map { it.momentsKa })
     }
 
     // ---- 2.8.0 the daily log ----

@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Vesper</string>
+    <string name="widget_daily_desc">Daily candles</string>
+    <string name="widget_header_preview">DAILY · 2/4</string>
+    <string name="widget_empty">no daily items</string>
 </resources>

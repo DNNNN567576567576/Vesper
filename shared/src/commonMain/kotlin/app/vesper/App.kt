@@ -25,6 +25,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -164,7 +165,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
             IdeaEditorViewModel(host, target.takeIf { it != 0L }, pageLobe, pageBranch.takeIf { it >= 0 })
         }
         val footer = lobes?.firstOrNull { it.id == pageLobe }?.let(::placeName).orEmpty().uppercase()
-        NoteCard(vm, pageFrom, cardP, footer, lobes.orEmpty(), homeSignal, brainVm::lobeNamed, onMoved = { movedMsg = "moved to $it" }, onClosed = { pageId = NO_PAGE })
+        NoteCard(vm, pageFrom, cardP, footer, host::shareNote, lobes.orEmpty(), homeSignal, brainVm::lobeNamed, onMoved = { movedMsg = "moved to $it" }, onClosed = { pageId = NO_PAGE })
     }
 
     val tabContent: @Composable () -> Unit = {
@@ -200,7 +201,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                 )
             } else if (current == AppTab.Moons) {
                 MoonsScreen(
-                    items = remember(lobes, ideas) { dailyItems(lobes.orEmpty(), ideas.orEmpty()) },
+                    items = dailyItems(lobes.orEmpty(), ideas.orEmpty(), DailyOrder.uids.collectAsState().value),
                     log = dailyLog,
                     doneOn = { day -> dailyDoneOn(host.db, day) },
                     onToggle = brainVm::setDailyOn,
@@ -225,6 +226,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     bible = bibleVm,
                     onDailyAdd = brainVm::addDaily,
                     onDailyDone = brainVm::tickDaily,
+                    onDailyOrder = brainVm::saveDailyOrder,
                     dailyLog = dailyLog,
                     onRenameIdea = { i, name -> brainVm.saveIdea(i, name) },
                     onDeleteIdea = { brainVm.deleteIdea(it.id) },

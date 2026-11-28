@@ -64,7 +64,7 @@ private val CardPurple = Color(0xFF9C84FF)
  */
 @Composable
 fun NoteCard(
-    vm: IdeaEditorViewModel, from: Offset, p: Animatable<Float, AnimationVector1D>, footer: String,
+    vm: IdeaEditorViewModel, from: Offset, p: Animatable<Float, AnimationVector1D>, footer: String, onShare: (ByteArray, String) -> Unit,
     lobes: List<Lobe>, closeSignal: Int, lobeNamed: (String, (Long) -> Unit) -> Unit, onMoved: (String) -> Unit, onClosed: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -113,7 +113,7 @@ fun NoteCard(
                 ) {
                     Box(Modifier.size(36.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(CardPurple.copy(alpha = 0.55f)))
                 }
-                Box(Modifier.weight(1f).fillMaxWidth()) { IdeaPageScreen(vm, onClose = ::close, onMove = { moving = true }) }
+                Box(Modifier.weight(1f).fillMaxWidth()) { IdeaPageScreen(vm, onClose = ::close, onMove = { moving = true }, shareLabel = footer, onShare = onShare) }
                 Text(
                     footer, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
                     style = TextStyle(fontFamily = PixelFont, fontSize = 8.sp, color = Px.TextDim.copy(alpha = 0.7f)),
