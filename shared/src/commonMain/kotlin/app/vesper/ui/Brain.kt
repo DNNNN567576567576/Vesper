@@ -1116,6 +1116,9 @@ fun BrainScreen(
     dailyLog: List<app.vesper.data.DailyLog> = emptyList(),
     /** The Bible canvas behind the top-right brain; null = no bible brain. */
     bible: app.vesper.BibleViewModel? = null,
+    /** The home-screen widget asked for the Daily card: open it, then say so ([onOpenDailyHandled]). */
+    openDaily: Boolean = false,
+    onOpenDailyHandled: () -> Unit = {},
 ) {
     val lobeList = lobes.orEmpty()
     val ideaList = ideas.orEmpty()
@@ -1176,6 +1179,13 @@ fun BrainScreen(
         if (homeSignal == seenHome) return@LaunchedEffect
         seenHome = homeSignal
         if (cardFrom != null) cardClose++ else if (dailyFrom != null) dailyClose++ else if (world != 0) leave() else homeTick++
+    }
+
+    LaunchedEffect(openDaily) {
+        if (!openDaily) return@LaunchedEffect
+        cardFrom = null; leave()
+        dailyFrom = Offset(viewSize.width / 2f, viewSize.height / 2f) + rootOff
+        onOpenDailyHandled()
     }
 
     var menu by remember { mutableStateOf<MenuAt?>(null) }

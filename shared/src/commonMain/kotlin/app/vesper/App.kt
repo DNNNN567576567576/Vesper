@@ -70,7 +70,7 @@ private const val NO_PAGE = -2L
  * [shared] is text just sent to Vesper from another app; the picker asks where to keep it.
  */
 @Composable
-fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
+fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit, openDaily: Boolean = false, onOpenDailyHandled: () -> Unit = {}) {
     val tabs = remember { navTabs(host.alarms.supported) }
     var tabIdx by rememberSaveable { mutableIntStateOf(0) } // index into tabs; 0 = Brain (default)
     val tab = tabs[tabIdx.coerceIn(tabs.indices)]
@@ -81,6 +81,7 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
     var pageBranch by rememberSaveable { mutableLongStateOf(-1L) }
     var pageSession by rememberSaveable { mutableIntStateOf(0) }
     var pageFrom by remember { mutableStateOf(Offset.Unspecified) } // where its card grows from (root px)
+    LaunchedEffect(openDaily) { if (openDaily) { tabIdx = tabs.indexOf(AppTab.Brain); pageId = NO_PAGE } } // the widget's "open": Brain tab, Daily card
     val cardP = remember { Animatable(0f) } // how open the card is; the world behind dims and shrinks with it
     var homeSignal by remember { mutableIntStateOf(0) } // the Brain tab tapped again: close the cards, fly back to the map
     var movedMsg by remember { mutableStateOf<String?>(null) }
@@ -230,6 +231,8 @@ fun App(host: VesperHost, shared: SharedText?, onSharedHandled: () -> Unit) {
                     dailyLog = dailyLog,
                     onRenameIdea = { i, name -> brainVm.saveIdea(i, name) },
                     onDeleteIdea = { brainVm.deleteIdea(it.id) },
+                    openDaily = openDaily,
+                    onOpenDailyHandled = onOpenDailyHandled,
                 )
             }
         }

@@ -55,10 +55,6 @@
             </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/daily_widget_info" />
         </receiver>
-        <service
-            android:name=".DailyWidgetService"
-            android:exported="false"
-            android:permission="android.permission.BIND_REMOTEVIEWS" />
 
         <!-- Note pictures: written to cache/share and handed to the share sheet -->
         <provider

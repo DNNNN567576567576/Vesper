@@ -114,8 +114,8 @@ private val CANDLE_ROWS = listOf(
     "SSSSSSSSS",
     ".SSSSSSS.",
 )
-internal const val CANDLE_W = 9
-internal const val CANDLE_H = 20
+const val CANDLE_W = 9
+const val CANDLE_H = 20
 private const val FLAME_ROWS = 7
 private const val CANDLE_FX_S = 0.4f // how long the light-up flare or the smoke wisp lasts
 
@@ -123,7 +123,7 @@ private const val CANDLE_FX_S = 0.4f // how long the light-up flare or the smoke
  * The candle's pixels as (x, y, rgb), [lit] or not, at flicker [frame] (0..2: the flame's tip leans left, stands, leans right). An
  * unlit candle is dark purple wax with a cold wick and no flame; a lit one has lighter wax and a white and lilac flame.
  */
-internal fun candlePixels(lit: Boolean, frame: Int = 1): List<Triple<Int, Int, Int>> {
+fun candlePixels(lit: Boolean, frame: Int = 1): List<Triple<Int, Int, Int>> {
     val out = ArrayList<Triple<Int, Int, Int>>()
     CANDLE_ROWS.forEachIndexed { y, row ->
         row.forEachIndexed { x, ch ->

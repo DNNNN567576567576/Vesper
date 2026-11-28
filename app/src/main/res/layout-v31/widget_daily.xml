@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+: the frame is solid strips + four corner pictures, sized in whole device pixels from code (WidgetArt.layoutFrame), so nothing is resampled. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <FrameLayout
+        android:id="@+id/fc_card"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+        <ImageView
+            android:id="@+id/fc_panel"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#FF0B0614"
+            android:layout_gravity="fill"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_top_edge"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:background="#FF9A6CFF"
+            android:layout_gravity="top"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_top_line"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:background="#FF3A2066"
+            android:layout_gravity="top"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_bottom_edge"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:background="#FF9A6CFF"
+            android:layout_gravity="bottom"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_bottom_line"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:background="#FF3A2066"
+            android:layout_gravity="bottom"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_left_edge"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:background="#FF9A6CFF"
+            android:layout_gravity="left"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_left_line"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:background="#FF3A2066"
+            android:layout_gravity="left"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_right_edge"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:background="#FF9A6CFF"
+            android:layout_gravity="right"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_right_line"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:background="#FF3A2066"
+            android:layout_gravity="right"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_tl"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:scaleType="fitXY"
+            android:layout_gravity="top|left"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_tr"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:scaleType="fitXY"
+            android:layout_gravity="top|right"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_bl"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:scaleType="fitXY"
+            android:layout_gravity="bottom|left"
+            android:importantForAccessibility="no" />
+        <ImageView
+            android:id="@+id/fc_br"
+            android:layout_width="3dp"
+            android:layout_height="3dp"
+            android:scaleType="fitXY"
+            android:layout_gravity="bottom|right"
+            android:importantForAccessibility="no" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="9dp">
+
+        <ImageView
+            android:id="@+id/widget_header"
+            android:layout_width="match_parent"
+            android:layout_height="28dp"
+            android:scaleType="fitXY"
+            android:contentDescription="@string/widget_daily_desc" />
+
+        <ImageView
+            android:id="@+id/widget_body"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="fitCenter"
+            android:contentDescription="@string/widget_daily_desc" />
+    </LinearLayout>
+</FrameLayout>

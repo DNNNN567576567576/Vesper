@@ -26,7 +26,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi)
             packageName = "Vesper"
-            packageVersion = "3.5.2"
+            packageVersion = "3.5.6"
             vendor = "Vesper"
             modules("java.sql", "java.instrument", "jdk.unsupported") // Room/sqlite and Skiko need these in the trimmed runtime
             windows {
